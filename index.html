@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>3D Printer Utils</title>
+<title>3D Printer Utils IN-TESTING</title>
 <style>
   :root { --bar-h: 42px; }
   body {
@@ -453,27 +453,36 @@ const screwAffects = {
 
 // --- Temperature line matcher & polling helpers ---
 
+const topHotendPill = document.getElementById('topHotendPill');
+const topBedPill    = document.getElementById('topBedPill');
+
 const TEMP_LINE = /T\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?.*?B\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
 
 const TELEMETRY_REGEX = /(?:\bT\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|(?:\bB\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|(?:\b@:\s*\d+)|(?:\bB@:\s*\d+)/i;
 function isTelemetryLine(s) { return TELEMETRY_REGEX.test(s); }
 
 // Simple helpers for the top-bar pills
-function setTempPill(el, curr, target) {
-  // text
-  el.textContent = target != null
+function setTempPill(pillEl, curr, target) {
+  const valueEl = pillEl.querySelector('span'); // inner value span
+  valueEl.textContent = (target != null && !isNaN(target))
     ? `${curr.toFixed(1)}°C / ${Math.round(target)}°`
     : `${curr.toFixed(1)}°C`;
 
-  // state class
-  el.classList.remove('heating','cooling','stable');
+  pillEl.classList.remove('idle','ready','heating','cooling','pulse');
+
   if (target == null || isNaN(target)) {
-    el.classList.add('stable');
+    pillEl.classList.add('idle');
     return;
   }
-  if (curr < target - 0.5) el.classList.add('heating');
-  else if (curr > target + 0.5) el.classList.add('cooling');
-  else el.classList.add('stable');
+
+  const eps = 0.5;
+  if (curr < target - eps) {
+    pillEl.classList.add('heating','pulse');
+  } else if (curr > target + eps) {
+    pillEl.classList.add('cooling','pulse');
+  } else {
+    pillEl.classList.add('ready');
+  }
 }
 
 function startTempPolling() {
@@ -726,7 +735,7 @@ async function disconnectPrinter() {
   }
 }
 
-let rxBuffer = rxBuffer || ''; // keep the existing buffer if you had one
+let rxBuffer = '';
 
 
 // --- ACK / flow control state ---
@@ -793,14 +802,14 @@ async function readLoop() {
           const bCur = parseFloat(tm[3]);
           const bTar = tm[4] !== undefined ? parseFloat(tm[4]) : null;
 
-          if (Number.isFinite(tCur)) {
-            hotendNow.textContent = `Current: ${tCur.toFixed(1)}°C`;
-            setTempPill(document.getElementById('topHotend'), tCur, tTar);
-          }
-          if (Number.isFinite(bCur)) {
-            bedNow.textContent = `Current: ${bCur.toFixed(1)}°C`;
-            setTempPill(document.getElementById('topBed'), bCur, bTar);
-          }
+if (Number.isFinite(tCur)) {
+  hotendNow.textContent = `Current: ${tCur.toFixed(1)}°C`;
+  setTempPill(topHotendPill, tCur, tTar);
+}
+if (Number.isFinite(bCur)) {
+  bedNow.textContent = `Current: ${bCur.toFixed(1)}°C`;
+  setTempPill(topBedPill, bCur, bTar);
+}
         }
 
         // 2) Hide telemetry spam from the main log/capture
@@ -826,13 +835,14 @@ async function readLoop() {
         if (/PID Autotune failed/i.test(line))   setActivity('PID tuning failed', 'bad');
 
         // 5) Handle 'ok' (always update clock; if capturing, also resume temp polling)
-        if (/^ok\b/i.test(line)) {
-          updateLastUpdated();
-          if (captureMode) {
-            captureMode = null;
-            startTempPolling();
-          }
-        }
+if (/^ok\b/i.test(line)) {
+  updateLastUpdated();
+  if (captureMode) {
+    captureMode = null;
+    startTempPolling();
+  }
+  _resolveNextOk(); // <-- resolve one waiter
+}
       }
     }
   } catch (err) {
