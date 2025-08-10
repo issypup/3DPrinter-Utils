@@ -457,15 +457,17 @@ const screwAffects = {
 
 // --- Temperature line matcher & polling helpers ---
 
-topHotendText.textContent = '--°C';
-topBedText.textContent = '--°C';
-topHotendPill.className = 'pill offline';
-topBedPill.className = 'pill offline';
-
 const topHotendPill = document.getElementById('topHotendPill');
 const topBedPill    = document.getElementById('topBedPill');
 const topHotendText = document.getElementById('topHotend');
 const topBedText    = document.getElementById('topBed');
+
+function setOfflinePills() {
+  topHotendText.textContent = '--°C';
+  topBedText.textContent = '--°C';
+  topHotendPill.className = 'pill offline';
+  topBedPill.className = 'pill offline';
+}
 
 const TEMP_LINE = /T\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?.*?B\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
 
@@ -475,16 +477,17 @@ function isTelemetryLine(s) { return TELEMETRY_REGEX.test(s); }
 // Simple helpers for the top-bar pills
 function setTempPill(pillEl, textEl, curr, target) {
   // text
-  textEl.textContent = (target !== undefined && target !== null && !Number.isNaN(target))
+  textEl.textContent = (target != null && !Number.isNaN(target))
     ? `${curr.toFixed(1)}°C / ${Math.round(target)}°`
     : `${curr.toFixed(1)}°C`;
 
   // state
   const state = tempState(curr, target); // 'idle' | 'ready' | 'heating' | 'cooling'
-  pillEl.classList.remove('idle','ready','heating','cooling','pulse');
+  pillEl.classList.remove('offline','idle','ready','heating','cooling','pulse'); // <-- remove offline too
   pillEl.classList.add(state);
   if (state === 'heating' || state === 'cooling') pillEl.classList.add('pulse');
 }
+
 function startTempPolling() {
   if (!tempTimer) tempTimer = setInterval(() => sendCmd('M105', true), 3000);
 }
@@ -526,8 +529,26 @@ function setActivity(text, cls='') {
   activityBadge.className = 'pill ' + cls;
 }
 function setConnected(connected) {
-  if (connected) { connBadge.textContent = 'Connected'; connBadge.className = 'pill ok'; }
-  else { connBadge.textContent = 'Disconnected'; connBadge.className = 'pill bad'; }
+  if (connected) {
+    connBadge.textContent = 'Connected';
+    connBadge.className = 'pill ok';
+
+    // Clear offline state for temp pills
+    topHotendPill.classList.remove('offline');
+    topBedPill.classList.remove('offline');
+    topHotendPill.classList.add('idle');
+    topBedPill.classList.add('idle');
+
+    startTempPolling();
+  } else {
+    connBadge.textContent = 'Disconnected';
+    connBadge.className = 'pill bad';
+
+    stopTempPolling();
+    setOfflinePills(); // reset temps to --°C
+  }
+
+  // Tab/button enabling/disabling
   connectBtn.disabled   = connected;
   disconnectBtn.disabled= !connected;
   readMeshBtn.disabled  = !connected;
@@ -537,7 +558,6 @@ function setConnected(connected) {
   hotendPidBtn.disabled = !connected;
   clearLogBtn.disabled  = !connected;
 
-  // Temp/Fan
   hotendApply.disabled = !connected;
   hotendOff.disabled   = !connected;
   bedApply.disabled    = !connected;
@@ -545,29 +565,26 @@ function setConnected(connected) {
   fanApply.disabled    = !connected;
   fanOff.disabled      = !connected;
 
-  // Move
   homeAll.disabled = !connected;
   disableMotors.disabled = !connected;
-  xMinus.disabled = xPlus.disabled = yMinus.disabled = yPlus.disabled = zMinus.disabled = zPlus.disabled = !connected;
+  xMinus.disabled = xPlus.disabled =
+  yMinus.disabled = yPlus.disabled =
+  zMinus.disabled = zPlus.disabled = !connected;
   parkHead.disabled = !connected;
 
-  // EEPROM
   readCfg.disabled = !connected;
   saveCfg.disabled = !connected;
 
-  // Maintenance
-  preheatPLA.disabled = preheatPETG.disabled = preheatABS.disabled = cooldown.disabled = loadFil.disabled = unloadFil.disabled = !connected;
+  preheatPLA.disabled = preheatPETG.disabled =
+  preheatABS.disabled = cooldown.disabled =
+  loadFil.disabled = unloadFil.disabled = !connected;
 
-  // Diagnostics
   fwInfo.disabled = tmcDiag.disabled = !connected;
 
-  // Sender
   sendGcode.disabled = !connected || !gcodeFile.files.length;
   cancelSend.disabled= true;
-
-  if (connected) startTempPolling();
-  else stopTempPolling();
 }
+
 function _logBase(msg) {
   if (!msg.endsWith('\n')) msg += '\n';
   printerLog.textContent += msg;
@@ -765,10 +782,7 @@ async function disconnectPrinter() {
   } catch (e) {
     console.warn('Disconnect error:', e);
   } finally {
-    topHotendText.textContent = '--°C';
-topBedText.textContent = '--°C';
-topHotendPill.className = 'pill offline';
-topBedPill.className = 'pill offline';
+setOfflinePills();
     _rejectAllOk(new Error('Disconnected'));
     port = null; reader = null; writer = null; textDecoder = null;
     setConnected(false);
@@ -1221,6 +1235,7 @@ cancelSend.addEventListener('click', async () => {
   renderSuggestions(mesh);
   updateLastUpdated();
   setConnected(false);
+  setOfflinePills(); 
 })();
 </script>
 </body>
