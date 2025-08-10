@@ -452,8 +452,29 @@ const screwAffects = {
 };
 
 // --- Temperature line matcher & polling helpers ---
-const TELEMETRY_REGEX = /\b(?:T\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?|B\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?|@:\s*\d+|B@:\s*\d+)\b/i;
+
+const TEMP_LINE = /T\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?.*?B\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
+
+const TELEMETRY_REGEX = /(?:\bT\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|(?:\bB\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|(?:\b@:\s*\d+)|(?:\bB@:\s*\d+)/i;
 function isTelemetryLine(s) { return TELEMETRY_REGEX.test(s); }
+
+// Simple helpers for the top-bar pills
+function setTempPill(el, curr, target) {
+  // text
+  el.textContent = target != null
+    ? `${curr.toFixed(1)}°C / ${Math.round(target)}°`
+    : `${curr.toFixed(1)}°C`;
+
+  // state class
+  el.classList.remove('heating','cooling','stable');
+  if (target == null || isNaN(target)) {
+    el.classList.add('stable');
+    return;
+  }
+  if (curr < target - 0.5) el.classList.add('heating');
+  else if (curr > target + 0.5) el.classList.add('cooling');
+  else el.classList.add('stable');
+}
 
 function startTempPolling() {
   if (!tempTimer) tempTimer = setInterval(() => sendCmd('M105', true), 3000);
@@ -705,7 +726,7 @@ async function disconnectPrinter() {
   }
 }
 
-let rxBuffer = ''; // add near your serial state
+let rxBuffer = rxBuffer || ''; // keep the existing buffer if you had one
 
 
 // --- ACK / flow control state ---
@@ -755,141 +776,64 @@ async function readLoop() {
       if (done) break;
       if (value == null) continue;
 
-      // Accumulate and split into complete lines; keep remainder in rxBuffer
+      // accumulate until full lines
       rxBuffer += value;
       const parts = rxBuffer.split(/\r?\n/);
-      rxBuffer = parts.pop(); // remainder (incomplete line)
+      rxBuffer = parts.pop(); // keep incomplete tail
 
-for (let line of parts) {
-  if (!line) continue;
+      for (const raw of parts) {
+        const line = raw.trim();
+        if (!line) continue;
 
-  // Normalize whitespace
-  line = line.replace(/\r/g, '');
+        // 1) TEMP UPDATE FIRST (so UI always updates even if we hide the line)
+        const tm = line.match(TEMP_LINE);
+        if (tm) {
+          const tCur = parseFloat(tm[1]);
+          const tTar = tm[2] !== undefined ? parseFloat(tm[2]) : null;
+          const bCur = parseFloat(tm[3]);
+          const bTar = tm[4] !== undefined ? parseFloat(tm[4]) : null;
 
-if (captureMode && /^ok\b/i.test(line)) {
-  captureMode = null;
-  startTempPolling();
-  // 🔸 update the clock on successful completion
-  updateLastUpdated();
-}
+          if (Number.isFinite(tCur)) {
+            hotendNow.textContent = `Current: ${tCur.toFixed(1)}°C`;
+            setTempPill(document.getElementById('topHotend'), tCur, tTar);
+          }
+          if (Number.isFinite(bCur)) {
+            bedNow.textContent = `Current: ${bCur.toFixed(1)}°C`;
+            setTempPill(document.getElementById('topBed'), bCur, bTar);
+          }
+        }
 
-// (Also update on any ok, not just while capturing)
-if (/^ok\b/i.test(line)) {
-  updateLastUpdated();
-}
+        // 2) Hide telemetry spam from the main log/capture
+        const isTelemetry = TELEMETRY_REGEX.test(line);
+        if (!isTelemetry) {
+          logMsg(line);
+        }
 
-// Hide 'busy' spam but keep a status
-if (/^echo:busy:/i.test(line)) {
-  setActivity('Printer busy…', 'warn');
-  continue; // don't log this line
-}
+        // 3) Mesh parse from this single line (covers point formats)
+        const parsed = tryParseMeshFromLines([line]);
+        if (parsed) {
+          const mesh = parsed.reverse(); // bottom-left → top-left for UI
+          setActivity('Mesh parsed', 'ok');
+          saveMeshLS(mesh);
+          renderMeshInputs(mesh);
+          renderSuggestions(mesh);
+          updateLastUpdated();
+        }
 
-  // Detect & track "busy" (don’t resolve ok while busy)
-  if (/^\s*echo:busy: processing/i.test(line)) {
-    isBusyProcessing = true;
-    // We can choose to hide it from the log if you want:
-    // continue;
-  }
+        // 4) PID status lights
+        if (/PID Autotune start/i.test(line))    setActivity('PID tuning…', 'warn');
+        if (/PID Autotune finished/i.test(line)) setActivity('PID tuning complete', 'ok');
+        if (/PID Autotune failed/i.test(line))   setActivity('PID tuning failed', 'bad');
 
-// Resolve 'ok' waiters
-if (/^ok\b/i.test(line)) {
-  _resolveNextOk();
-  // don't need to log bare ok unless you want:
-  // logMsg(line);
-  continue;
-}
-
-  // Guard against split 'ok' like "o" or "k" landing as separate lines
-  if (/^\s*[ok]\s*$/i.test(line)) {
-    // hold these tiny fragments in the buffer by re-attaching them
-    rxBuffer = line + '\n' + rxBuffer;
-    continue;
-  }
-
-  // Update temps if present
-  // Match temperature report lines from M105 (Hotend + Bed temps)
-// Captures:
-//   [1] Hotend current temp
-//   [2] Hotend target temp (optional)
-//   [3] Bed current temp
-//   [4] Bed target temp (optional)
-//
-// Pattern details:
-//   T\d?:       // Literal "T" followed by optional single digit (T, T0, T1), then a colon
-//   \s*         // Optional spaces
-//   ([-+]?\d*\.?\d+) // Group 1: optional +/- sign, digits, optional decimal, more digits (current hotend temp)
-//   (?:\s*\/\s*([-+]?\d*\.?\d+))? // Optional group 2: slash + optional spaces + number (target hotend temp)
-//   .*?         // Non-greedy match of any characters until bed temp
-//   B\d?:       // Literal "B" followed by optional digit (B, B0, etc.), then a colon
-//   \s*         // Optional spaces
-//   ([-+]?\d*\.?\d+) // Group 3: current bed temp
-//   (?:\s*\/\s*([-+]?\d*\.?\d+))? // Optional group 4: target bed temp
-//
-// Flags: i = case-insensitive
-
-const tempRegex = new RegExp(
-  String.raw`T\d?:\s*([-+]?\d*\.?\d+)` + //Hotend
-  String.raw`(?:\s*\/\s*([-+]?\d*\.?\d+))?.*?` +
-  String.raw`B\d?:\s*([-+]?\d*\.?\d+)` + //Bed
-  String.raw`(?:\s*\/\s*([-+]?\d*\.?\d+))?`,
-  'i'
-);
-const tm = line.match(tempRegex);
-
-if (tm) {
-  const hotCurrent = parseFloat(tm[1]);
-  const hotTarget  = tm[2] ? parseFloat(tm[2]) : null;
-  const bedCurrent = parseFloat(tm[3]);
-  const bedTarget  = tm[4] ? parseFloat(tm[4]) : null;
-
-  // bottom-of-page readouts
-  hotendNow.textContent = `Current: ${hotCurrent.toFixed(1)}°C`;
-  bedNow.textContent    = `Current: ${bedCurrent.toFixed(1)}°C`;
-
-  // top bar values
-  document.getElementById('topHotend').textContent =
-    hotTarget != null ? `${hotCurrent.toFixed(1)}°C / ${hotTarget.toFixed(1)}°C`
-                      : `${hotCurrent.toFixed(1)}°C`;
-  document.getElementById('topBed').textContent =
-    bedTarget != null ? `${bedCurrent.toFixed(1)}°C / ${bedTarget.toFixed(1)}°C`
-                      : `${bedCurrent.toFixed(1)}°C`;
-
-  // set pill states (color + pulse)
-  setPillState(document.getElementById('topHotendPill'), tempState(hotCurrent, hotTarget));
-  setPillState(document.getElementById('topBedPill'),    tempState(bedCurrent, bedTarget));
-
-  // optional: keep last temps if you later want rate-based animation
-  lastTemps.hot = hotCurrent;
-  lastTemps.bed = bedCurrent;
-}
-
-  // Hide telemetry lines from logs/captures
-  if (isTelemetryLine(line)) continue;
-
-  // Mesh parse (row/point formats) – pass a small window of lines if you want;
-  // here we try on the single line for light touch:
-  const parsed = tryParseMeshFromLines([line]);
-  if (parsed) {
-    const mesh = parsed.reverse();
-    setActivity('Mesh parsed', 'ok');
-    saveMeshLS(mesh);
-    renderMeshInputs(mesh);
-    renderSuggestions(mesh);
-    updateLastUpdated();
-  }
-
-  // End capture on ok handled above; resume polling there if you want:
-  // (We’ll also resume in the listeners after a capture command)
-
-  // PID status hints
-  if (/PID Autotune start/i.test(line))    setActivity('PID tuning…', 'warn');
-  if (/PID Autotune finished/i.test(line)) setActivity('PID tuning complete', 'ok');
-  if (/PID Autotune failed/i.test(line))   setActivity('PID tuning failed', 'bad');
-
-  // Finally, log any remaining line
-  logMsg(line);
-}
-
+        // 5) Handle 'ok' (always update clock; if capturing, also resume temp polling)
+        if (/^ok\b/i.test(line)) {
+          updateLastUpdated();
+          if (captureMode) {
+            captureMode = null;
+            startTempPolling();
+          }
+        }
+      }
     }
   } catch (err) {
     logMsg('⚠️ Read error: ' + err.message);
