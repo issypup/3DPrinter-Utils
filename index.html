@@ -426,11 +426,7 @@ const screwAffects = {
 };
 
 // --- Temperature line matcher & polling helpers ---
-const TELEMETRY_REGEX =
-  /(?:\bT\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|
-   (?:\bB\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|
-   (?:\b@:\s*\d+)|
-   (?:\bB@:\s*\d+)/ix;
+const TELEMETRY_REGEX = /\b(?:T\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?|B\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?|@:\s*\d+|B@:\s*\d+)\b/i;
 function isTelemetryLine(s) { return TELEMETRY_REGEX.test(s); }
 
 function startTempPolling() {
