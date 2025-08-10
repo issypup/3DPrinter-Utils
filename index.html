@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>3D Printer Utils test</title>
+<title>3D Printer Utils/title>
 <style>
   :root { --bar-h: 42px; }
   body {
@@ -426,8 +426,12 @@ const screwAffects = {
 };
 
 // --- Temperature line matcher & polling helpers ---
-const TEMP_REGEX = /\bT\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?[^A-Za-z0-9\n\r]*B\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?/i;
-function isTempLine(s) { return TEMP_REGEX.test(s); }
+const TELEMETRY_REGEX =
+  /(?:\bT\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|
+   (?:\bB\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|
+   (?:\b@:\s*\d+)|
+   (?:\bB@:\s*\d+)/ix;
+function isTelemetryLine(s) { return TELEMETRY_REGEX.test(s); }
 
 function startTempPolling() {
   if (!tempTimer) tempTimer = setInterval(() => sendCmd('M105', true), 3000);
@@ -495,11 +499,8 @@ function logMsg(msg) {
   const lines = String(msg).split(/\r?\n/);
   for (const line of lines) {
     if (!line) continue;
+    if (isTelemetryLine(line)) continue; // hide temps/power from main log and captures
 
-    // Hide temperature lines from the main log and captures
-    if (isTempLine(line)) continue;
-
-    // Mirror to capture boxes when active
     if (captureMode === 'config') {
       configBox.value += line + '\n';
       configBox.scrollTop = configBox.scrollHeight;
@@ -507,11 +508,10 @@ function logMsg(msg) {
       diagBox.value += line + '\n';
       diagBox.scrollTop = diagBox.scrollHeight;
     }
-
-    // Write to main Printer Log
     _logBase(line);
   }
 }
+
 
 
 function updateLastUpdated() { lastUpdated.textContent = 'Last updated: ' + new Date().toLocaleTimeString(); }
@@ -660,46 +660,57 @@ async function disconnectPrinter() {
     logMsg('🔌 Disconnected.');
   }
 }
+
+let rxBuffer = ''; // add near your serial state
+
 async function readLoop() {
   reading = true;
   try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      if (!value) continue;
+      if (value == null) continue;
 
-      // Update temp labels (don’t log these lines)
-      const tm = value.match(/T\d?:\s*([-+]?\d*\.?\d+).*?B\d?:\s*([-+]?\d*\.?\d+)/i);
-      if (tm) {
-        hotendNow.textContent = `Current: ${parseFloat(tm[1]).toFixed(1)}°C`;
-        bedNow.textContent    = `Current: ${parseFloat(tm[2]).toFixed(1)}°C`;
+      // Accumulate and split into complete lines; keep remainder in rxBuffer
+      rxBuffer += value;
+      const parts = rxBuffer.split(/\r?\n/);
+      rxBuffer = parts.pop(); // remainder (incomplete line)
+
+      for (const line of parts) {
+        if (!line) continue;
+
+        // Update temp labels if present (support T0:/B0: too)
+        const tm = line.match(/T\d?:\s*([-+]?\d*\.?\d+).*?B\d?:\s*([-+]?\d*\.?\d+)/i);
+        if (tm) {
+          hotendNow.textContent = `Current: ${parseFloat(tm[1]).toFixed(1)}°C`;
+          bedNow.textContent    = `Current: ${parseFloat(tm[2]).toFixed(1)}°C`;
+        }
+
+        // Log non-telemetry lines only (readable, no spam)
+        if (!isTelemetryLine(line)) logMsg(line);
+
+        // Mesh parse (row or point formats)
+        const parsed = tryParseMeshFromLines([line]);
+        if (parsed) {
+          const mesh = parsed.reverse(); // bottom-left → top-left
+          setActivity('Mesh parsed', 'ok');
+          saveMeshLS(mesh);
+          renderMeshInputs(mesh);
+          renderSuggestions(mesh);
+          updateLastUpdated();
+        }
+
+        // End capture on 'ok' (single line) and resume temp polling
+        if (captureMode && /^ok\b/i.test(line)) {
+          captureMode = null;
+          startTempPolling();
+        }
+
+        // PID status updates
+        if (/PID Autotune start/i.test(line))    setActivity('PID tuning…', 'warn');
+        if (/PID Autotune finished/i.test(line)) setActivity('PID tuning complete', 'ok');
+        if (/PID Autotune failed/i.test(line))   setActivity('PID tuning failed', 'bad');
       }
-
-      // Log everything else (logMsg() filters temp lines)
-      logMsg(value.trimEnd());
-
-      // Mesh parse (row or point formats)
-      const chunkLines = value.split(/\r?\n/);
-      const parsed = tryParseMeshFromLines(chunkLines);
-      if (parsed) {
-        const mesh = parsed.reverse(); // bottom-left → top-left
-        setActivity('Mesh parsed', 'ok');
-        saveMeshLS(mesh);
-        renderMeshInputs(mesh);
-        renderSuggestions(mesh);
-        updateLastUpdated();
-      }
-
-      // End capture on 'ok' and resume temp polling
-      if (captureMode && /(^|\n)ok\b/i.test(value)) {
-        captureMode = null;
-        startTempPolling();
-      }
-
-      // PID status updates
-      if (/PID Autotune start/i.test(value))    setActivity('PID tuning…', 'warn');
-      if (/PID Autotune finished/i.test(value)) setActivity('PID tuning complete', 'ok');
-      if (/PID Autotune failed/i.test(value))   setActivity('PID tuning failed', 'bad');
     }
   } catch (err) {
     logMsg('⚠️ Read error: ' + err.message);
