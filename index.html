@@ -29,10 +29,12 @@
     gap: 12px; padding: 0 12px; z-index: 9999; font-weight: 600;
   }
  #statusBar .pill { 
+  transition: background-color 200ms ease, filter 200ms ease, transform 200ms ease;
   display: inline-flex; align-items: center; gap: 6px;
   padding: 4px 10px; border-radius: 999px; background: #444; 
   font-weight: 600;
 }
+
 /* colors */
 .pill.idle   { background:#555; }         /* no target / idle */
 .pill.ready  { background:#2ecc71; }  /* green, stable */
@@ -453,7 +455,9 @@ const screwAffects = {
 // --- Temperature line matcher & polling helpers ---
 
 const topHotendPill = document.getElementById('topHotendPill');
+const topHotendText = document.getElementById('topHotend');
 const topBedPill    = document.getElementById('topBedPill');
+const topBedText    = document.getElementById('topBed');
 
 const TEMP_LINE = /T\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?.*?B\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
 
@@ -461,23 +465,14 @@ const TELEMETRY_REGEX = /(?:\bT\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)
 function isTelemetryLine(s) { return TELEMETRY_REGEX.test(s); }
 
 // Simple helpers for the top-bar pills
-function setTempPill(pillEl, curr, target) {
-  const valueEl = pillEl.querySelector('span'); // inner number span
-  valueEl.textContent = (target != null && !isNaN(target))
+function setTempPill(pillEl, textEl, curr, target) {
+  // update text (inner span)
+  textEl.textContent = (target != null && !isNaN(target))
     ? `${curr.toFixed(1)}°C / ${Math.round(target)}°`
     : `${curr.toFixed(1)}°C`;
 
-  // decide state
-  if (target == null || isNaN(target)) {
-    pillEl.classList.remove('ready','heating','cooling','pulse');
-    pillEl.classList.add('idle');
-    return;
-  }
-  const eps = 0.5;
-  let state = 'ready';
-  if (curr < target - eps) state = 'heating';
-  else if (curr > target + eps) state = 'cooling';
-  setPillState(pillEl, state);
+  // update color/pulse (outer pill)
+  setPillState(pillEl, stateFromTemps(curr, target));
 }
 
 function startTempPolling() {
@@ -499,10 +494,18 @@ function tempState(current, target, tolerance = 0.5) {
   return diff > 0 ? 'heating' : 'cooling';
 }
 
+function stateFromTemps(curr, target, eps = 0.5) {
+  if (target == null || isNaN(target)) return 'idle';
+  if (curr < target - eps) return 'heating';
+  if (curr > target + eps) return 'cooling';
+  return 'ready';
+}
+
 // Apply classes to a pill (and pulse only when heating/cooling)
 function setPillState(pillEl, state) {
   pillEl.classList.remove('idle','ready','heating','cooling','pulse');
-  pillEl.classList.add(state, 'pulse'); // pulse in all non-idle states
+  pillEl.classList.add(state);
+  if (state === 'heating' || state === 'cooling') pillEl.classList.add('pulse');
 }
 
 // Track previous temps to detect direction if you ever want trend-based logic
@@ -831,11 +834,11 @@ async function readLoop() {
 
 if (Number.isFinite(tCur)) {
   hotendNow.textContent = `Current: ${tCur.toFixed(1)}°C`;
-  setTempPill(topHotendPill, tCur, tTar);
+  setTempPill(topHotendPill, topHotendText, tCur, tTar);
 }
 if (Number.isFinite(bCur)) {
   bedNow.textContent = `Current: ${bCur.toFixed(1)}°C`;
-  setTempPill(topBedPill, bCur, bTar);
+  setTempPill(topBedPill, topBedText, bCur, bTar);
 }
         }
 
