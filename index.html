@@ -28,7 +28,29 @@
     background: #222; color: #fff; display: flex; align-items: center;
     gap: 12px; padding: 0 12px; z-index: 9999; font-weight: 600;
   }
-  #statusBar .pill { padding: 4px 10px; border-radius: 999px; background: #444; }
+ #statusBar .pill { 
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px; background: #444; 
+  font-weight: 600;
+}
+/* colors */
+.pill.idle   { background:#555; }         /* no target / idle */
+.pill.ready  { background:#27ae60; }      /* at target */
+.pill.heating{ background:#f39c12; }      /* rising to target */
+.pill.cooling{ background:#3498db; }      /* falling to target */
+
+/* pulse effect (used for heating/cooling) */
+.pulse { animation: pillPulse 1.2s ease-in-out infinite; }
+
+@keyframes pillPulse {
+  0%   { transform: none;    filter: brightness(100%); }
+  50%  { transform: scale(1.04); filter: brightness(108%); }
+  100% { transform: none;    filter: brightness(100%); }
+}
+
+/* keep hotend/bed pills nicely spaced */
+#temps { display: inline-flex; gap: 8px; }
+
   #statusBar .ok    { background: #2a7; }
   #statusBar .warn  { background: #f39c12; }
   #statusBar .bad   { background: #c0392b; }
@@ -79,6 +101,10 @@
   <span id="connBadge" class="pill bad">Disconnected</span>
   <span id="activityBadge" class="pill">Idle</span>
   <span id="lastUpdated" class="pill">Last updated: —</span>
+<span id="temps">
+  <span class="pill idle" id="topHotendPill">Hotend: <span id="topHotend">--°C</span></span>
+  <span class="pill idle" id="topBedPill">Bed: <span id="topBed">--°C</span></span>
+</span>
 </div>
 
 <h1>3D Printer Utils</h1>
@@ -439,6 +465,25 @@ function stopTempPolling() {
 /* =============================
    UI helpers & logging
 ============================= */
+
+// Decide state from current vs target
+function tempState(current, target, tolerance = 0.5) {
+  if (target == null || isNaN(target)) return 'idle';
+  const diff = target - current;
+  if (Math.abs(diff) <= tolerance) return 'ready';
+  return diff > 0 ? 'heating' : 'cooling';
+}
+
+// Apply classes to a pill (and pulse only when heating/cooling)
+function setPillState(pillEl, state) {
+  pillEl.classList.remove('idle','ready','heating','cooling','pulse');
+  pillEl.classList.add(state);
+  if (state === 'heating' || state === 'cooling') pillEl.classList.add('pulse');
+}
+
+// Track previous temps to detect direction if you ever want trend-based logic
+const lastTemps = { hot: null, bed: null };
+
 function setActivity(text, cls='') {
   activityBadge.textContent = text;
   activityBadge.className = 'pill ' + cls;
@@ -631,6 +676,7 @@ async function connectPrinter() {
     reader = tds.readable.getReader();
 
     setConnected(true);
+    updateLastUpdated();
     setActivity('Connected', 'ok');
     logMsg('✅ Connected.');
     if (!reading) readLoop();
@@ -650,6 +696,7 @@ async function disconnectPrinter() {
   } catch (e) {
     console.warn('Disconnect error:', e);
   } finally {
+    updateLastUpdated();
     _rejectAllOk(new Error('Disconnected'));
     port = reader = writer = textDecoder = null;
     setConnected(false);
@@ -719,6 +766,18 @@ for (let line of parts) {
   // Normalize whitespace
   line = line.replace(/\r/g, '');
 
+if (captureMode && /^ok\b/i.test(line)) {
+  captureMode = null;
+  startTempPolling();
+  // 🔸 update the clock on successful completion
+  updateLastUpdated();
+}
+
+// (Also update on any ok, not just while capturing)
+if (/^ok\b/i.test(line)) {
+  updateLastUpdated();
+}
+
 // Hide 'busy' spam but keep a status
 if (/^echo:busy:/i.test(line)) {
   setActivity('Printer busy…', 'warn');
@@ -748,11 +807,61 @@ if (/^ok\b/i.test(line)) {
   }
 
   // Update temps if present
-  const tm = line.match(/T\d?:\s*([-+]?\d*\.?\d+).*?B\d?:\s*([-+]?\d*\.?\d+)/i);
-  if (tm) {
-    hotendNow.textContent = `Current: ${parseFloat(tm[1]).toFixed(1)}°C`;
-    bedNow.textContent    = `Current: ${parseFloat(tm[2]).toFixed(1)}°C`;
-  }
+  // Match temperature report lines from M105 (Hotend + Bed temps)
+// Captures:
+//   [1] Hotend current temp
+//   [2] Hotend target temp (optional)
+//   [3] Bed current temp
+//   [4] Bed target temp (optional)
+//
+// Pattern details:
+//   T\d?:       // Literal "T" followed by optional single digit (T, T0, T1), then a colon
+//   \s*         // Optional spaces
+//   ([-+]?\d*\.?\d+) // Group 1: optional +/- sign, digits, optional decimal, more digits (current hotend temp)
+//   (?:\s*\/\s*([-+]?\d*\.?\d+))? // Optional group 2: slash + optional spaces + number (target hotend temp)
+//   .*?         // Non-greedy match of any characters until bed temp
+//   B\d?:       // Literal "B" followed by optional digit (B, B0, etc.), then a colon
+//   \s*         // Optional spaces
+//   ([-+]?\d*\.?\d+) // Group 3: current bed temp
+//   (?:\s*\/\s*([-+]?\d*\.?\d+))? // Optional group 4: target bed temp
+//
+// Flags: i = case-insensitive
+
+const tempRegex = new RegExp(
+  String.raw`T\d?:\s*([-+]?\d*\.?\d+)` + //Hotend
+  String.raw`(?:\s*\/\s*([-+]?\d*\.?\d+))?.*?` +
+  String.raw`B\d?:\s*([-+]?\d*\.?\d+)` + //Bed
+  String.raw`(?:\s*\/\s*([-+]?\d*\.?\d+))?`,
+  'i'
+);
+const tm = line.match(tempRegex);
+
+if (tm) {
+  const hotCurrent = parseFloat(tm[1]);
+  const hotTarget  = tm[2] ? parseFloat(tm[2]) : null;
+  const bedCurrent = parseFloat(tm[3]);
+  const bedTarget  = tm[4] ? parseFloat(tm[4]) : null;
+
+  // bottom-of-page readouts
+  hotendNow.textContent = `Current: ${hotCurrent.toFixed(1)}°C`;
+  bedNow.textContent    = `Current: ${bedCurrent.toFixed(1)}°C`;
+
+  // top bar values
+  document.getElementById('topHotend').textContent =
+    hotTarget != null ? `${hotCurrent.toFixed(1)}°C / ${hotTarget.toFixed(1)}°C`
+                      : `${hotCurrent.toFixed(1)}°C`;
+  document.getElementById('topBed').textContent =
+    bedTarget != null ? `${bedCurrent.toFixed(1)}°C / ${bedTarget.toFixed(1)}°C`
+                      : `${bedCurrent.toFixed(1)}°C`;
+
+  // set pill states (color + pulse)
+  setPillState(document.getElementById('topHotendPill'), tempState(hotCurrent, hotTarget));
+  setPillState(document.getElementById('topBedPill'),    tempState(bedCurrent, bedTarget));
+
+  // optional: keep last temps if you later want rate-based animation
+  lastTemps.hot = hotCurrent;
+  lastTemps.bed = bedCurrent;
+}
 
   // Hide telemetry lines from logs/captures
   if (isTelemetryLine(line)) continue;
@@ -793,11 +902,15 @@ async function sendCmd(cmd, quiet = false) {
   if (!writer) { logMsg('⚠️ Not connected.'); return; }
   setLastCmd(cmd);
   setActivity('Sending…', 'warn');
+
   await writer.write(new TextEncoder().encode(cmd + '\n'));
   if (!quiet) logMsg('>> ' + cmd);
+
+  // 🔸 update the clock right after we issue the command
+  updateLastUpdated();
+
   setActivity('Waiting…', 'warn');
 }
-
 
 /* =============================
    PID, Leveling & other actions
