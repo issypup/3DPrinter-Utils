@@ -650,6 +650,7 @@ async function disconnectPrinter() {
   } catch (e) {
     console.warn('Disconnect error:', e);
   } finally {
+    _rejectAllOk(new Error('Disconnected'));
     port = reader = writer = textDecoder = null;
     setConnected(false);
     setActivity('Idle');
@@ -665,18 +666,37 @@ let waitingResolvers = [];       // array of resolve() for waitForOk()
 let isBusyProcessing = false;    // set when "busy: processing" seen
 let lastOkAt = 0;
 
+// ---- OK waiters (no-timeout) ----
+let pendingOk = []; // queue of resolvers waiting for 'ok'
+function _resolveNextOk() {
+  const waiter = pendingOk.shift();
+  if (waiter) waiter.resolve();
+}
+function _rejectAllOk(err) {
+  const all = pendingOk.splice(0);
+  for (const w of all) w.reject(err || new Error('Aborted'));
+}
+
 function resolveAllWaiting() {
   lastOkAt = Date.now();
   waitingResolvers.splice(0).forEach(fn => { try { fn(); } catch {} });
 }
 
-function waitForOk(timeoutMs = 10000) {
+// Wait forever until the next 'ok' arrives.
+// Aborts only if: disconnect happens or cancelSend is pressed.
+function waitForOk() {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => {
-      // time out, but still let future waits work
-      reject(new Error('Timeout waiting for ok'));
-    }, timeoutMs);
-    waitingResolvers.push(() => { clearTimeout(t); resolve(); });
+    // If already disconnected, fail fast
+    if (!port || !writer) {
+      reject(new Error('Disconnected'));
+      return;
+    }
+    // If user has requested cancel, also abort
+    if (cancelStream) {
+      reject(new Error('Cancelled'));
+      return;
+    }
+    pendingOk.push({ resolve, reject });
   });
 }
 
@@ -699,6 +719,12 @@ for (let line of parts) {
   // Normalize whitespace
   line = line.replace(/\r/g, '');
 
+// Hide 'busy' spam but keep a status
+if (/^echo:busy:/i.test(line)) {
+  setActivity('Printer busy…', 'warn');
+  continue; // don't log this line
+}
+
   // Detect & track "busy" (don’t resolve ok while busy)
   if (/^\s*echo:busy: processing/i.test(line)) {
     isBusyProcessing = true;
@@ -706,13 +732,13 @@ for (let line of parts) {
     // continue;
   }
 
-  // Resolve waiters on clean ok (only when not busy)
-  if (/^\s*ok\b/i.test(line)) {
-    isBusyProcessing = false;
-    resolveAllWaiting();
-    // You can skip logging plain 'ok' if you prefer:
-    // continue;
-  }
+// Resolve 'ok' waiters
+if (/^ok\b/i.test(line)) {
+  _resolveNextOk();
+  // don't need to log bare ok unless you want:
+  // logMsg(line);
+  continue;
+}
 
   // Guard against split 'ok' like "o" or "k" landing as separate lines
   if (/^\s*[ok]\s*$/i.test(line)) {
@@ -828,45 +854,48 @@ function jog(axis, dir) {
 }
 async function streamGcode(file) {
   if (!writer) { alert('Not connected.'); return; }
+
   cancelStream = false;
-  sendStatus.textContent = 'Sending…';
+  sendStatus.textContent = 'Homing…';
   cancelSend.disabled = true;
 
+  // 1) Home all axes (no timeout; will wait for ok)
+  logMsg('🏠 Homing all axes (G28)…');
+  await sendCmd('G28');
+  await waitForOk().catch(err => { throw err; });
+
+  // 2) Read file lines
   const text = await file.text();
-  // Keep the line exactly as-is except strip comments after ';'
-  const rawLines = text.split(/\r?\n/);
-  const lines = rawLines
-    .map(l => l.replace(/;.*/, '').trim())
+  const lines = text
+    .split(/\r?\n/)
+    .map(l => l.replace(/;.*/,'').trim())
     .filter(Boolean);
 
   let sent = 0;
   cancelSend.disabled = false;
+  sendStatus.textContent = 'Sending…';
 
   for (const line of lines) {
     if (cancelStream) break;
 
-    // Send the line
     await sendCmd(line);
-
-    // Wait for an 'ok' (ignore 'busy: processing' spam)
-    try {
-      await waitForOk(20000); // 20s safety; adjust if needed
-    } catch (e) {
-      logMsg(`⚠️ No ok for: ${line} (${e.message})`);
-      // You can choose to break, or continue:
-      break;
-    }
+    // Wait forever for ok, unless cancel/disconnect happens
+    await waitForOk().catch(err => { throw err; });
 
     sent++;
     const pct = Math.round(sent / lines.length * 100);
     sendProgress.style.width = pct + '%';
     sendStatus.textContent = `Sent ${sent}/${lines.length} (${pct}%)`;
 
-    // Optional tiny delay to keep UI responsive
-    await new Promise(r => setTimeout(r, 0));
+    // Small pacing so we don’t flood slow boards
+    await new Promise(r => setTimeout(r, 10));
   }
 
-  sendStatus.textContent = cancelStream ? 'Cancelled' : 'Done';
+  if (cancelStream) {
+    sendStatus.textContent = 'Cancelled';
+  } else {
+    sendStatus.textContent = 'Done';
+  }
   cancelSend.disabled = true;
 }
 
@@ -1002,10 +1031,17 @@ gcodeFile.addEventListener('change', () => {
 sendGcode.addEventListener('click',  () => { if (gcodeFile.files[0]) streamGcode(gcodeFile.files[0]); });
 cancelSend.addEventListener('click', async () => {
   cancelStream = true;
-  await sendCmd('M104 S0'); // Hotend off
-  await sendCmd('M140 S0'); // Bed off
-  await sendCmd('G90');     // Absolute positioning
-  await sendCmd('G1 X0 Y0 Z10 F3000'); // Park head
+  _rejectAllOk(new Error('Cancelled')); // abort any waits right now
+
+  // Stop heaters & park head
+  await sendCmd('M104 S0');
+  await waitForOk().catch(()=>{});
+  await sendCmd('M140 S0');
+  await waitForOk().catch(()=>{});
+  await sendCmd('G90');
+  await waitForOk().catch(()=>{});
+  await sendCmd('G1 X0 Y0 Z10 F3000');
+  await waitForOk().catch(()=>{});
 });
 
 /* =============================
