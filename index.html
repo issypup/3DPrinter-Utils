@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>3D Printer Utils</title>
+<title>3D Printer Utils/title>
 <style>
   :root { --bar-h: 42px; }
   body {
@@ -426,7 +426,7 @@ const screwAffects = {
 };
 
 // --- Temperature line matcher & polling helpers ---
-const TEMP_REGEX = /T:\s*[0-9.+-]+.*?B:\s*[0-9.+-]+/i;
+const TEMP_REGEX = /\bT\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?[^A-Za-z0-9\n\r]*B\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?/i;
 function isTempLine(s) { return TEMP_REGEX.test(s); }
 
 function startTempPolling() {
@@ -492,11 +492,12 @@ function _logBase(msg) {
   printerLog.scrollTop = printerLog.scrollHeight;
 }
 function logMsg(msg) {
-  // Split chunk into lines and filter temps before logging
   const lines = String(msg).split(/\r?\n/);
   for (const line of lines) {
     if (!line) continue;
-    if (isTempLine(line)) continue; // hide M105/temp lines from main log and captures
+
+    // Hide temperature lines from the main log and captures
+    if (isTempLine(line)) continue;
 
     // Mirror to capture boxes when active
     if (captureMode === 'config') {
@@ -508,10 +509,10 @@ function logMsg(msg) {
     }
 
     // Write to main Printer Log
-    if (!line.endsWith('\n')) _logBase(line);
-    else _logBase(line); // safe either way
+    _logBase(line);
   }
 }
+
 
 function updateLastUpdated() { lastUpdated.textContent = 'Last updated: ' + new Date().toLocaleTimeString(); }
 function setLastCmd(cmd) { lastCmd.textContent = 'Last Cmd: ' + cmd; }
@@ -667,21 +668,21 @@ async function readLoop() {
       if (done) break;
       if (!value) continue;
 
-      // update temps (without logging line)
-const t = value.match(/T:\s*([0-9.+-]+).*?B:\s*([0-9.+-]+)/i);
-if (t) { hotendNow.textContent = `Current: ${parseFloat(t[1]).toFixed(1)}°C`;
-         bedNow.textContent    = `Current: ${parseFloat(t[2]).toFixed(1)}°C`; }
+      // Update temp labels (don’t log these lines)
+      const tm = value.match(/T\d?:\s*([-+]?\d*\.?\d+).*?B\d?:\s*([-+]?\d*\.?\d+)/i);
+      if (tm) {
+        hotendNow.textContent = `Current: ${parseFloat(tm[1]).toFixed(1)}°C`;
+        bedNow.textContent    = `Current: ${parseFloat(tm[2]).toFixed(1)}°C`;
+      }
 
-
-      // log non-temp lines (and mirror to capture if active)
+      // Log everything else (logMsg() filters temp lines)
       logMsg(value.trimEnd());
 
       // Mesh parse (row or point formats)
       const chunkLines = value.split(/\r?\n/);
       const parsed = tryParseMeshFromLines(chunkLines);
       if (parsed) {
-        // Many firmwares report bottom-left→top-left; reverse Y for top-left origin UI
-        const mesh = parsed.reverse();
+        const mesh = parsed.reverse(); // bottom-left → top-left
         setActivity('Mesh parsed', 'ok');
         saveMeshLS(mesh);
         renderMeshInputs(mesh);
@@ -690,12 +691,12 @@ if (t) { hotendNow.textContent = `Current: ${parseFloat(t[1]).toFixed(1)}°C`;
       }
 
       // End capture on 'ok' and resume temp polling
-if (captureMode && /(^|\n)ok\b/i.test(value)) {
-  captureMode = null;
-  startTempPolling();
-}
+      if (captureMode && /(^|\n)ok\b/i.test(value)) {
+        captureMode = null;
+        startTempPolling();
+      }
 
-      // PID status updates (optional visual)
+      // PID status updates
       if (/PID Autotune start/i.test(value))    setActivity('PID tuning…', 'warn');
       if (/PID Autotune finished/i.test(value)) setActivity('PID tuning complete', 'ok');
       if (/PID Autotune failed/i.test(value))   setActivity('PID tuning failed', 'bad');
@@ -706,6 +707,7 @@ if (captureMode && /(^|\n)ok\b/i.test(value)) {
     reading = false;
   }
 }
+
 async function sendCmd(cmd, quiet = false) {
   if (!writer) { logMsg('⚠️ Not connected.'); return; }
   setLastCmd(cmd);
