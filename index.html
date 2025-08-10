@@ -430,7 +430,7 @@ const TEMP_REGEX = /T:\s*[0-9.+-]+.*?B:\s*[0-9.+-]+/i;
 function isTempLine(s) { return TEMP_REGEX.test(s); }
 
 function startTempPolling() {
-  if (!tempTimer) tempTimer = setInterval(() => sendCmd('M105'), 3000);
+  if (!tempTimer) tempTimer = setInterval(() => sendCmd('M105', true), 3000);
 }
 function stopTempPolling() {
   if (tempTimer) { clearInterval(tempTimer); tempTimer = null; }
@@ -508,9 +508,11 @@ function logMsg(msg) {
     }
 
     // Write to main Printer Log
-    _logBase(line);
+    if (!line.endsWith('\n')) _logBase(line);
+    else _logBase(line); // safe either way
   }
 }
+
 function updateLastUpdated() { lastUpdated.textContent = 'Last updated: ' + new Date().toLocaleTimeString(); }
 function setLastCmd(cmd) { lastCmd.textContent = 'Last Cmd: ' + cmd; }
 
@@ -666,11 +668,10 @@ async function readLoop() {
       if (!value) continue;
 
       // update temps (without logging line)
-      const t = value.match(/T:\s*([0-9.+-]+).*?B:\s*([0-9.+-]+)/i);
-      if (t) {
-        hotendNow.textContent = `Current: ${parseFloat(t[1]).toFixed(1)}°C`;
-        bedNow.textContent    = `Current: ${parseFloat(t[2]).toFixed(1)}°C`;
-      }
+const t = value.match(/T:\s*([0-9.+-]+).*?B:\s*([0-9.+-]+)/i);
+if (t) { hotendNow.textContent = `Current: ${parseFloat(t[1]).toFixed(1)}°C`;
+         bedNow.textContent    = `Current: ${parseFloat(t[2]).toFixed(1)}°C`; }
+
 
       // log non-temp lines (and mirror to capture if active)
       logMsg(value.trimEnd());
@@ -689,10 +690,10 @@ async function readLoop() {
       }
 
       // End capture on 'ok' and resume temp polling
-      if (captureMode && /(^|\n)ok\b/i.test(value)) {
-        captureMode = null;
-        startTempPolling();
-      }
+if (captureMode && /(^|\n)ok\b/i.test(value)) {
+  captureMode = null;
+  startTempPolling();
+}
 
       // PID status updates (optional visual)
       if (/PID Autotune start/i.test(value))    setActivity('PID tuning…', 'warn');
@@ -705,14 +706,15 @@ async function readLoop() {
     reading = false;
   }
 }
-async function sendCmd(cmd) {
+async function sendCmd(cmd, quiet = false) {
   if (!writer) { logMsg('⚠️ Not connected.'); return; }
   setLastCmd(cmd);
   setActivity('Sending…', 'warn');
   await writer.write(new TextEncoder().encode(cmd + '\n'));
-  logMsg('>> ' + cmd);
+  if (!quiet) logMsg('>> ' + cmd);
   setActivity('Waiting…', 'warn');
 }
+
 
 /* =============================
    PID, Leveling & other actions
