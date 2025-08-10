@@ -455,8 +455,8 @@ const screwAffects = {
 // --- Temperature line matcher & polling helpers ---
 
 const topHotendPill = document.getElementById('topHotendPill');
-const topHotendText = document.getElementById('topHotend');
 const topBedPill    = document.getElementById('topBedPill');
+const topHotendText = document.getElementById('topHotend');
 const topBedText    = document.getElementById('topBed');
 
 const TEMP_LINE = /T\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?.*?B\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
@@ -466,15 +466,17 @@ function isTelemetryLine(s) { return TELEMETRY_REGEX.test(s); }
 
 // Simple helpers for the top-bar pills
 function setTempPill(pillEl, textEl, curr, target) {
-  // update text (inner span)
-  textEl.textContent = (target != null && !isNaN(target))
+  // text
+  textEl.textContent = (target !== undefined && target !== null && !Number.isNaN(target))
     ? `${curr.toFixed(1)}°C / ${Math.round(target)}°`
     : `${curr.toFixed(1)}°C`;
 
-  // update color/pulse (outer pill)
-  setPillState(pillEl, stateFromTemps(curr, target));
+  // state
+  const state = tempState(curr, target); // 'idle' | 'ready' | 'heating' | 'cooling'
+  pillEl.classList.remove('idle','ready','heating','cooling','pulse');
+  pillEl.classList.add(state);
+  if (state === 'heating' || state === 'cooling') pillEl.classList.add('pulse');
 }
-
 function startTempPolling() {
   if (!tempTimer) tempTimer = setInterval(() => sendCmd('M105', true), 3000);
 }
@@ -488,7 +490,7 @@ function stopTempPolling() {
 
 // Decide state from current vs target
 function tempState(current, target, tolerance = 0.5) {
-  if (target == null || isNaN(target)) return 'idle';
+  if (target == null || Number.isNaN(target)) return 'idle';
   const diff = target - current;
   if (Math.abs(diff) <= tolerance) return 'ready';
   return diff > 0 ? 'heating' : 'cooling';
@@ -827,19 +829,18 @@ async function readLoop() {
         // 1) TEMP UPDATE FIRST (so UI always updates even if we hide the line)
         const tm = line.match(TEMP_LINE);
         if (tm) {
-          const tCur = parseFloat(tm[1]);
-          const tTar = tm[2] !== undefined ? parseFloat(tm[2]) : null;
-          const bCur = parseFloat(tm[3]);
-          const bTar = tm[4] !== undefined ? parseFloat(tm[4]) : null;
-
-if (Number.isFinite(tCur)) {
-  hotendNow.textContent = `Current: ${tCur.toFixed(1)}°C`;
-  setTempPill(topHotendPill, topHotendText, tCur, tTar);
-}
-if (Number.isFinite(bCur)) {
-  bedNow.textContent = `Current: ${bCur.toFixed(1)}°C`;
-  setTempPill(topBedPill, topBedText, bCur, bTar);
-}
+  const tCur = parseFloat(tm[1]);
+  const tTar = tm[2] !== undefined ? parseFloat(tm[2]) : null;
+  const bCur = parseFloat(tm[3]);
+  const bTar = tm[4] !== undefined ? parseFloat(tm[4]) : null;
+  if (Number.isFinite(tCur)) {
+    hotendNow.textContent = `Current: ${tCur.toFixed(1)}°C`;
+    setTempPill(topHotendPill, topHotendText, tCur, tTar);
+  }
+  if (Number.isFinite(bCur)) {
+    bedNow.textContent = `Current: ${bCur.toFixed(1)}°C`;
+    setTempPill(topBedPill, topBedText, bCur, bTar);
+  }
         }
 
         // 2) Hide telemetry spam from the main log/capture
