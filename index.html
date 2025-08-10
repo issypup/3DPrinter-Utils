@@ -483,7 +483,6 @@ function setConnected(connected) {
   sendGcode.disabled = !connected || !gcodeFile.files.length;
   cancelSend.disabled= true;
 
-  // Temp polling via helpers
   if (connected) startTempPolling();
   else stopTempPolling();
 }
@@ -493,15 +492,13 @@ function _logBase(msg) {
   printerLog.scrollTop = printerLog.scrollHeight;
 }
 function logMsg(msg) {
-  // Split incoming chunk into lines, so we can filter temps cleanly
+  // Split chunk into lines and filter temps before logging
   const lines = String(msg).split(/\r?\n/);
   for (const line of lines) {
     if (!line) continue;
+    if (isTempLine(line)) continue; // hide M105/temp lines from main log and captures
 
-    // Skip M105-style temperature lines from the main log (and from capture boxes)
-    if (isTempLine(line)) continue;
-
-    // Mirror to capture boxes, when active
+    // Mirror to capture boxes when active
     if (captureMode === 'config') {
       configBox.value += line + '\n';
       configBox.scrollTop = configBox.scrollHeight;
@@ -510,11 +507,10 @@ function logMsg(msg) {
       diagBox.scrollTop = diagBox.scrollHeight;
     }
 
-    // Write to the main Printer Log
+    // Write to main Printer Log
     _logBase(line);
   }
 }
-
 function updateLastUpdated() { lastUpdated.textContent = 'Last updated: ' + new Date().toLocaleTimeString(); }
 function setLastCmd(cmd) { lastCmd.textContent = 'Last Cmd: ' + cmd; }
 
@@ -631,7 +627,7 @@ async function connectPrinter() {
     writer = port.writable.getWriter();
 
     const tds = new TextDecoderStream();
-    textDecoder = tds; // keep a ref
+    textDecoder = tds;
     port.readable.pipeTo(tds.writable);
     reader = tds.readable.getReader();
 
@@ -647,7 +643,7 @@ async function connectPrinter() {
 async function disconnectPrinter() {
   setActivity('Disconnecting…', 'warn');
   try {
-    if (tempTimer) { clearInterval(tempTimer); tempTimer = null; }
+    stopTempPolling();
     try { if (reader) { await reader.cancel(); reader.releaseLock(); } } catch(_) {}
     try { if (textDecoder && textDecoder.readable) { await textDecoder.readable.cancel?.(); } } catch(_) {}
     try { if (writer) writer.releaseLock(); } catch(_) {}
@@ -668,23 +664,19 @@ async function readLoop() {
       const { value, done } = await reader.read();
       if (done) break;
       if (!value) continue;
-      logMsg(value.trimEnd());
 
-      // PID status updates
-      if (/PID Autotune start/i.test(value))    setActivity('PID tuning…', 'warn');
-      if (/PID Autotune finished/i.test(value)) setActivity('PID tuning complete', 'ok');
-      if (/PID Autotune failed/i.test(value))   setActivity('PID tuning failed', 'bad');
-
-      // Update temps if M105-like line
+      // update temps (without logging line)
       const t = value.match(/T:\s*([0-9.+-]+).*?B:\s*([0-9.+-]+)/i);
       if (t) {
         hotendNow.textContent = `Current: ${parseFloat(t[1]).toFixed(1)}°C`;
         bedNow.textContent    = `Current: ${parseFloat(t[2]).toFixed(1)}°C`;
       }
 
-      // Mesh parse (row or point formats)
-      cconst chunkLines = value.split(/\r?\n/);
+      // log non-temp lines (and mirror to capture if active)
+      logMsg(value.trimEnd());
 
+      // Mesh parse (row or point formats)
+      const chunkLines = value.split(/\r?\n/);
       const parsed = tryParseMeshFromLines(chunkLines);
       if (parsed) {
         // Many firmwares report bottom-left→top-left; reverse Y for top-left origin UI
@@ -696,11 +688,16 @@ async function readLoop() {
         updateLastUpdated();
       }
 
-      // If we were capturing a block (M503/M115/M122), end capture on 'ok' and resume temp polling
+      // End capture on 'ok' and resume temp polling
       if (captureMode && /(^|\n)ok\b/i.test(value)) {
         captureMode = null;
         startTempPolling();
       }
+
+      // PID status updates (optional visual)
+      if (/PID Autotune start/i.test(value))    setActivity('PID tuning…', 'warn');
+      if (/PID Autotune finished/i.test(value)) setActivity('PID tuning complete', 'ok');
+      if (/PID Autotune failed/i.test(value))   setActivity('PID tuning failed', 'bad');
     }
   } catch (err) {
     logMsg('⚠️ Read error: ' + err.message);
@@ -708,7 +705,6 @@ async function readLoop() {
     reading = false;
   }
 }
-
 async function sendCmd(cmd) {
   if (!writer) { logMsg('⚠️ Not connected.'); return; }
   setLastCmd(cmd);
@@ -920,18 +916,18 @@ tmcDiag.addEventListener('click', () => {
   stopTempPolling();
   sendCmd('M122');
 });
+
 // G-code Sender
 gcodeFile.addEventListener('change', () => {
   sendGcode.disabled = !gcodeFile.files.length || !writer;
 });
 sendGcode.addEventListener('click',  () => { if (gcodeFile.files[0]) streamGcode(gcodeFile.files[0]); });
 cancelSend.addEventListener('click', async () => {
-  cancelStream = true; // cancel flag
-  // Stop heaters & park head after cancel
+  cancelStream = true;
   await sendCmd('M104 S0'); // Hotend off
   await sendCmd('M140 S0'); // Bed off
   await sendCmd('G90');     // Absolute positioning
-  await sendCmd('G1 X0 Y0 Z10 F3000'); // Park head at X0 Y0 Z10
+  await sendCmd('G1 X0 Y0 Z10 F3000'); // Park head
 });
 
 /* =============================
