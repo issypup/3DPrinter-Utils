@@ -1,0 +1,920 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Printer Utils</title>
+<style>
+  :root { --bar-h: 42px; }
+  body {
+    font-family: sans-serif;
+    padding: calc(var(--bar-h) + 12px) 12px 56px;
+    background: #f4f4f4;
+  }
+  h1, h2 { margin-top: 1rem; }
+  table { border-collapse: collapse; margin-top: 0.5rem; }
+  td, th { border: 1px solid #ccc; padding: 0.4rem; text-align: center; }
+  input[type="number"], input[type="text"] { width: 100px; }
+  button { padding: 0.45rem 0.9rem; margin: 0.25rem 0.25rem 0.25rem 0; cursor: pointer; }
+  .tighten { background: #ffe0e0; }
+  .loosen  { background: #e0f0ff; }
+  .na      { background: #eaeaea; }
+  .gap { border: none; background: transparent; color: #888; font-weight: bold; }
+  #screwMap td { width: 110px; height: 60px; vertical-align: top; font-size: 0.85em; }
+
+  /* Status bar (always visible) */
+  #statusBar {
+    position: fixed; top: 0; left: 0; right: 0; height: var(--bar-h);
+    background: #222; color: #fff; display: flex; align-items: center;
+    gap: 12px; padding: 0 12px; z-index: 9999; font-weight: 600;
+  }
+  #statusBar .pill { padding: 4px 10px; border-radius: 999px; background: #444; }
+  #statusBar .ok    { background: #2a7; }
+  #statusBar .warn  { background: #f39c12; }
+  #statusBar .bad   { background: #c0392b; }
+
+  /* Tabs */
+  #tabButtons { display:flex; flex-wrap: wrap; gap:6px; margin: 8px 0 4px; }
+  #tabButtons button {
+    padding: 0.45rem 1rem; cursor: pointer; background: #eee; border: 1px solid #ccc;
+  }
+  #tabButtons button.active { background: #ddd; font-weight: bold; }
+  .tabContent { display: none; }
+  .tabContent.active { display: block; }
+
+  /* Controls rows inside tabs */
+  .tabControls { display:flex; flex-wrap:wrap; gap:8px; margin: 8px 0 8px; align-items: center; }
+
+  /* Printer log */
+  #printerLog {
+    background:#111; color:#ddd; border:1px solid #333;
+    height: 220px; overflow:auto; padding:8px; white-space:pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    border-radius: 6px;
+  }
+
+  /* Footer status */
+  #footerStatus {
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: #222; color: #fff; padding: 6px 10px;
+    display:flex; justify-content: space-between; font-size: 0.9em;
+  }
+
+  /* Small UI helpers */
+  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .col { display:flex; flex-direction:column; gap:6px; }
+  .box { background:#fff; border:1px solid #ddd; padding:8px; border-radius:6px; }
+  .label { font-weight:600; }
+  .muted { color:#666; font-size:0.9em; }
+  .widen { width: 220px; }
+  .progress { height: 10px; background:#ddd; border-radius:999px; overflow:hidden; width:280px; }
+  .progress > div { height:100%; background:#2a7; width:0%; }
+</style>
+</head>
+<body>
+
+<!-- Global Status Bar -->
+<div id="statusBar">
+  <span>PRINTER</span>
+  <span id="connBadge" class="pill bad">Disconnected</span>
+  <span id="activityBadge" class="pill">Idle</span>
+  <span id="lastUpdated" class="pill">Last updated: —</span>
+</div>
+
+<h1>Printer Utils</h1>
+
+<!-- Tabs -->
+<div id="tabButtons">
+  <button data-tab="connectTab" class="active">Connection & Log</button>
+  <button data-tab="levelTab">Leveling</button>
+  <button data-tab="pidTab">PID Tuning</button>
+  <button data-tab="tempTab">Temperature & Fan</button>
+  <button data-tab="moveTab">Movement & Axes</button>
+  <button data-tab="eepromTab">EEPROM / Config</button>
+  <button data-tab="maintTab">Maintenance</button>
+  <button data-tab="diagTab">Diagnostics</button>
+  <button data-tab="senderTab">G-code Sender</button>
+</div>
+
+<!-- TAB 1: Connection & Log -->
+<div id="connectTab" class="tabContent active">
+  <div class="tabControls" id="printerNavConnect">
+    <button id="connectBtn">Connect</button>
+    <button id="disconnectBtn" disabled>Disconnect</button>
+    <input id="manualCmd" placeholder="Manual G-code (e.g., M503)" />
+    <button id="sendCmdBtn" disabled>Send</button>
+    <button id="clearLogBtn" disabled>Clear Log</button>
+  </div>
+
+  <h2>Printer Log</h2>
+  <div id="printerLog" aria-live="polite"></div>
+</div>
+
+<!-- TAB 2: Leveling -->
+<div id="levelTab" class="tabContent">
+  <div class="tabControls" id="printerNavLevel">
+    <button id="readMeshBtn" disabled>Read Mesh (G29 T)</button>
+    <button id="reprobeBtn" disabled>Re-Probe (G28 → G29 → G29 T)</button>
+    <button type="button" id="exportManualBtn">Export Manual Mesh</button>
+    <button type="button" id="exportPrinterBtn">Export Last Printer Mesh</button>
+  </div>
+
+  <!-- Mesh Form (manual + populated from printer) -->
+  <form id="levelForm">
+    <h2>Enter / View Mesh Readings</h2>
+    <table><tbody id="meshInput"></tbody></table>
+    <button type="submit">Submit Round</button>
+    <button type="button" id="resetBtn">Reset Data</button>
+  </form>
+
+  <h2>Screw Suggestions</h2>
+  <table>
+    <thead>
+      <tr><th>Screw</th><th>Avg (mm)</th><th>Action</th><th>Turn Strength</th></tr>
+    </thead>
+    <tbody id="screwTable"></tbody>
+  </table>
+
+  <h2>Screw Layout Map</h2>
+  <table id="screwMap">
+    <tr>
+      <td id="A1"></td>
+      <td class="gap">GAP</td>
+      <td id="A2"></td>
+      <td id="A3"></td>
+    </tr>
+    <tr>
+      <td id="B1"></td>
+      <td id="B2"></td>
+      <td id="B3"></td>
+      <td id="B4"></td>
+    </tr>
+    <tr>
+      <td id="C1"></td>
+      <td id="C2"></td>
+      <td id="C3"></td>
+      <td id="C4"></td>
+    </tr>
+  </table>
+</div>
+
+<!-- TAB 3: PID Tuning -->
+<div id="pidTab" class="tabContent">
+  <div class="tabControls" id="printerNavPID">
+    <button id="bedPidBtn"    disabled>PID Bed (M303 E-1)</button>
+    <button id="hotendPidBtn" disabled>PID Nozzle (M303 E0)</button>
+  </div>
+  <p>Runs <code>M303</code> autotune with a temperature you choose. After it completes, send <code>M500</code> if your firmware needs it to save to EEPROM.</p>
+</div>
+
+<!-- TAB 4: Temperature & Fan -->
+<div id="tempTab" class="tabContent">
+  <div class="row box">
+    <div class="col">
+      <div class="label">Hotend</div>
+      <div>
+        <input type="number" id="hotendSet" value="200" min="0" max="300" /> °C
+        <button id="hotendApply" disabled>Set (M104)</button>
+        <button id="hotendOff"   disabled>Off (M104 S0)</button>
+      </div>
+      <div class="muted" id="hotendNow">Current: —</div>
+    </div>
+    <div class="col">
+      <div class="label">Bed</div>
+      <div>
+        <input type="number" id="bedSet" value="60" min="0" max="130" /> °C
+        <button id="bedApply" disabled>Set (M140)</button>
+        <button id="bedOff"   disabled>Off (M140 S0)</button>
+      </div>
+      <div class="muted" id="bedNow">Current: —</div>
+    </div>
+    <div class="col">
+      <div class="label">Part Cooling Fan</div>
+      <div>
+        <input type="range" id="fanSlider" min="0" max="255" value="0" />
+        <span id="fanVal">0</span>/255
+      </div>
+      <div>
+        <button id="fanApply" disabled>Apply (M106)</button>
+        <button id="fanOff"   disabled>Off (M107)</button>
+      </div>
+    </div>
+  </div>
+  <div class="row box">
+    <div class="label">Live Temperatures</div>
+    <div class="muted">Polled via M105 every 3s while connected</div>
+  </div>
+</div>
+
+<!-- TAB 5: Movement & Axes -->
+<div id="moveTab" class="tabContent">
+  <div class="row box">
+    <div>
+      <span class="label">Step</span>
+      <select id="jogStep">
+        <option value="1">1 mm</option>
+        <option value="5" selected>5 mm</option>
+        <option value="10">10 mm</option>
+      </select>
+    </div>
+    <div>
+      <button id="homeAll" disabled>Home All (G28)</button>
+      <button id="disableMotors" disabled>Disable Steppers (M84)</button>
+    </div>
+  </div>
+  <div class="row box">
+    <div class="col">
+      <div class="label">Move X</div>
+      <button id="xMinus" disabled>◀ X-</button>
+      <button id="xPlus"  disabled>X+ ▶</button>
+    </div>
+    <div class="col">
+      <div class="label">Move Y</div>
+      <button id="yMinus" disabled>▼ Y-</button>
+      <button id="yPlus"  disabled>▲ Y+</button>
+    </div>
+    <div class="col">
+      <div class="label">Move Z</div>
+      <button id="zMinus" disabled>Z-</button>
+      <button id="zPlus"  disabled>Z+</button>
+    </div>
+  </div>
+  <div class="row box">
+    <button id="parkHead" disabled>Park Head (X0 Y0 Z10)</button>
+  </div>
+</div>
+
+<!-- TAB 6: EEPROM / Config -->
+<div id="eepromTab" class="tabContent">
+  <div class="row box">
+    <button id="readCfg" disabled>Read Config (M503)</button>
+    <button id="saveCfg" disabled>Save (M500)</button>
+    <!-- <button id="resetCfg" disabled>Factory Reset (M502)</button>-->
+  </div>
+  <textarea id="configBox" class="widen" rows="14" placeholder="Printer configuration will appear here…"></textarea>
+</div>
+
+<!-- TAB 7: Maintenance -->
+<div id="maintTab" class="tabContent">
+  <div class="row box">
+    <div class="col">
+      <div class="label">Preheat</div>
+      <button id="preheatPLA"  disabled>PLA (200/60)</button>
+      <button id="preheatPETG" disabled>PETG (240/80)</button>
+      <button id="preheatABS"  disabled>ABS (250/100)</button>
+    </div>
+    <div class="col">
+      <div class="label">Cool Down</div>
+      <button id="cooldown" disabled>Cool Down (M104 S0; M140 S0)</button>
+    </div>
+    <div class="col">
+      <div class="label">Filament</div>
+      <button id="loadFil"  disabled>Load (200°C)</button>
+      <button id="unloadFil" disabled>Unload (200°C)</button>
+    </div>
+  </div>
+</div>
+
+<!-- TAB 8: Diagnostics -->
+<div id="diagTab" class="tabContent">
+  <div class="row box">
+    <button id="fwInfo" disabled>Firmware Info (M115)</button>
+    <button id="tmcDiag" disabled>TMC Diagnostics (M122)</button>
+  </div>
+  <textarea id="diagBox" class="widen" rows="14" placeholder="Diagnostics output…"></textarea>
+</div>
+
+<!-- TAB 9: G-code Sender -->
+<div id="senderTab" class="tabContent">
+  <div class="row box">
+    <input type="file" id="gcodeFile" accept=".gcode,.gco,.gc,.txt" />
+    <button id="sendGcode" disabled>Send File</button>
+    <button id="cancelSend" disabled>Cancel</button>
+    <div class="progress"><div id="sendProgress"></div></div>
+    <span id="sendStatus" class="muted">Idle</span>
+  </div>
+  <p class="muted">Sends the file line-by-line over serial. Comments/blank lines are skipped. This is best for short jobs, calibration, or macros.</p>
+</div>
+
+<div id="footerStatus">
+  <span id="lastCmd">Last Cmd: —</span>
+  <span>GitHub Pages ready · LocalStorage only</span>
+</div>
+
+<script>
+'use strict';
+/* =============================
+   Tabs (with session memory)
+============================= */
+(function initTabs(){
+  document.querySelectorAll('#tabButtons button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#tabButtons button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      const target = btn.getAttribute('data-tab');
+      sessionStorage.setItem('currentTab', target);
+      document.querySelectorAll('.tabContent').forEach(tab => {
+        tab.classList.toggle('active', tab.id === target);
+      });
+    });
+  });
+  const savedTab = sessionStorage.getItem('currentTab');
+  if (savedTab && document.getElementById(savedTab)) {
+    document.querySelectorAll('#tabButtons button').forEach(b => b.classList.remove('active'));
+    document.querySelector(`#tabButtons button[data-tab="${savedTab}"]`)?.classList.add('active');
+    document.querySelectorAll('.tabContent').forEach(tab => {
+      tab.classList.toggle('active', tab.id === savedTab);
+    });
+  }
+})();
+
+/* =============================
+   Global refs & state
+============================= */
+// UI elements
+const meshInput = document.getElementById('meshInput');
+const screwTable = document.getElementById('screwTable');
+const printerLog = document.getElementById('printerLog');
+
+const connectBtn = document.getElementById('connectBtn');
+const disconnectBtn = document.getElementById('disconnectBtn');
+const readMeshBtn = document.getElementById('readMeshBtn');
+const reprobeBtn = document.getElementById('reprobeBtn');
+const sendCmdBtn = document.getElementById('sendCmdBtn');
+const manualCmd = document.getElementById('manualCmd');
+const clearLogBtn = document.getElementById('clearLogBtn');
+const resetBtn = document.getElementById('resetBtn');
+const bedPidBtn = document.getElementById('bedPidBtn');
+const hotendPidBtn = document.getElementById('hotendPidBtn');
+
+const hotendSet = document.getElementById('hotendSet');
+const bedSet = document.getElementById('bedSet');
+const hotendApply = document.getElementById('hotendApply');
+const hotendOff   = document.getElementById('hotendOff');
+const bedApply    = document.getElementById('bedApply');
+const bedOff      = document.getElementById('bedOff');
+const hotendNow   = document.getElementById('hotendNow');
+const bedNow      = document.getElementById('bedNow');
+const fanSlider   = document.getElementById('fanSlider');
+const fanVal      = document.getElementById('fanVal');
+const fanApply    = document.getElementById('fanApply');
+const fanOff      = document.getElementById('fanOff');
+
+const jogStep = document.getElementById('jogStep');
+const homeAll = document.getElementById('homeAll');
+const disableMotors = document.getElementById('disableMotors');
+const xMinus = document.getElementById('xMinus');
+const xPlus  = document.getElementById('xPlus');
+const yMinus = document.getElementById('yMinus');
+const yPlus  = document.getElementById('yPlus');
+const zMinus = document.getElementById('zMinus');
+const zPlus  = document.getElementById('zPlus');
+const parkHead = document.getElementById('parkHead');
+
+const readCfg = document.getElementById('readCfg');
+const saveCfg = document.getElementById('saveCfg');
+// const resetCfg= document.getElementById('resetCfg');
+const configBox = document.getElementById('configBox');
+
+const preheatPLA  = document.getElementById('preheatPLA');
+const preheatPETG = document.getElementById('preheatPETG');
+const preheatABS  = document.getElementById('preheatABS');
+const cooldown    = document.getElementById('cooldown');
+const loadFil     = document.getElementById('loadFil');
+const unloadFil   = document.getElementById('unloadFil');
+
+const fwInfo = document.getElementById('fwInfo');
+const tmcDiag = document.getElementById('tmcDiag');
+const diagBox = document.getElementById('diagBox');
+
+const gcodeFile = document.getElementById('gcodeFile');
+const sendGcode = document.getElementById('sendGcode');
+const cancelSend= document.getElementById('cancelSend');
+const sendProgress = document.getElementById('sendProgress');
+const sendStatus   = document.getElementById('sendStatus');
+
+const connBadge = document.getElementById('connBadge');
+const activityBadge = document.getElementById('activityBadge');
+const lastUpdated = document.getElementById('lastUpdated');
+const lastCmd = document.getElementById('lastCmd');
+
+// Serial state
+let port = null;
+let reader = null;
+let writer = null;
+let textDecoder = null;
+let reading = false;
+let tempTimer = null;     // M105 poll timer
+let cancelStream = false; // gcode sender cancel flag
+let captureMode = null;   // null | 'config' | 'diag'
+
+/* =============================
+   Constants & maps
+============================= */
+const screwAffects = {
+  A1: [[0,0],[0,1],[1,0],[1,1]],
+  A2: [[0,1],[0,2],[1,1],[1,2]],
+  A3: [[0,2],[0,3],[1,2],[1,3]],
+  B1: [[1,0],[1,1],[2,0],[2,1]],
+  B2: [[1,1],[1,2],[2,1],[2,2]],
+  B3: [[1,2],[1,3],[2,2],[2,3]],
+  B4: [[2,3],[1,3],[3,3]],
+  C1: [[2,0],[2,1],[3,0],[3,1]],
+  C2: [[2,1],[2,2],[3,1],[3,2]],
+  C3: [[2,2],[2,3],[3,2],[3,3]],
+  C4: [[3,3]]
+};
+
+/* =============================
+   UI helpers & logging
+============================= */
+function setActivity(text, cls='') {
+  activityBadge.textContent = text;
+  activityBadge.className = 'pill ' + cls;
+}
+function setConnected(connected) {
+  if (connected) { connBadge.textContent = 'Connected'; connBadge.className = 'pill ok'; }
+  else { connBadge.textContent = 'Disconnected'; connBadge.className = 'pill bad'; }
+  connectBtn.disabled   = connected;
+  disconnectBtn.disabled= !connected;
+  readMeshBtn.disabled  = !connected;
+  reprobeBtn.disabled   = !connected;
+  sendCmdBtn.disabled   = !connected;
+  bedPidBtn.disabled    = !connected;
+  hotendPidBtn.disabled = !connected;
+  clearLogBtn.disabled  = !connected;
+
+  // Temp/Fan
+  hotendApply.disabled = !connected;
+  hotendOff.disabled   = !connected;
+  bedApply.disabled    = !connected;
+  bedOff.disabled      = !connected;
+  fanApply.disabled    = !connected;
+  fanOff.disabled      = !connected;
+
+  // Move
+  homeAll.disabled = !connected;
+  disableMotors.disabled = !connected;
+  xMinus.disabled = xPlus.disabled = yMinus.disabled = yPlus.disabled = zMinus.disabled = zPlus.disabled = !connected;
+  parkHead.disabled = !connected;
+
+  // EEPROM
+  readCfg.disabled = !connected;
+  saveCfg.disabled = !connected;
+  // resetCfg.disabled= !connected;
+
+  // Maintenance
+  preheatPLA.disabled = preheatPETG.disabled = preheatABS.disabled = cooldown.disabled = loadFil.disabled = unloadFil.disabled = !connected;
+
+  // Diagnostics
+  fwInfo.disabled = tmcDiag.disabled = !connected;
+
+  // Sender
+  sendGcode.disabled = !connected || !gcodeFile.files.length;
+  cancelSend.disabled= true;
+
+  // temp polling
+  if (connected && !tempTimer) {
+    tempTimer = setInterval(() => sendCmd('M105'), 3000);
+  } else if (!connected && tempTimer) {
+    clearInterval(tempTimer);
+    tempTimer = null;
+  }
+}
+function _logBase(msg) {
+  if (!msg.endsWith('\n')) msg += '\n';
+  printerLog.textContent += msg;
+  printerLog.scrollTop = printerLog.scrollHeight;
+}
+function logMsg(msg) {
+  _logBase(msg);
+  if (captureMode === 'config') {
+    configBox.value += msg.endsWith('\n') ? msg : msg + '\n';
+    configBox.scrollTop = configBox.scrollHeight;
+  } else if (captureMode === 'diag') {
+    diagBox.value += msg.endsWith('\n') ? msg : msg + '\n';
+    diagBox.scrollTop = diagBox.scrollHeight;
+  }
+}
+function updateLastUpdated() { lastUpdated.textContent = 'Last updated: ' + new Date().toLocaleTimeString(); }
+function setLastCmd(cmd) { lastCmd.textContent = 'Last Cmd: ' + cmd; }
+
+/* =============================
+   Mesh parsing & persistence
+============================= */
+function tryParseMeshFromLines(lines) {
+  const mesh = Array.from({ length: 4 }, () => Array(4).fill(null));
+
+  for (const raw of lines) {
+    const line = raw.trim();
+
+    // Row-based: "0  +0.025  +0.013  -0.002  -0.020"
+    const m = line.match(/^([0-3])\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)/);
+    if (m) {
+      const rowIdx = parseInt(m[1], 10);
+      const vals = [parseFloat(m[2]), parseFloat(m[3]), parseFloat(m[4]), parseFloat(m[5])];
+      mesh[rowIdx] = vals;
+      continue;
+    }
+
+    // Point-by-point: "(x,y)  +0.012" or "[x,y] +0.012" OR "X0 Y1 Z-0.1505"
+    const p1 = line.match(/[\(\[](\d)\s*,\s*(\d)[\)\]]\s+([+-]?\d*\.?\d+)/);
+    const p2 = line.match(/X\s*:?\s*(\d)\s*;?\s*[, ]\s*Y\s*:?\s*(\d).*?\bZ\s*([+-]?\d*\.?\d+)/i);
+    const p3 = line.match(/X\s*(\d)\s*Y\s*(\d)\s*Z\s*([+-]?\d*\.?\d+)/i);
+    const mP = p1 || p2 || p3;
+    if (mP) {
+      const x = parseInt(mP[1], 10);
+      const y = parseInt(mP[2], 10);
+      const val = parseFloat(mP[3]);
+      if (x < 4 && y < 4) mesh[y][x] = val;
+    }
+  }
+
+  const complete = mesh.every(row => row.every(val => typeof val === 'number' && !isNaN(val)));
+  return complete ? mesh : null;
+}
+function loadMeshLS() {
+  const hist = JSON.parse(localStorage.getItem('levels') || '[]');
+  return hist.at(-1) || Array.from({length:4},()=>Array(4).fill(''));
+}
+function saveMeshLS(mesh) {
+  const hist = JSON.parse(localStorage.getItem('levels') || '[]');
+  hist.push(mesh);
+  localStorage.setItem('levels', JSON.stringify(hist));
+}
+
+/* =============================
+   Mesh calculations & rendering
+============================= */
+function getScrewData(mesh) {
+  const result = {};
+  for (const screw in screwAffects) {
+    const points = screwAffects[screw];
+    const values = points.map(([y,x]) => mesh?.[y]?.[x]).filter(v => typeof v === 'number' && !isNaN(v));
+    const avg = values.length ? values.reduce((a,b)=>a+b,0)/values.length : null;
+    let suggestion='N/A', turn='N/A';
+    if (avg !== null) {
+      if (avg >  0.07) { suggestion='Tighten (Clockwise)';        turn='Strong (1/4 turn)'; }
+      else if (avg > 0.04) { suggestion='Tighten (Clockwise)';    turn='Moderate (1/8 turn)'; }
+      else if (avg > 0.02) { suggestion='Tighten (Clockwise)';    turn='Slight (1/16 turn)'; }
+      else if (avg < -0.07){ suggestion='Loosen (Counterclockwise)'; turn='Strong (1/4 turn)'; }
+      else if (avg < -0.04){ suggestion='Loosen (Counterclockwise)'; turn='Moderate (1/8 turn)'; }
+      else if (avg < -0.02){ suggestion='Loosen (Counterclockwise)'; turn='Slight (1/16 turn)'; }
+      else { suggestion='No change'; }
+    }
+    result[screw] = { avg: avg?.toFixed(3) ?? 'N/A', suggestion, turn };
+  }
+  return result;
+}
+function renderMeshInputs(mesh) {
+  meshInput.innerHTML = '';
+  for (let y=0; y<4; y++) {
+    const tr = document.createElement('tr');
+    for (let x=0; x<4; x++) {
+      const v = mesh?.[y]?.[x];
+      tr.innerHTML += `<td><input type="number" step="0.001" id="cell-${y}-${x}" value="${typeof v==='number'? v.toFixed(3): ''}" required></td>`;
+    }
+    meshInput.appendChild(tr);
+  }
+}
+function renderSuggestions(mesh) {
+  const data = getScrewData(mesh);
+  screwTable.innerHTML = '';
+  const layout = ['A1','GAP','A2','A3','B1','B2','B3','B4','C1','C2','C3','C4'];
+  for (const sName of layout) {
+    if (sName === 'GAP') continue;
+    const s = data[sName];
+    const tr = document.createElement('tr');
+    tr.className = s.suggestion.includes('Tighten') ? 'tighten' :
+                   s.suggestion.includes('Loosen') ? 'loosen' : 'na';
+    tr.innerHTML = `<td>${sName}</td><td>${s.avg}</td><td>${s.suggestion}</td><td>${s.turn}</td>`;
+    screwTable.appendChild(tr);
+    const cell = document.getElementById(sName);
+    if (cell) {
+      cell.className = tr.className;
+      cell.innerHTML = `<strong>${sName}</strong><br>${s.avg} mm<br>${s.turn!=='N/A'? s.turn : ''}`;
+    }
+  }
+}
+
+/* =============================
+   Serial I/O
+============================= */
+async function connectPrinter() {
+  try {
+    if (!('serial' in navigator)) {
+      alert('⚠️ Web Serial API not supported. Use Chrome/Edge/Brave on desktop.');
+      return;
+    }
+    setActivity('Connecting…', 'warn');
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    writer = port.writable.getWriter();
+
+    const tds = new TextDecoderStream();
+    textDecoder = tds; // keep a ref
+    port.readable.pipeTo(tds.writable);
+    reader = tds.readable.getReader();
+
+    setConnected(true);
+    setActivity('Connected', 'ok');
+    logMsg('✅ Connected.');
+    if (!reading) readLoop();
+  } catch (err) {
+    setActivity('Connect error', 'bad');
+    logMsg('❌ ' + err.message);
+  }
+}
+async function disconnectPrinter() {
+  setActivity('Disconnecting…', 'warn');
+  try {
+    if (tempTimer) { clearInterval(tempTimer); tempTimer = null; }
+    try { if (reader) { await reader.cancel(); reader.releaseLock(); } } catch(_) {}
+    try { if (textDecoder && textDecoder.readable) { await textDecoder.readable.cancel?.(); } } catch(_) {}
+    try { if (writer) writer.releaseLock(); } catch(_) {}
+    if (port) await port.close();
+  } catch (e) {
+    console.warn('Disconnect error:', e);
+  } finally {
+    port = reader = writer = textDecoder = null;
+    setConnected(false);
+    setActivity('Idle');
+    logMsg('🔌 Disconnected.');
+  }
+}
+async function readLoop() {
+  reading = true;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      logMsg(value.trimEnd());
+
+      // PID status updates
+      if (/PID Autotune start/i.test(value))    setActivity('PID tuning…', 'warn');
+      if (/PID Autotune finished/i.test(value)) setActivity('PID tuning complete', 'ok');
+      if (/PID Autotune failed/i.test(value))   setActivity('PID tuning failed', 'bad');
+
+      // Update temps if M105-like line
+      const t = value.match(/T:\s*([0-9.+-]+).*?B:\s*([0-9.+-]+)/i);
+      if (t) {
+        hotendNow.textContent = `Current: ${parseFloat(t[1]).toFixed(1)}°C`;
+        bedNow.textContent    = `Current: ${parseFloat(t[2]).toFixed(1)}°C`;
+      }
+
+      // Mesh parse (row or point formats)
+      const chunkLines = value.split(/\r?\n/);
+      const parsed = tryParseMeshFromLines(chunkLines);
+      if (parsed) {
+        // Many firmwares report bottom-left→top-left; reverse Y for top-left origin UI
+        const mesh = parsed.reverse();
+        setActivity('Mesh parsed', 'ok');
+        saveMeshLS(mesh);
+        renderMeshInputs(mesh);
+        renderSuggestions(mesh);
+        updateLastUpdated();
+      }
+    }
+  } catch (err) {
+    logMsg('⚠️ Read error: ' + err.message);
+  } finally {
+    reading = false;
+  }
+}
+async function sendCmd(cmd) {
+  if (!writer) { logMsg('⚠️ Not connected.'); return; }
+  setLastCmd(cmd);
+  setActivity('Sending…', 'warn');
+  await writer.write(new TextEncoder().encode(cmd + '\n'));
+  logMsg('>> ' + cmd);
+  setActivity('Waiting…', 'warn');
+}
+
+/* =============================
+   PID, Leveling & other actions
+============================= */
+function promptNumber(message, def) {
+  const raw = prompt(message, String(def));
+  if (raw === null) return null;
+  const n = parseFloat(raw);
+  return Number.isFinite(n) ? n : NaN;
+}
+async function runBedPID() {
+  const t = promptNumber('Enter bed PID target temp (S):', 60);
+  if (t === null) return;
+  if (!Number.isFinite(t)) return alert('Invalid temperature.');
+  setActivity(`PID bed @ ${t}°C…`, 'warn');
+  await sendCmd(`M303 C5 E-1 S${t} U`);
+  logMsg('ℹ️ PID tuning can take a few minutes. After success, send M500 to save if required.');
+}
+async function runHotendPID() {
+  const t = promptNumber('Enter nozzle PID target temp (S):', 220);
+  if (t === null) return;
+  if (!Number.isFinite(t)) return alert('Invalid temperature.');
+  setActivity(`PID hotend @ ${t}°C…`, 'warn');
+  await sendCmd(`M303 C5 E0 S${t} U`);
+  logMsg('ℹ️ PID tuning can take a few minutes. After success, send M500 to save if required.');
+}
+async function readMesh() {
+  await sendCmd('G29 T');
+  setActivity('Parsing…', 'warn');
+}
+async function reprobe() {
+  await sendCmd('G28');
+  await sendCmd('G29 T');
+  setActivity('Probing…', 'warn');
+}
+function sendManual() {
+  const cmd = manualCmd.value.trim();
+  if (!cmd) return;
+  sendCmd(cmd);
+  manualCmd.value = '';
+}
+
+/* =============================
+   Movement & G-code sender
+============================= */
+function jog(axis, dir) {
+  const step = parseFloat(jogStep.value);
+  const dist = dir * step;
+  // relative move then back to absolute
+  sendCmd('G91');
+  const feed = (axis === 'Z') ? 300 : 3000;
+  sendCmd(`G1 ${axis}${dist.toFixed(3)} F${feed}`);
+  sendCmd('G90');
+}
+async function streamGcode(file) {
+  if (!writer) { alert('Not connected.'); return; }
+  cancelStream = false;
+  sendStatus.textContent = 'Sending…';
+  cancelSend.disabled = true; // enable after file read starts
+
+  const text = await file.text();
+  const lines = text.split(/\r?\n/).map(l => l.replace(/;.*/,'').trim()).filter(Boolean);
+  let sent = 0;
+  cancelSend.disabled = false;
+
+  for (const line of lines) {
+    if (cancelStream) break;
+    await sendCmd(line);
+    sent++;
+    const pct = Math.round(sent / lines.length * 100);
+    sendProgress.style.width = pct + '%';
+    sendStatus.textContent = `Sent ${sent}/${lines.length} (${pct}%)`;
+    // Throttle a bit so we don’t flood
+    await new Promise(r => setTimeout(r, 20));
+  }
+  if (cancelStream) sendStatus.textContent = 'Cancelled';
+  else sendStatus.textContent = 'Done';
+  cancelSend.disabled = true;
+}
+
+/* =============================
+   Export helpers
+============================= */
+function exportMeshAsFile(mesh, label) {
+  const blob = new Blob([JSON.stringify(mesh, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `cr6se-mesh-${label}-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* =============================
+   Event listeners
+============================= */
+// Connection
+connectBtn.addEventListener('click', connectPrinter);
+disconnectBtn.addEventListener('click', disconnectPrinter);
+
+// Leveling
+readMeshBtn.addEventListener('click', readMesh);
+reprobeBtn.addEventListener('click', reprobe);
+
+// Manual command & log
+sendCmdBtn.addEventListener('click', sendManual);
+manualCmd.addEventListener('input', () => { captureMode = null; });
+clearLogBtn.addEventListener('click', () => { printerLog.textContent = ''; });
+
+// Level form & export
+document.getElementById('levelForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const mesh = [];
+  for (let y=0; y<4; y++) {
+    const row = [];
+    for (let x=0; x<4; x++) {
+      const v = parseFloat(document.getElementById(`cell-${y}-${x}`).value);
+      row.push(isNaN(v) ? 0 : v);
+    }
+    mesh.push(row);
+  }
+  saveMeshLS(mesh);
+  renderMeshInputs(mesh);
+  renderSuggestions(mesh);
+  updateLastUpdated();
+  alert('✅ Round submitted!');
+});
+document.getElementById('exportManualBtn').addEventListener('click', () => {
+  const mesh = [];
+  for (let y = 0; y < 4; y++) {
+    const row = [];
+    for (let x = 0; x < 4; x++) {
+      const v = parseFloat(document.getElementById(`cell-${y}-${x}`).value);
+      row.push(isNaN(v) ? 0 : v);
+    }
+    mesh.push(row);
+  }
+  exportMeshAsFile(mesh, 'manual');
+});
+document.getElementById('exportPrinterBtn').addEventListener('click', () => {
+  const hist = JSON.parse(localStorage.getItem('levels') || '[]');
+  const latest = hist.at(-1);
+  if (latest && Array.isArray(latest) && latest.length === 4) {
+    exportMeshAsFile(latest, 'printer');
+  } else {
+    alert('⚠️ No valid printer mesh to export.');
+  }
+});
+resetBtn.addEventListener('click', () => { if (confirm('Reset all saved data?')) { localStorage.clear(); location.reload(); } });
+
+// Temperature & Fan
+hotendApply.addEventListener('click', () => sendCmd(`M104 S${Math.max(0, Math.min(300, parseInt(hotendSet.value)||0))}`));
+hotendOff.addEventListener('click',   () => sendCmd('M104 S0'));
+bedApply.addEventListener('click',    () => sendCmd(`M140 S${Math.max(0, Math.min(130, parseInt(bedSet.value)||0))}`));
+bedOff.addEventListener('click',      () => sendCmd('M140 S0'));
+fanSlider.addEventListener('input',   () => { fanVal.textContent = fanSlider.value; });
+fanApply.addEventListener('click',    () => sendCmd(`M106 S${Math.max(0, Math.min(255, parseInt(fanSlider.value)||0))}`));
+fanOff.addEventListener('click',      () => sendCmd('M107'));
+
+// Movement
+homeAll.addEventListener('click', () => sendCmd('G28'));
+disableMotors.addEventListener('click', () => sendCmd('M84'));
+xMinus.addEventListener('click', () => jog('X', -1));
+xPlus .addEventListener('click', () => jog('X', +1));
+yMinus.addEventListener('click', () => jog('Y', -1));
+yPlus .addEventListener('click', () => jog('Y', +1));
+zMinus.addEventListener('click', () => jog('Z', -1));
+zPlus .addEventListener('click', () => jog('Z', +1));
+parkHead.addEventListener('click', () => sendCmd('G90\nG1 X0 Y0 Z10 F3000'));
+
+// EEPROM / Config
+readCfg.addEventListener('click', async () => {
+  configBox.value = '';
+  captureMode = 'config';
+  await sendCmd('M503');
+});
+saveCfg.addEventListener('click', async () => { await sendCmd('M500'); });
+// resetCfg.addEventListener('click', async () => {
+//   if (confirm('Reset EEPROM to factory defaults (M502)?')) await sendCmd('M502');
+// });
+
+// Maintenance
+preheatPLA.addEventListener('click',  () => sendCmd('M104 S200\nM140 S60'));
+preheatPETG.addEventListener('click', () => sendCmd('M104 S240\nM140 S80'));
+preheatABS.addEventListener('click',  () => sendCmd('M104 S250\nM140 S100'));
+cooldown.addEventListener('click',    () => sendCmd('M104 S0\nM140 S0'));
+loadFil.addEventListener('click',     () => sendCmd('M104 S200\nM109 S200\nG91\nG1 E60 F200\nG90'));
+unloadFil.addEventListener('click',   () => sendCmd('M104 S200\nM109 S200\nG91\nG1 E-60 F200\nG90'));
+
+// Diagnostics
+fwInfo.addEventListener('click', () => {
+  diagBox.value = '';
+  captureMode = 'diag';
+  sendCmd('M115');
+});
+tmcDiag.addEventListener('click', () => {
+  diagBox.value = '';
+  captureMode = 'diag';
+  sendCmd('M122');
+});
+
+// G-code Sender
+gcodeFile.addEventListener('change', () => {
+  sendGcode.disabled = !gcodeFile.files.length || !writer;
+});
+sendGcode.addEventListener('click',  () => { if (gcodeFile.files[0]) streamGcode(gcodeFile.files[0]); });
+cancelSend.addEventListener('click', async () => {
+  cancelStream = true; // cancel flag
+  // Stop heaters & park head after cancel
+  await sendCmd('M104 S0'); // Hotend off
+  await sendCmd('M140 S0'); // Bed off
+  await sendCmd('G90');     // Absolute positioning
+  await sendCmd('G1 X0 Y0 Z10 F3000'); // Park head at X0 Y0 Z10
+});
+
+/* =============================
+   Init
+============================= */
+(function init() {
+  const mesh = loadMeshLS();
+  renderMeshInputs(mesh);
+  renderSuggestions(mesh);
+  updateLastUpdated();
+  setConnected(false);
+})();
+</script>
+</body>
+</html>
