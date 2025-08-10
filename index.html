@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>3D Printer Utils IN-TESTING</title>
+<title>3D Printer Utils</title>
 <style>
   :root { --bar-h: 42px; }
   body {
@@ -35,17 +35,16 @@
 }
 /* colors */
 .pill.idle   { background:#555; }         /* no target / idle */
-.pill.ready  { background:#27ae60; }      /* at target */
-.pill.heating{ background:#f39c12; }      /* rising to target */
-.pill.cooling{ background:#3498db; }      /* falling to target */
+.pill.ready  { background:#2ecc71; }  /* green, stable */
+.pill.heating{ background:#e74c3c; }  /* red, heating */
+.pill.cooling{ background:#3498db; }  /* blue, cooling */
 
 /* pulse effect (used for heating/cooling) */
-.pulse { animation: pillPulse 1.2s ease-in-out infinite; }
-
+.pulse { animation: pillPulse 1.0s ease-in-out infinite; }
 @keyframes pillPulse {
-  0%   { transform: none;    filter: brightness(100%); }
-  50%  { transform: scale(1.04); filter: brightness(108%); }
-  100% { transform: none;    filter: brightness(100%); }
+  0%   { transform:none; filter:brightness(100%); }
+  50%  { transform:scale(1.05); filter:brightness(115%); }
+  100% { transform:none; filter:brightness(100%); }
 }
 
 /* keep hotend/bed pills nicely spaced */
@@ -463,26 +462,22 @@ function isTelemetryLine(s) { return TELEMETRY_REGEX.test(s); }
 
 // Simple helpers for the top-bar pills
 function setTempPill(pillEl, curr, target) {
-  const valueEl = pillEl.querySelector('span'); // inner value span
+  const valueEl = pillEl.querySelector('span'); // inner number span
   valueEl.textContent = (target != null && !isNaN(target))
     ? `${curr.toFixed(1)}°C / ${Math.round(target)}°`
     : `${curr.toFixed(1)}°C`;
 
-  pillEl.classList.remove('idle','ready','heating','cooling','pulse');
-
+  // decide state
   if (target == null || isNaN(target)) {
+    pillEl.classList.remove('ready','heating','cooling','pulse');
     pillEl.classList.add('idle');
     return;
   }
-
   const eps = 0.5;
-  if (curr < target - eps) {
-    pillEl.classList.add('heating','pulse');
-  } else if (curr > target + eps) {
-    pillEl.classList.add('cooling','pulse');
-  } else {
-    pillEl.classList.add('ready');
-  }
+  let state = 'ready';
+  if (curr < target - eps) state = 'heating';
+  else if (curr > target + eps) state = 'cooling';
+  setPillState(pillEl, state);
 }
 
 function startTempPolling() {
@@ -507,8 +502,7 @@ function tempState(current, target, tolerance = 0.5) {
 // Apply classes to a pill (and pulse only when heating/cooling)
 function setPillState(pillEl, state) {
   pillEl.classList.remove('idle','ready','heating','cooling','pulse');
-  pillEl.classList.add(state);
-  if (state === 'heating' || state === 'cooling') pillEl.classList.add('pulse');
+  pillEl.classList.add(state, 'pulse'); // pulse in all non-idle states
 }
 
 // Track previous temps to detect direction if you ever want trend-based logic
@@ -696,8 +690,17 @@ async function connectPrinter() {
       return;
     }
     setActivity('Connecting…', 'warn');
-    port = await navigator.serial.requestPort();
+
+    // If we already have a port object, reuse it; otherwise ask the user.
+    if (!port) {
+      port = await navigator.serial.requestPort();
+    } else {
+      // If somehow left open, close cleanly before re-opening
+      try { await port.close(); } catch {}
+    }
+
     await port.open({ baudRate: 115200 });
+
     writer = port.writable.getWriter();
 
     const tds = new TextDecoderStream();
@@ -711,10 +714,19 @@ async function connectPrinter() {
     logMsg('✅ Connected.');
     if (!reading) readLoop();
   } catch (err) {
+    // If the port is already open, just proceed to set state
+    if (String(err?.message || err).includes('already open')) {
+      setConnected(true);
+      setActivity('Connected', 'ok');
+      logMsg('ℹ️ Port was already open; continuing.');
+      if (!reading && reader) readLoop();
+      return;
+    }
     setActivity('Connect error', 'bad');
     logMsg('❌ ' + err.message);
   }
 }
+
 async function disconnectPrinter() {
   setActivity('Disconnecting…', 'warn');
   try {
@@ -841,7 +853,7 @@ if (/^ok\b/i.test(line)) {
     captureMode = null;
     startTempPolling();
   }
-  _resolveNextOk(); // <-- resolve one waiter
+  _resolveNextOk(); // <-- unblocks streamGcode/waiters
 }
       }
     }
@@ -1047,7 +1059,23 @@ fanApply.addEventListener('click',    () => sendCmd(`M106 S${Math.max(0, Math.mi
 fanOff.addEventListener('click',      () => sendCmd('M107'));
 
 // Movement
-homeAll.addEventListener('click', () => sendCmd('G28'));
+homeAll.addEventListener('click', async () => {
+  try {
+    setActivity('Homing…', 'warn');
+    await sendCmd('G28');
+    await waitForOk().catch(()=>{});      // no-timeout wait
+
+    // Per request: cool down right after homing
+    await sendCmd('M104 S0'); await waitForOk().catch(()=>{});
+    await sendCmd('M140 S0'); await waitForOk().catch(()=>{});
+
+    setActivity('Homed & cooled', 'ok');
+    updateLastUpdated();
+  } catch (e) {
+    setActivity('Home failed', 'bad');
+    logMsg('⚠️ Home error: ' + (e?.message || e));
+  }
+});
 disableMotors.addEventListener('click', () => sendCmd('M84'));
 xMinus.addEventListener('click', () => jog('X', -1));
 xPlus .addEventListener('click', () => jog('X', +1));
@@ -1074,8 +1102,50 @@ preheatPLA.addEventListener('click',  () => sendCmd('M104 S200\nM140 S60'));
 preheatPETG.addEventListener('click', () => sendCmd('M104 S240\nM140 S80'));
 preheatABS.addEventListener('click',  () => sendCmd('M104 S250\nM140 S100'));
 cooldown.addEventListener('click',    () => sendCmd('M104 S0\nM140 S0'));
-loadFil.addEventListener('click',     () => sendCmd('M104 S200\nM109 S200\nG91\nG1 E60 F200\nG90'));
-unloadFil.addEventListener('click',   () => sendCmd('M104 S200\nM109 S200\nG91\nG1 E-60 F200\nG90'));
+loadFil.addEventListener('click', async () => {
+  const mm = parseFloat(prompt('How many mm to LOAD?', '60'));
+  if (!Number.isFinite(mm) || mm <= 0) return;
+
+  const temp = parseFloat(prompt('Hotend temp for load (°C)?', '200'));
+  if (!Number.isFinite(temp) || temp <= 0) return;
+
+  // Move to Z=110 (absolute), heat, extrude, then cool down. Do not park/move after.
+  await sendCmd('G90');                    await waitForOk().catch(()=>{});
+  await sendCmd('G1 Z110 F300');           await waitForOk().catch(()=>{});
+  await sendCmd(`M104 S${Math.round(temp)}`); await waitForOk().catch(()=>{});
+  await sendCmd(`M109 S${Math.round(temp)}`); await waitForOk().catch(()=>{}); // wait to temp
+
+  await sendCmd('G91');                    await waitForOk().catch(()=>{});
+  await sendCmd(`G1 E${mm.toFixed(2)} F200`); await waitForOk().catch(()=>{});
+  await sendCmd('G90');                    await waitForOk().catch(()=>{});
+
+  // Cool down and stop "print" (no moves)
+  await sendCmd('M104 S0'); await waitForOk().catch(()=>{});
+  await sendCmd('M140 S0'); await waitForOk().catch(()=>{});
+  sendStatus.textContent = 'Filament load complete (cooled)';
+});
+unloadFil.addEventListener('click', async () => {
+  const mm = parseFloat(prompt('How many mm to UNLOAD?', '60'));
+  if (!Number.isFinite(mm) || mm <= 0) return;
+
+  const temp = parseFloat(prompt('Hotend temp for unload (°C)?', '200'));
+  if (!Number.isFinite(temp) || temp <= 0) return;
+
+  // Move to Z=110 (absolute), heat, retract, then cool down. Do not park/move after.
+  await sendCmd('G90');                    await waitForOk().catch(()=>{});
+  await sendCmd('G1 Z110 F300');           await waitForOk().catch(()=>{});
+  await sendCmd(`M104 S${Math.round(temp)}`); await waitForOk().catch(()=>{});
+  await sendCmd(`M109 S${Math.round(temp)}`); await waitForOk().catch(()=>{}); // wait to temp
+
+  await sendCmd('G91');                    await waitForOk().catch(()=>{});
+  await sendCmd(`G1 E-${mm.toFixed(2)} F200`); await waitForOk().catch(()=>{});
+  await sendCmd('G90');                    await waitForOk().catch(()=>{});
+
+  // Cool down and stop "print" (no moves)
+  await sendCmd('M104 S0'); await waitForOk().catch(()=>{});
+  await sendCmd('M140 S0'); await waitForOk().catch(()=>{});
+  sendStatus.textContent = 'Filament unload complete (cooled)';
+});
 
 // Diagnostics
 fwInfo.addEventListener('click', () => {
