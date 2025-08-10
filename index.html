@@ -493,15 +493,25 @@ function _logBase(msg) {
   printerLog.scrollTop = printerLog.scrollHeight;
 }
 function logMsg(msg) {
-  _logBase(msg);
-  // When capturing to text boxes, ignore temperature spam lines
-  if (captureMode && isTempLine(msg)) return; // still logged to printerLog, but not mirrored
-  if (captureMode === 'config') {
-    configBox.value += msg.endsWith('\n') ? msg : msg + '\n';
-    configBox.scrollTop = configBox.scrollHeight;
-  } else if (captureMode === 'diag') {
-    diagBox.value += msg.endsWith('\n') ? msg : msg + '\n';
-    diagBox.scrollTop = diagBox.scrollHeight;
+  // Split incoming chunk into lines, so we can filter temps cleanly
+  const lines = String(msg).split(/\r?\n/);
+  for (const line of lines) {
+    if (!line) continue;
+
+    // Skip M105-style temperature lines from the main log (and from capture boxes)
+    if (isTempLine(line)) continue;
+
+    // Mirror to capture boxes, when active
+    if (captureMode === 'config') {
+      configBox.value += line + '\n';
+      configBox.scrollTop = configBox.scrollHeight;
+    } else if (captureMode === 'diag') {
+      diagBox.value += line + '\n';
+      diagBox.scrollTop = diagBox.scrollHeight;
+    }
+
+    // Write to the main Printer Log
+    _logBase(line);
   }
 }
 
@@ -673,7 +683,8 @@ async function readLoop() {
       }
 
       // Mesh parse (row or point formats)
-      const chunkLines = value.split(/\r?\n/);
+      cconst chunkLines = value.split(/\r?\n/);
+
       const parsed = tryParseMeshFromLines(chunkLines);
       if (parsed) {
         // Many firmwares report bottom-left→top-left; reverse Y for top-left origin UI
