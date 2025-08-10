@@ -129,6 +129,10 @@
 <!-- TAB 1: Connection & Log -->
 <div id="connectTab" class="tabContent active">
   <div class="tabControls" id="printerNavConnect">
+    <label style="margin-left:8px;">
+  <input type="checkbox" id="debugToggle">
+  Debug
+</label>
     <button id="connectBtn">Connect</button>
     <button id="disconnectBtn" disabled>Disconnect</button>
     <input id="manualCmd" placeholder="Manual G-code (e.g., M503)" />
@@ -362,6 +366,21 @@
    Global refs & state
 ============================= */
 // UI elements
+
+const debugToggle = document.getElementById('debugToggle');
+let debugMode = JSON.parse(localStorage.getItem('debugMode') || 'false');
+if (debugToggle) {
+  debugToggle.checked = !!debugMode;
+  debugToggle.addEventListener('change', () => {
+    debugMode = debugToggle.checked;
+    localStorage.setItem('debugMode', JSON.stringify(debugMode));
+  });
+}
+
+// Lines that are noisy and should be hidden unless Debug is ON
+const NOISY_REGEX = /^(?:echo:busy:\s*processing|\/\/action:.*|SetNewScreen:.*|Invoking handler for screen.*)/i;
+function isNoisyLine(s) { return NOISY_REGEX.test(s); }
+
 const meshInput = document.getElementById('meshInput');
 const screwTable = document.getElementById('screwTable');
 const printerLog = document.getElementById('printerLog');
@@ -594,7 +613,12 @@ function logMsg(msg) {
   const lines = String(msg).split(/\r?\n/);
   for (const line of lines) {
     if (!line) continue;
-    if (isTelemetryLine(line)) continue; // hide temps/power from main log and captures
+
+    // 🔇 hide temperature & power chatter
+    if (isTelemetryLine(line)) continue;
+
+    // 🔇 hide busy/screen/action spam unless Debug is ON
+    if (!debugMode && isNoisyLine(line)) continue;
 
     if (captureMode === 'config') {
       configBox.value += line + '\n';
@@ -606,7 +630,6 @@ function logMsg(msg) {
     _logBase(line);
   }
 }
-
 
 
 function updateLastUpdated() { lastUpdated.textContent = 'Last updated: ' + new Date().toLocaleTimeString(); }
@@ -1154,20 +1177,28 @@ loadFil.addEventListener('click', async () => {
   const temp = parseFloat(prompt('Hotend temp for load (°C)?', '200'));
   if (!Number.isFinite(temp) || temp <= 0) return;
 
-  // Move to Z=110 (absolute), heat, extrude, then cool down. Do not park/move after.
-  await sendCmd('G90');                    await waitForOk().catch(()=>{});
-  await sendCmd('G1 Z110 F300');           await waitForOk().catch(()=>{});
-  await sendCmd(`M104 S${Math.round(temp)}`); await waitForOk().catch(()=>{});
-  await sendCmd(`M109 S${Math.round(temp)}`); await waitForOk().catch(()=>{}); // wait to temp
+  try {
+    // Absolute XYZ, move Z up, heat and wait
+    await sendCmd('G90');                      await waitForOk().catch(()=>{});
+    await sendCmd('G1 Z110 F300');            await waitForOk().catch(()=>{});
+    await sendCmd(`M104 S${Math.round(temp)}`);await waitForOk().catch(()=>{});
+    await sendCmd(`M109 S${Math.round(temp)}`);await waitForOk().catch(()=>{}); // blocks until at temp
 
-  await sendCmd('G91');                    await waitForOk().catch(()=>{});
-  await sendCmd(`G1 E${mm.toFixed(2)} F200`); await waitForOk().catch(()=>{});
-  await sendCmd('G90');                    await waitForOk().catch(()=>{});
+    // Relative extrusion only, perform load
+    await sendCmd('M83');                      await waitForOk().catch(()=>{});  // E relative
+    await sendCmd(`G1 E${mm.toFixed(2)} F200`);await waitForOk().catch(()=>{});
+    await sendCmd('M400');                     await waitForOk().catch(()=>{});  // <-- wait for buffer to drain
+    await sendCmd('M82');                      await waitForOk().catch(()=>{});  // E back to absolute (common default)
 
-  // Cool down and stop "print" (no moves)
-  await sendCmd('M104 S0'); await waitForOk().catch(()=>{});
-  await sendCmd('M140 S0'); await waitForOk().catch(()=>{});
-  sendStatus.textContent = 'Filament load complete (cooled)';
+    // Now it’s safe to cool down
+    await sendCmd('M104 S0');                  await waitForOk().catch(()=>{});
+    await sendCmd('M140 S0');                  await waitForOk().catch(()=>{});
+
+    sendStatus.textContent = 'Filament load complete (cooled)';
+  } catch (e) {
+    sendStatus.textContent = 'Load failed';
+    console.error(e);
+  }
 });
 unloadFil.addEventListener('click', async () => {
   const mm = parseFloat(prompt('How many mm to UNLOAD?', '60'));
@@ -1176,20 +1207,25 @@ unloadFil.addEventListener('click', async () => {
   const temp = parseFloat(prompt('Hotend temp for unload (°C)?', '200'));
   if (!Number.isFinite(temp) || temp <= 0) return;
 
-  // Move to Z=110 (absolute), heat, retract, then cool down. Do not park/move after.
-  await sendCmd('G90');                    await waitForOk().catch(()=>{});
-  await sendCmd('G1 Z110 F300');           await waitForOk().catch(()=>{});
-  await sendCmd(`M104 S${Math.round(temp)}`); await waitForOk().catch(()=>{});
-  await sendCmd(`M109 S${Math.round(temp)}`); await waitForOk().catch(()=>{}); // wait to temp
+  try {
+    await sendCmd('G90');                      await waitForOk().catch(()=>{});
+    await sendCmd('G1 Z110 F300');            await waitForOk().catch(()=>{});
+    await sendCmd(`M104 S${Math.round(temp)}`);await waitForOk().catch(()=>{});
+    await sendCmd(`M109 S${Math.round(temp)}`);await waitForOk().catch(()=>{});
 
-  await sendCmd('G91');                    await waitForOk().catch(()=>{});
-  await sendCmd(`G1 E-${mm.toFixed(2)} F200`); await waitForOk().catch(()=>{});
-  await sendCmd('G90');                    await waitForOk().catch(()=>{});
+    await sendCmd('M83');                      await waitForOk().catch(()=>{});
+    await sendCmd(`G1 E-${mm.toFixed(2)} F200`);await waitForOk().catch(()=>{});
+    await sendCmd('M400');                     await waitForOk().catch(()=>{});  // <-- critical
+    await sendCmd('M82');                      await waitForOk().catch(()=>{});
 
-  // Cool down and stop "print" (no moves)
-  await sendCmd('M104 S0'); await waitForOk().catch(()=>{});
-  await sendCmd('M140 S0'); await waitForOk().catch(()=>{});
-  sendStatus.textContent = 'Filament unload complete (cooled)';
+    await sendCmd('M104 S0');                  await waitForOk().catch(()=>{});
+    await sendCmd('M140 S0');                  await waitForOk().catch(()=>{});
+
+    sendStatus.textContent = 'Filament unload complete (cooled)';
+  } catch (e) {
+    sendStatus.textContent = 'Unload failed';
+    console.error(e);
+  }
 });
 
 // Diagnostics
