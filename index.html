@@ -4,6 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>3D Printer Utils</title>
+<meta name="author" content="issypup">
+<meta name="date" content="2025-08-10">
 <style>
   :root { --bar-h: 42px; }
   body {
@@ -79,12 +81,43 @@
     border-radius: 6px;
   }
 
+
   /* Footer status */
   #footerStatus {
     position: fixed; bottom: 0; left: 0; right: 0;
     background: #222; color: #fff; padding: 6px 10px;
     display:flex; justify-content: space-between; font-size: 0.9em;
   }
+
+#aboutTab .aboutCard {
+  background: #fff;
+  border: 1px solid #ddd;
+  padding: 16px 18px;
+  border-radius: 8px;
+  max-width: 560px;
+  margin: 20px auto;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+}
+
+#aboutTab .aboutCard h2 {
+  margin: 0 0 10px;
+  font-size: 1.3em;
+  color: #333;
+  border-bottom: 2px solid #eee;
+  padding-bottom: 6px;
+}
+
+#aboutTab .aboutCard p { margin: 10px 0 0; color: #555; }
+
+#aboutTab .kv {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 0.95em;
+}
+#aboutTab .kv span:first-child { color: #666; }
+#aboutTab .kv span:last-child  { font-weight: 600; color: #111; }
 
   /* Small UI helpers */
   .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
@@ -124,6 +157,7 @@
   <button data-tab="maintTab">Maintenance</button>
   <button data-tab="diagTab">Diagnostics</button>
   <button data-tab="senderTab">G-code Sender</button>
+  <button data-tab="aboutTab">About</button>
 </div>
 
 <!-- TAB 1: Connection & Log -->
@@ -328,6 +362,16 @@
     <span id="sendStatus" class="muted">Idle</span>
   </div>
   <p class="muted">Sends the file line-by-line over serial. Comments/blank lines are skipped. This is best for short jobs, calibration, or macros.</p>
+</div>
+
+<!-- TAB 10: About -->
+<div id="aboutTab" class="tabContent">
+  <div class="aboutCard">
+    <h2>About</h2>
+    <div class="kv"><span>Author: issypup</span></div>
+    <div class="kv"><span>Date: 10 August 2025</span></div>
+    <p>This tool helps manage 3D printer tasks / maintenance from your browser, it needs a web serial capable browser</p>
+  </div>
 </div>
 
 <div id="footerStatus">
