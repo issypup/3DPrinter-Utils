@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>Printer Utils</title>
+<title>Meshter Chief</title>
 <style>
   :root { --bar-h: 42px; }
   body {
@@ -81,7 +81,7 @@
   <span id="lastUpdated" class="pill">Last updated: —</span>
 </div>
 
-<h1>Printer Utils</h1>
+<h1>Meshter Chief</h1>
 
 <!-- Tabs -->
 <div id="tabButtons">
@@ -120,7 +120,6 @@
   </div>
 
   <!-- Mesh Form (manual + populated from printer) -->
-  <h1>Leveling mess in testing</h1>
   <form id="levelForm">
     <h2>Enter / View Mesh Readings</h2>
     <table><tbody id="meshInput"></tbody></table>
@@ -426,6 +425,17 @@ const screwAffects = {
   C4: [[3,3]]
 };
 
+// --- Temperature line matcher & polling helpers ---
+const TEMP_REGEX = /T:\s*[0-9.+-]+.*?B:\s*[0-9.+-]+/i;
+function isTempLine(s) { return TEMP_REGEX.test(s); }
+
+function startTempPolling() {
+  if (!tempTimer) tempTimer = setInterval(() => sendCmd('M105'), 3000);
+}
+function stopTempPolling() {
+  if (tempTimer) { clearInterval(tempTimer); tempTimer = null; }
+}
+
 /* =============================
    UI helpers & logging
 ============================= */
@@ -462,7 +472,6 @@ function setConnected(connected) {
   // EEPROM
   readCfg.disabled = !connected;
   saveCfg.disabled = !connected;
-  // resetCfg.disabled= !connected;
 
   // Maintenance
   preheatPLA.disabled = preheatPETG.disabled = preheatABS.disabled = cooldown.disabled = loadFil.disabled = unloadFil.disabled = !connected;
@@ -474,13 +483,9 @@ function setConnected(connected) {
   sendGcode.disabled = !connected || !gcodeFile.files.length;
   cancelSend.disabled= true;
 
-  // temp polling
-  if (connected && !tempTimer) {
-    tempTimer = setInterval(() => sendCmd('M105'), 3000);
-  } else if (!connected && tempTimer) {
-    clearInterval(tempTimer);
-    tempTimer = null;
-  }
+  // Temp polling via helpers
+  if (connected) startTempPolling();
+  else stopTempPolling();
 }
 function _logBase(msg) {
   if (!msg.endsWith('\n')) msg += '\n';
@@ -489,6 +494,8 @@ function _logBase(msg) {
 }
 function logMsg(msg) {
   _logBase(msg);
+  // When capturing to text boxes, ignore temperature spam lines
+  if (captureMode && isTempLine(msg)) return; // still logged to printerLog, but not mirrored
   if (captureMode === 'config') {
     configBox.value += msg.endsWith('\n') ? msg : msg + '\n';
     configBox.scrollTop = configBox.scrollHeight;
@@ -497,6 +504,7 @@ function logMsg(msg) {
     diagBox.scrollTop = diagBox.scrollHeight;
   }
 }
+
 function updateLastUpdated() { lastUpdated.textContent = 'Last updated: ' + new Date().toLocaleTimeString(); }
 function setLastCmd(cmd) { lastCmd.textContent = 'Last Cmd: ' + cmd; }
 
@@ -676,6 +684,12 @@ async function readLoop() {
         renderSuggestions(mesh);
         updateLastUpdated();
       }
+
+      // If we were capturing a block (M503/M115/M122), end capture on 'ok' and resume temp polling
+      if (captureMode && /(^|\n)ok\b/i.test(value)) {
+        captureMode = null;
+        startTempPolling();
+      }
     }
   } catch (err) {
     logMsg('⚠️ Read error: ' + err.message);
@@ -683,6 +697,7 @@ async function readLoop() {
     reading = false;
   }
 }
+
 async function sendCmd(cmd) {
   if (!writer) { logMsg('⚠️ Not connected.'); return; }
   setLastCmd(cmd);
@@ -865,6 +880,7 @@ parkHead.addEventListener('click', () => sendCmd('G90\nG1 X0 Y0 Z10 F3000'));
 readCfg.addEventListener('click', async () => {
   configBox.value = '';
   captureMode = 'config';
+  stopTempPolling();
   await sendCmd('M503');
 });
 saveCfg.addEventListener('click', async () => { await sendCmd('M500'); });
@@ -884,14 +900,15 @@ unloadFil.addEventListener('click',   () => sendCmd('M104 S200\nM109 S200\nG91\n
 fwInfo.addEventListener('click', () => {
   diagBox.value = '';
   captureMode = 'diag';
+  stopTempPolling();
   sendCmd('M115');
 });
 tmcDiag.addEventListener('click', () => {
   diagBox.value = '';
   captureMode = 'diag';
+  stopTempPolling();
   sendCmd('M122');
 });
-
 // G-code Sender
 gcodeFile.addEventListener('change', () => {
   sendGcode.disabled = !gcodeFile.files.length || !writer;
