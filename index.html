@@ -689,39 +689,46 @@ async function connectPrinter() {
       alert('⚠️ Web Serial API not supported. Use Chrome/Edge/Brave on desktop.');
       return;
     }
+
     setActivity('Connecting…', 'warn');
 
-    // If we already have a port object, reuse it; otherwise ask the user.
+    // Reuse existing granted port if possible
     if (!port) {
-      port = await navigator.serial.requestPort();
-    } else {
-      // If somehow left open, close cleanly before re-opening
-      try { await port.close(); } catch {}
+      const granted = await navigator.serial.getPorts();
+      port = granted[0] || await navigator.serial.requestPort();
     }
 
-    await port.open({ baudRate: 115200 });
+    // If the port isn't open, try to open it
+    if (!port.readable || !port.writable) {
+      try {
+        await port.open({ baudRate: 115200 });
+      } catch (e) {
+        // If it’s already open, we can proceed to (re)attach streams
+        if (!/already open/i.test(String(e))) throw e;
+        logMsg('ℹ️ Port is already open; reusing existing connection.');
+      }
+    }
 
-    writer = port.writable.getWriter();
+    // Clean up any old streams before (re)attaching
+    try { await reader?.cancel(); } catch {}
+    try { reader?.releaseLock(); } catch {}
+    try { writer?.releaseLock(); } catch {}
 
     const tds = new TextDecoderStream();
     textDecoder = tds;
-    port.readable.pipeTo(tds.writable);
+    port.readable.pipeTo(tds.writable).catch(()=>{});
     reader = tds.readable.getReader();
+    writer = port.writable.getWriter();
 
     setConnected(true);
+    startTempPolling();           // make sure temps resume
     updateLastUpdated();
     setActivity('Connected', 'ok');
     logMsg('✅ Connected.');
+
     if (!reading) readLoop();
   } catch (err) {
-    // If the port is already open, just proceed to set state
-    if (String(err?.message || err).includes('already open')) {
-      setConnected(true);
-      setActivity('Connected', 'ok');
-      logMsg('ℹ️ Port was already open; continuing.');
-      if (!reading && reader) readLoop();
-      return;
-    }
+    setConnected(false);
     setActivity('Connect error', 'bad');
     logMsg('❌ ' + err.message);
   }
@@ -731,21 +738,29 @@ async function disconnectPrinter() {
   setActivity('Disconnecting…', 'warn');
   try {
     stopTempPolling();
-    try { if (reader) { await reader.cancel(); reader.releaseLock(); } } catch(_) {}
-    try { if (textDecoder && textDecoder.readable) { await textDecoder.readable.cancel?.(); } } catch(_) {}
-    try { if (writer) writer.releaseLock(); } catch(_) {}
+
+    try { await reader?.cancel(); } catch {}
+    try { reader?.releaseLock(); } catch {}
+    try { writer?.releaseLock(); } catch {}
+
+    try {
+      // Break the pipe so close() isn’t blocked by the stream
+      await textDecoder?.readable?.cancel?.();
+    } catch {}
+
     if (port) await port.close();
   } catch (e) {
     console.warn('Disconnect error:', e);
   } finally {
-    updateLastUpdated();
     _rejectAllOk(new Error('Disconnected'));
-    port = reader = writer = textDecoder = null;
+    port = null; reader = null; writer = null; textDecoder = null;
     setConnected(false);
     setActivity('Idle');
+    updateLastUpdated();
     logMsg('🔌 Disconnected.');
   }
 }
+
 
 let rxBuffer = '';
 
