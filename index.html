@@ -858,6 +858,51 @@ function waitForOk() {
   });
 }
 
+async function waitForHotend(target, tol = 1.0) {
+  // tell the printer what we want (non-blocking)
+  await sendCmd(`M104 S${Math.round(target)}`);
+  await waitForOk().catch(() => {});
+
+  // poll until within tolerance (uses existing M105 poll, but we also kick it)
+  return new Promise((resolve) => {
+    let timer;
+    const check = async () => {
+      // nudge a temp report so UI and temps[] keep updating
+      await sendCmd('M105', true);
+
+      if (temps.hot != null && Math.abs(temps.hot - target) <= tol) {
+        clearInterval(timer);
+        resolve();
+      }
+    };
+    timer = setInterval(check, 1000);
+    check();
+  });
+}
+
+
+async function waitForBed(target, tol = 1.0) {
+  // tell the printer what we want (non-blocking)
+  await sendCmd(`M140 S${Math.round(target)}`);
+  await waitForOk().catch(() => {});
+
+  // poll until within tolerance (uses existing M105 poll, but we also kick it)
+  return new Promise((resolve) => {
+    let timer;
+    const check = async () => {
+      // nudge a temp report so UI and temps[] keep updating
+      await sendCmd('M105', true);
+
+      if (temps.bed != null && Math.abs(temps.bed - target) <= tol) {
+        clearInterval(timer);
+        resolve();
+      }
+    };
+    timer = setInterval(check, 1000);
+    check();
+  });
+}
+
 async function readLoop() {
   reading = true;
   try {
@@ -882,13 +927,14 @@ async function readLoop() {
   const tTar = tm[2] !== undefined ? parseFloat(tm[2]) : null;
   const bCur = parseFloat(tm[3]);
   const bTar = tm[4] !== undefined ? parseFloat(tm[4]) : null;
+
   if (Number.isFinite(tCur)) {
-    hotendNow.textContent = `Current: ${tCur.toFixed(1)}°C`;
-    setTempPill(topHotendPill, topHotendText, tCur, tTar);
+    temps.hot = tCur;
+    temps.hotTarget = Number.isFinite(tTar) ? tTar : null;
   }
   if (Number.isFinite(bCur)) {
-    bedNow.textContent = `Current: ${bCur.toFixed(1)}°C`;
-    setTempPill(topBedPill, topBedText, bCur, bTar);
+    temps.bed = bCur;
+    temps.bedTarget = Number.isFinite(bTar) ? bTar : null;
   }
         }
 
@@ -1044,6 +1090,29 @@ async function streamGcode(file) {
     sendStatus.textContent = 'Done';
   }
   cancelSend.disabled = true;
+
+// ⬆️ top-level (near other globals)
+let postPrintTimer = null;
+
+// ... inside streamGcode, after you set sendStatus/cancelSend:
+if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
+
+if (!cancelStream) {
+  postPrintTimer = setTimeout(() => {
+    if (port && writer) {
+      logMsg('⌛ Auto-closing print screen in firmware…');
+      sendCmd('//action:cancel', true); // quiet, no ok expected
+    }
+    postPrintTimer = null;
+  }, 60_000);
+}
+
+// (only once, not inside the function)
+window.addEventListener('unload', () => { if (postPrintTimer) clearTimeout(postPrintTimer); });
+
+// ... in disconnectPrinter() finally block:
+if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
+
 }
 
 
@@ -1173,26 +1242,25 @@ cooldown.addEventListener('click',    () => sendCmd('M104 S0\nM140 S0'));
 loadFil.addEventListener('click', async () => {
   const mm = parseFloat(prompt('How many mm to LOAD?', '60'));
   if (!Number.isFinite(mm) || mm <= 0) return;
-
   const temp = parseFloat(prompt('Hotend temp for load (°C)?', '200'));
   if (!Number.isFinite(temp) || temp <= 0) return;
 
   try {
-    // Absolute XYZ, move Z up, heat and wait
-    await sendCmd('G90');                      await waitForOk().catch(()=>{});
-    await sendCmd('G1 Z110 F300');            await waitForOk().catch(()=>{});
-    await sendCmd(`M104 S${Math.round(temp)}`);await waitForOk().catch(()=>{});
-    await sendCmd(`M109 S${Math.round(temp)}`);await waitForOk().catch(()=>{}); // blocks until at temp
+    await sendCmd('G90');                    await waitForOk().catch(()=>{});
+    await sendCmd('G1 Z110 F300');           await waitForOk().catch(()=>{});
 
-    // Relative extrusion only, perform load
-    await sendCmd('M83');                      await waitForOk().catch(()=>{});  // E relative
-    await sendCmd(`G1 E${mm.toFixed(2)} F200`);await waitForOk().catch(()=>{});
-    await sendCmd('M400');                     await waitForOk().catch(()=>{});  // <-- wait for buffer to drain
-    await sendCmd('M82');                      await waitForOk().catch(()=>{});  // E back to absolute (common default)
+    // heat without triggering Printing screen
+    await waitForHotend(temp, 1.0).catch(()=>{}); // waits until within 1°C
 
-    // Now it’s safe to cool down
-    await sendCmd('M104 S0');                  await waitForOk().catch(()=>{});
-    await sendCmd('M140 S0');                  await waitForOk().catch(()=>{});
+    // relative extrusion only, then flush
+    await sendCmd('M83');                    await waitForOk().catch(()=>{});
+    await sendCmd(`G1 E${mm.toFixed(2)} F200`); await waitForOk().catch(()=>{});
+    await sendCmd('M400');                   await waitForOk().catch(()=>{}); // ensure done
+    await sendCmd('M82');                    await waitForOk().catch(()=>{});
+
+    // cool down, do not move/park
+    await sendCmd('M104 S0');                await waitForOk().catch(()=>{});
+    await sendCmd('M140 S0');                await waitForOk().catch(()=>{});
 
     sendStatus.textContent = 'Filament load complete (cooled)';
   } catch (e) {
@@ -1203,23 +1271,22 @@ loadFil.addEventListener('click', async () => {
 unloadFil.addEventListener('click', async () => {
   const mm = parseFloat(prompt('How many mm to UNLOAD?', '60'));
   if (!Number.isFinite(mm) || mm <= 0) return;
-
   const temp = parseFloat(prompt('Hotend temp for unload (°C)?', '200'));
   if (!Number.isFinite(temp) || temp <= 0) return;
 
   try {
-    await sendCmd('G90');                      await waitForOk().catch(()=>{});
-    await sendCmd('G1 Z110 F300');            await waitForOk().catch(()=>{});
-    await sendCmd(`M104 S${Math.round(temp)}`);await waitForOk().catch(()=>{});
-    await sendCmd(`M109 S${Math.round(temp)}`);await waitForOk().catch(()=>{});
+    await sendCmd('G90');                    await waitForOk().catch(()=>{});
+    await sendCmd('G1 Z110 F300');           await waitForOk().catch(()=>{});
 
-    await sendCmd('M83');                      await waitForOk().catch(()=>{});
-    await sendCmd(`G1 E-${mm.toFixed(2)} F200`);await waitForOk().catch(()=>{});
-    await sendCmd('M400');                     await waitForOk().catch(()=>{});  // <-- critical
-    await sendCmd('M82');                      await waitForOk().catch(()=>{});
+    await waitForHotend(temp, 1.0).catch(()=>{});
 
-    await sendCmd('M104 S0');                  await waitForOk().catch(()=>{});
-    await sendCmd('M140 S0');                  await waitForOk().catch(()=>{});
+    await sendCmd('M83');                    await waitForOk().catch(()=>{});
+    await sendCmd(`G1 E-${mm.toFixed(2)} F200`); await waitForOk().catch(()=>{});
+    await sendCmd('M400');                   await waitForOk().catch(()=>{}); // ensure done
+    await sendCmd('M82');                    await waitForOk().catch(()=>{});
+
+    await sendCmd('M104 S0');                await waitForOk().catch(()=>{});
+    await sendCmd('M140 S0');                await waitForOk().catch(()=>{});
 
     sendStatus.textContent = 'Filament unload complete (cooled)';
   } catch (e) {
