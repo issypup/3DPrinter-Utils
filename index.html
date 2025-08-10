@@ -40,7 +40,10 @@
 .pill.ready  { background:#2ecc71; }  /* green, stable */
 .pill.heating{ background:#e74c3c; }  /* red, heating */
 .pill.cooling{ background:#3498db; }  /* blue, cooling */
-
+.pill.offline {
+  background: #444; /* light grey */ 
+  color: #fff;
+}
 /* pulse effect (used for heating/cooling) */
 .pulse { animation: pillPulse 1.0s ease-in-out infinite; }
 @keyframes pillPulse {
@@ -454,6 +457,11 @@ const screwAffects = {
 
 // --- Temperature line matcher & polling helpers ---
 
+topHotendText.textContent = '--°C';
+topBedText.textContent = '--°C';
+topHotendPill.className = 'pill offline';
+topBedPill.className = 'pill offline';
+
 const topHotendPill = document.getElementById('topHotendPill');
 const topBedPill    = document.getElementById('topBedPill');
 const topHotendText = document.getElementById('topHotend');
@@ -757,6 +765,10 @@ async function disconnectPrinter() {
   } catch (e) {
     console.warn('Disconnect error:', e);
   } finally {
+    topHotendText.textContent = '--°C';
+topBedText.textContent = '--°C';
+topHotendPill.className = 'pill offline';
+topBedPill.className = 'pill offline';
     _rejectAllOk(new Error('Disconnected'));
     port = null; reader = null; writer = null; textDecoder = null;
     setConnected(false);
