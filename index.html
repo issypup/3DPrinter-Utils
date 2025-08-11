@@ -569,6 +569,11 @@ const cooldown        = document.getElementById('cooldown');
 const loadFil         = document.getElementById('loadFil');
 const unloadFil       = document.getElementById('unloadFil');
 
+//Easter egg
+  const eeOverlay = document.getElementById('eeOverlay');
+  const eeModal   = document.getElementById('eeModal');
+  const eeClose   = document.getElementById('eeClose');
+  const eeBody    = document.getElementById('eeBody');
 
 /* =========================================================
    2) CONSTANTS (maps, regex, fixed values)
@@ -2489,10 +2494,7 @@ window.addEventListener('unload', () => {
 document.addEventListener('DOMContentLoaded', () => {
   const aboutBtn = document.querySelector('#tabButtons button[data-tab="aboutTab"]');
   const allTabBtns = Array.from(document.querySelectorAll('#tabButtons button'));
-  const eeOverlay = document.getElementById('eeOverlay');
-  const eeModal   = document.getElementById('eeModal');
-  const eeClose   = document.getElementById('eeClose');
-  const eeBody    = document.getElementById('eeBody');
+
 
   if (!aboutBtn || !eeOverlay || !eeModal || !eeClose || !eeBody) {
     console.warn('[EE] Modal wiring skipped (missing elements).');
@@ -2502,6 +2504,18 @@ document.addEventListener('DOMContentLoaded', () => {
   // Any other tab click resets
   allTabBtns.forEach(btn => {
     if (btn !== aboutBtn) btn.addEventListener('click', resetStreak);
+  });
+
+  aboutBtn.addEventListener('click', () => {
+    streak += 1;
+    if (streak >= 5) {
+      openEasterEgg();
+      streak = 0;
+    }
+  });
+
+    allTabBtns.forEach(btn => {
+    if (btn !== aboutBtn) btn.addEventListener('click', () => { streak = 0; });
   });
 
   // Close handlers
