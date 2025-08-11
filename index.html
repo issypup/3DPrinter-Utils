@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>3D Printer Utils test</title>
+<title>3D Printer Utils TEST</title>
 <meta name="author" content="issypup">
 <meta name="date" content="2025-08-10">
 <style>
@@ -196,7 +196,7 @@
 <span id="etaPill" class="pill" style="display:none;">ETA: —</span>
 </div>
 
-<h1>3D Printer Utils test</h1>
+<h1>3D Printer Utils TEST</h1>
 
 <!-- Tabs -->
 <div id="tabButtons">
@@ -236,21 +236,18 @@
 
 <!-- TAB 2: Leveling -->
 <div id="levelTab" class="tabContent">
-  <div class="tabControls" id="printerNavLevel">
-    <button id="readMeshBtn" disabled>Read Mesh (G29 T)</button>
-    <button id="reprobeBtn" disabled>Re-Probe (G28 → G29 → G29 T)</button>
-    <button type="button" id="exportManualBtn">Export Manual Mesh</button>
-    <button type="button" id="exportPrinterBtn">Export Last Printer Mesh</button>
+<div class="tabControls" id="printerNavLevel">
+  <button id="readMeshBtn" disabled>Home &amp; Probe (G28 → G29 T)</button>
+  <button type="button" id="exportMeshBtn">Export Mesh</button>
 
-    <!-- NEW: printer dropdown -->
-    <label style="margin-left:auto">
-      Printer:
-      <select id="levelPrinterSelect">
-        <option value="cr6se" selected>CR-6 SE</option>
-        <option value="unsupported">Unsupported</option>
-      </select>
-    </label>
-  </div>
+  <label style="margin-left:auto">
+    Printer:
+    <select id="levelPrinterSelect">
+      <option value="cr6se" selected>CR-6 SE</option>
+      <option value="unsupported">Unsupported</option>
+    </select>
+  </label>
+</div>
 
   <!-- NEW: message for unsupported printers -->
   <div id="unsupportedMsg" class="box" style="display:none; max-width:560px">
@@ -506,13 +503,14 @@ const printerLog      = document.getElementById('printerLog');
 const connectBtn      = document.getElementById('connectBtn');
 const disconnectBtn   = document.getElementById('disconnectBtn');
 const readMeshBtn     = document.getElementById('readMeshBtn');
-const reprobeBtn      = document.getElementById('reprobeBtn');
 const sendCmdBtn      = document.getElementById('sendCmdBtn');
 const manualCmd       = document.getElementById('manualCmd');
 const clearLogBtn     = document.getElementById('clearLogBtn');
 const resetBtn        = document.getElementById('resetBtn');
 const bedPidBtn       = document.getElementById('bedPidBtn');
 const hotendPidBtn    = document.getElementById('hotendPidBtn');
+
+const exportMeshBtn   = document.getElementById('exportMeshBtn');
 
 const hotendSet       = document.getElementById('hotendSet');
 const bedSet          = document.getElementById('bedSet');
@@ -610,6 +608,7 @@ let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
 
 let pidActiveHotend = false;
 let pidActiveBed    = false;
+let pidTarget = null; // 'hotend', 'bed', or null
 
 let meshScratch    = Array.from({ length: 4 }, () => Array(4).fill(null));
 let temps          = { hot: null, hotTarget: null, bed: null, bedTarget: null };
@@ -638,6 +637,8 @@ let isBusyProcessing  = false;
 let lastOkAt          = 0;
 
 let pendingOk      = []; // queue for waitForOk()
+
+let isHomed = false;
 
 /* =========================================================
    4) TABS BOOTSTRAP (runs once)
@@ -675,22 +676,45 @@ if (debugToggle) {
   });
 }
 
+async function coolToIdle() {
+  try {
+    await sendCmd('M104 S0'); await waitForOk().catch(()=>{});
+    await sendCmd('M140 S0'); await waitForOk().catch(()=>{});
+  } finally {
+    clearAllPidUi();
+    setActivity('Temps set to 0', 'ok');
+    updateLastUpdated();
+  }
+}
+
+async function markHomedAfterG28() {
+  await sendCmd('G28'); 
+  await waitForOk().catch(()=>{});
+  isHomed = true;
+}
+
 function setPidActive(tool, on = true) {
   if (tool === 'hotend') pidActiveHotend = !!on;
   if (tool === 'bed')    pidActiveBed    = !!on;
 
-  // refresh both pills immediately
-  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
-  setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget);
+  // keep the pill behavior consistent with whatever started PID
+  pidTarget = on ? tool : null;
+
+  // refresh pills immediately
+  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
+  setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget, 'bed');
 }
 
 function clearAllPidUi() {
   pidActiveHotend = false;
   pidActiveBed = false;
+  pidTarget = null; // <- ensure the orange pulse stops
+
   topHotendPill.classList.remove('warn', 'pulse');
   topBedPill.classList.remove('warn', 'pulse');
-  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
-  setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget);
+
+  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
+  setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget, 'bed');
 }
 
 async function sendCmdsSequential(...cmds) {
@@ -863,8 +887,8 @@ function refreshVirtualTemps() {
   temps.bedTarget = vState.bedTarget;
 
   // Update the pills + panel (normally done by readLoop in real mode)
-  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
-  setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget);
+setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
+setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget, 'bed');
   updateTempPanel();
 }
 
@@ -967,7 +991,6 @@ function setConnected(connected) {
   connectBtn.disabled    = connected;
   disconnectBtn.disabled = !connected;
   readMeshBtn.disabled   = !connected;
-  reprobeBtn.disabled    = !connected;
   sendCmdBtn.disabled    = !connected;
   bedPidBtn.disabled     = !connected;
   hotendPidBtn.disabled  = !connected;
@@ -1051,30 +1074,38 @@ function tempState(current, target, tolerance = 0.5) {
   return diff > 0 ? 'heating' : 'cooling';
 }
 
-function setTempPill(pillEl, textEl, curr, target) {
-  textEl.textContent = (target != null && !Number.isNaN(target))
-    ? `${curr.toFixed(1)}°C / ${Math.round(target)}°`
-    : `${curr.toFixed(1)}°C`;
+function setTempPill(pillEl, textEl, curr, target, type /* 'hotend' | 'bed' */) {
+  // Text
+  textEl.textContent =
+    (target != null && !Number.isNaN(target))
+      ? `${curr.toFixed(1)}°C / ${Math.round(target)}°`
+      : `${curr.toFixed(1)}°C`;
 
-  // If PID active for this tool, force orange pulse
-  if ((pillEl === topHotendPill && pidActiveHotend) ||
-      (pillEl === topBedPill    && pidActiveBed)) {
-    pillEl.classList.remove('offline','idle','ready','heating','cooling','pulse','ok','bad');
+  // Reset base classes
+  pillEl.classList.remove(
+    'offline','idle','ready','heating','cooling','pulse','warn','ok','bad'
+  );
+
+  // If this pill is the current PID target, force orange pulse
+  if (pidTarget && pidTarget === type) {
     pillEl.classList.add('warn','pulse');
     return;
   }
 
-  // Normal state logic
-  const state = tempState(curr, target);
-  pillEl.classList.remove('offline','idle','ready','heating','cooling','pulse','warn');
+  // Normal state
+  const state = tempState(curr, target); // 'idle' | 'ready' | 'heating' | 'cooling'
   pillEl.classList.add(state);
-  if (state === 'heating' || state === 'cooling') pillEl.classList.add('pulse');
+
+  // Pulse only while heating/cooling and no PID is running
+  if ((state === 'heating' || state === 'cooling') && !pidTarget) {
+    pillEl.classList.add('pulse');
+  }
 }
 
 // Now updateTempPanel simply calls setTempPill for each
 function updateTempPanel() {
   if (temps.hot != null || temps.hotTarget != null) {
-    setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
+setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
     hotendNow.textContent = `Current: ${temps.hot?.toFixed(1) ?? '—'}°C` +
       (temps.hotTarget != null ? ` / ${Math.round(temps.hotTarget)}°` : '');
   } else {
@@ -1082,7 +1113,7 @@ function updateTempPanel() {
   }
 
   if (temps.bed != null || temps.bedTarget != null) {
-    setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget);
+    setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget, 'bed');
     bedNow.textContent = `Current: ${temps.bed?.toFixed(1) ?? '—'}°C` +
       (temps.bedTarget != null ? ` / ${Math.round(temps.bedTarget)}°` : '');
   } else {
@@ -1282,6 +1313,36 @@ hotendPidBtn.addEventListener('click', runHotendPID);
    6) MESH UTILS (parse, store, render)
 ========================================================= */
 
+function collectMeshFromInputs() {
+  const mesh = [];
+  for (let y = 0; y < 4; y++) {
+    const row = [];
+    for (let x = 0; x < 4; x++) {
+      const el = document.getElementById(`cell-${y}-${x}`);
+      const v = el ? parseFloat(el.value) : NaN;
+      row.push(Number.isFinite(v) ? v : null);
+    }
+    mesh.push(row);
+  }
+  const complete = mesh.every(r => r.every(v => typeof v === 'number' && !Number.isNaN(v)));
+  return complete ? mesh : null;
+}
+
+exportMeshBtn.addEventListener('click', () => {
+  const fromInputs = collectMeshFromInputs();
+  if (fromInputs) {
+    exportMeshAsFile(fromInputs, 'current');
+    return;
+  }
+  const hist = JSON.parse(localStorage.getItem('levels') || '[]');
+  const latest = hist.at(-1);
+  if (latest && Array.isArray(latest) && latest.length === 4) {
+    exportMeshAsFile(latest, 'latest');
+  } else {
+    alert('⚠️ No mesh available to export yet.');
+  }
+});
+
 function processMeshLineFromAnywhere(line) {
   const completed = ingestMeshLine(line);
   if (completed) {
@@ -1295,6 +1356,22 @@ function processMeshLineFromAnywhere(line) {
   }
 }
 
+async function homeAndProbe() {
+  try {
+    setActivity('Homing…', 'warn');
+    await sendCmd('G28'); await waitForOk();
+
+    setActivity('Probing…', 'warn');
+    await sendCmd('G29 T'); await waitForOk();
+
+    await coolToIdle();               // ← cool after probe
+    setActivity('Parsing…', 'warn');
+  } catch (e) {
+    setActivity('Home & probe failed', 'bad');
+    logMsg('⚠️ Home & probe error: ' + (e?.message || e));
+  }
+}
+
 function updateLevelView() {
   const choice = (levelPrinterSelect?.value || 'cr6se');
   const isCR6  = choice === 'cr6se';
@@ -1304,7 +1381,6 @@ function updateLevelView() {
   if (unsupportedMsg) unsupportedMsg.style.display = isCR6 ? 'none' : '';
 
   readMeshBtn.disabled = !isCR6 || !isConnectedNow;
-  reprobeBtn.disabled  = !isCR6 || !isConnectedNow;
 }
 
 
@@ -1567,7 +1643,7 @@ async function disconnectPrinter(reason = 'user') {
     if (sendProgress) sendProgress.style.width = '0%';
     if (sendStatus)   sendStatus.textContent = 'Idle';
     hideEtaPill();
-	clearAllPidUi();
+  clearAllPidUi();
     if (connKind === 'virtual' || virtualMode) {
       await disconnectVirtual();
       connKind = 'none';
@@ -1619,26 +1695,25 @@ function resolveAllWaiting() {
   waitingResolvers.splice(0).forEach(fn => { try { fn(); } catch {} });
 }
 
-function waitForOk(timeoutMs = 30000) {
+
+//FIX Below for Gcode send error
+function waitForOk() {
   return new Promise((resolve, reject) => {
-    const needsRealConn = (connKind !== 'virtual' && !virtualMode);
-    if (needsRealConn && (!port || !writer)) return reject(new Error('Disconnected'));
-    if (cancelStream) return reject(new Error('Cancelled'));
-    const entry = { resolve, reject };
-    pendingOk.push(entry);
-    const t = setTimeout(() => {
-      // prune this waiter if still pending
-      const i = pendingOk.indexOf(entry);
-      if (i >= 0) pendingOk.splice(i, 1);
-      reject(new Error('Timeout waiting for ok'));
-    }, timeoutMs);
-    // clear the timeout when we resolve/reject
-    const origResolve = entry.resolve, origReject = entry.reject;
-    entry.resolve = () => { clearTimeout(t); origResolve(); };
-    entry.reject  = (e) => { clearTimeout(t); origReject(e); };
+    // Real serial requires a live port/writer; virtual can proceed.
+    const isReal = (connKind === 'real');
+    if (isReal && (!port || !writer)) {
+      reject(new Error('Disconnected'));
+      return;
+    }
+    if (cancelStream) {
+      reject(new Error('Cancelled'));
+      return;
+    }
+    // Resolve only when an actual 'ok' arrives (readLoop → _resolveNextOk),
+    // or reject immediately via disconnect/cancel (_rejectAllOk).
+    pendingOk.push({ resolve, reject });
   });
 }
-
 
 async function readLoop() {
   reading = true;
@@ -1676,7 +1751,7 @@ const chunk = (value instanceof Uint8Array)
           if (Number.isFinite(tCur)) {
             temps.hot = tCur;
             temps.hotTarget = Number.isFinite(tTar) ? tTar : null;
-            setTempPill(topHotendPill, topHotendText, temps.hot, temps.hotTarget);
+            setTempPill(topHotendPill, topHotendText, temps.hot, temps.hotTarget, 'hotend');
           }
         }
         if (bMatch) {
@@ -1685,7 +1760,7 @@ const chunk = (value instanceof Uint8Array)
           if (Number.isFinite(bCur)) {
             temps.bed = bCur;
             temps.bedTarget = Number.isFinite(bTar) ? bTar : null;
-            setTempPill(topBedPill, topBedText, temps.bed, temps.bedTarget);
+            setTempPill(topBedPill, topBedText, temps.bed, temps.bedTarget, 'bed');
           }
         }
         if (tMatch || bMatch) updateTempPanel();
@@ -1771,9 +1846,10 @@ if (/PID Autotune failed/i.test(line)) {
   }
 }
 
+//should fix bed heating bug
 async function sendCmd(cmd, quiet = false) {
-  // Route commands properly in virtual mode
-  if (connKind === 'virtual' || virtualMode) {
+  // Route commands properly only if we're actually in virtual mode *now*
+  if (connKind === 'virtual') {
     return sendCmdVirtual(cmd, quiet);
   }
 
@@ -1827,9 +1903,17 @@ async function runBedPID() {
   const t = promptNumber('Enter bed PID target temp (S):', 60);
   if (t === null) return;
   if (!Number.isFinite(t)) return alert('Invalid temperature.');
-  setPidActive('bed', true);                 // 👈 turn on orange pulse
+
   setActivity(`PID bed @ ${t}°C…`, 'warn');
-  await sendCmd(`M303 C5 E-1 S${t} U`);
+
+  pidTarget = 'bed';
+  try {
+    await sendCmd(`M303 C5 E-1 S${t} U`);
+    await waitForOk(); // resolves on real 'ok', no timeout
+  } finally {
+    pidTarget = null;  // always clear even if user cancels/disconnects
+  }
+
   logMsg('ℹ️ PID tuning can take a few minutes. After success, send M500 to save if required.');
 }
 
@@ -1837,9 +1921,17 @@ async function runHotendPID() {
   const t = promptNumber('Enter nozzle PID target temp (S):', 220);
   if (t === null) return;
   if (!Number.isFinite(t)) return alert('Invalid temperature.');
-  setPidActive('hotend', true);              // 👈 turn on orange pulse
+
   setActivity(`PID hotend @ ${t}°C…`, 'warn');
-  await sendCmd(`M303 C5 E0 S${t} U`);
+
+  pidTarget = 'hotend';
+  try {
+    await sendCmd(`M303 C5 E0 S${t} U`);
+    await waitForOk(); // resolves on real 'ok', no timeout
+  } finally {
+    pidTarget = null;  // always clear even if user cancels/disconnects
+  }
+
   logMsg('ℹ️ PID tuning can take a few minutes. After success, send M500 to save if required.');
 }
 
@@ -1858,15 +1950,31 @@ function sendManual(){
   manualCmd.value = '';
 }
 
-function jog(axis, dir) {
-  const step = parseFloat(jogStep.value);
-  const dist = dir * step;
+async function jog(axis, dir) {
+  const step = parseFloat(jogStep.value) || 1;
+  const dist = (dir * step).toFixed(3);
   const feed = (axis === 'Z') ? 300 : 3000;
-  sendCmdsSequential(
-    'G91',
-    `G1 ${axis}${dist.toFixed(3)} F${feed}`,
-    'G90'
-  );
+
+  try {
+    // Auto-home once if needed
+    if (!isHomed) {
+      setActivity('Auto-homing before jog…', 'warn');
+      await markHomedAfterG28();
+      setActivity('Jogging…', 'warn');
+    }
+
+    // Relative move, then back to absolute
+    await sendCmd('G91');                       await waitForOk().catch(()=>{});
+    await sendCmd(`G1 ${axis}${dist} F${feed}`);await waitForOk().catch(()=>{});
+    await sendCmd('G90');                       await waitForOk().catch(()=>{});
+    setActivity('Idle');
+
+    // Optionally query position so the UI updates even if firmware doesn't echo after G1
+    await sendCmd('M114', true);                await waitForOk().catch(()=>{});
+  } catch (e) {
+    setActivity('Jog failed', 'bad');
+    logMsg('⚠️ Jog error: ' + (e?.message || e));
+  }
 }
 
 async function streamGcode(file) {
@@ -1978,8 +2086,7 @@ disconnectBtn.addEventListener('click', () => {
 });
 
 // Leveling
-readMeshBtn.addEventListener('click', readMesh);
-reprobeBtn.addEventListener('click', reprobe);
+readMeshBtn.addEventListener('click', homeAndProbe);
 
 // Manual command & log
 sendCmdBtn.addEventListener('click', sendManual);
@@ -2004,27 +2111,7 @@ document.getElementById('levelForm').addEventListener('submit', (e) => {
   updateLastUpdated();
   alert('✅ Round submitted!');
 });
-document.getElementById('exportManualBtn').addEventListener('click', () => {
-  const mesh = [];
-  for (let y=0; y<4; y++) {
-    const row = [];
-    for (let x=0; x<4; x++) {
-      const v = parseFloat(document.getElementById(`cell-${y}-${x}`).value);
-      row.push(isNaN(v) ? 0 : v);
-    }
-    mesh.push(row);
-  }
-  exportMeshAsFile(mesh, 'manual');
-});
-document.getElementById('exportPrinterBtn').addEventListener('click', () => {
-  const hist = JSON.parse(localStorage.getItem('levels') || '[]');
-  const latest = hist.at(-1);
-  if (latest && Array.isArray(latest) && latest.length === 4) {
-    exportMeshAsFile(latest, 'printer');
-  } else {
-    alert('⚠️ No valid printer mesh to export.');
-  }
-});
+
 resetBtn.addEventListener('click', () => {
 if (safeConfirm('Reset all saved data?')) { localStorage.clear(); location.reload(); }
 });
@@ -2046,6 +2133,7 @@ homeAll.addEventListener('click', async () => {
   try {
     setActivity('Homing…', 'warn');
     await sendCmd('G28'); await waitForOk().catch(()=>{});
+    isHomed = true; // <-- mark homed
     await sendCmd('M104 S0'); await waitForOk().catch(()=>{});
     await sendCmd('M140 S0'); await waitForOk().catch(()=>{});
     setActivity('Homed & cooled', 'ok');
@@ -2055,6 +2143,7 @@ homeAll.addEventListener('click', async () => {
     logMsg('⚠️ Home error: ' + (e?.message || e));
   }
 });
+
 disableMotors.addEventListener('click', () => sendCmd('M84'));
 xMinus.addEventListener('click', () => jog('X', -1));
 xPlus .addEventListener('click', () => jog('X', +1));
