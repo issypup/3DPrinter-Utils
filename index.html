@@ -574,6 +574,12 @@ const levelPrinterSelect = document.getElementById('levelPrinterSelect');
 const unsupportedMsg     = document.getElementById('unsupportedMsg');
 const cr6seLevelWrap     = document.getElementById('cr6seLevelWrap');
 
+const AMBIENT_WINDOW_SEC   = 300;   // track last 5 minutes
+const AMBIENT_MIN_SEC      = 240;   // require at least 4 minutes observed
+const AMBIENT_MAX_SPREAD   = 0.8;   // max range (°C) over window (±0.4°C)
+const AMBIENT_MAX_SLOPE    = 0.01;  // °C per second (~0.6°C/min) max drift
+
+const _ambientBuf = { hot: [], bed: [] }; // arrays of [tsSec, temp]
 
 /* =========================================================
    2) CONSTANTS (maps, regex, fixed values)
@@ -674,6 +680,39 @@ if (debugToggle) {
     debugMode = debugToggle.checked;
     localStorage.setItem('debugMode', JSON.stringify(debugMode));
   });
+}
+
+function _pushAmbientSample(tool, temp, target) {
+  const now = Date.now() / 1000;
+  const buf = _ambientBuf[tool];
+  // Only track when target is off/zero/unknown
+  if (target == null || target <= 0) {
+    buf.push([now, temp]);
+    while (buf.length && (now - buf[0][0]) > AMBIENT_WINDOW_SEC) buf.shift();
+  } else {
+    // heating/cooling to a target — clear buffer so we don't mislabel
+    buf.length = 0;
+  }
+}
+
+function _ambientPlateau(tool) {
+  const buf = _ambientBuf[tool];
+  if (buf.length < 2) return null;
+  const span = buf[buf.length - 1][0] - buf[0][0];
+  if (span < AMBIENT_MIN_SEC) return null;
+
+  let min = +Infinity, max = -Infinity;
+  for (const [, t] of buf) { if (t < min) min = t; if (t > max) max = t; }
+  const spread = max - min;
+
+  const first = buf[0], last = buf[buf.length - 1];
+  const slope = (last[1] - first[1]) / Math.max(1, (last[0] - first[0])); // °C/s
+  if (spread <= AMBIENT_MAX_SPREAD && Math.abs(slope) <= AMBIENT_MAX_SLOPE) {
+    // use mean as ambient estimate
+    const avg = buf.reduce((a, [,t]) => a + t, 0) / buf.length;
+    return { ambient: avg, spread, slope, span };
+  }
+  return null;
 }
 
 function isCountingLine(g) {
@@ -931,9 +970,13 @@ function refreshVirtualTemps() {
   temps.bed = vState.bed;
   temps.bedTarget = vState.bedTarget;
 
+  // ✅ ADD THESE:
+  _pushAmbientSample('hot', temps.hot ?? 0, temps.hotTarget);
+  _pushAmbientSample('bed', temps.bed ?? 0, temps.bedTarget);
+
   // Update the pills + panel (normally done by readLoop in real mode)
-setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
-setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget, 'bed');
+  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
+  setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget, 'bed');
   updateTempPanel();
 }
 
@@ -1119,29 +1162,37 @@ function tempState(current, target, tolerance = 0.5) {
   return diff > 0 ? 'heating' : 'cooling';
 }
 
-function setTempPill(pillEl, textEl, curr, target, type /* 'hotend' | 'bed' */) {
-  // Text
+function setTempPill(pillEl, textEl, curr, target, type /* 'hotend'|'bed' */) {
+  // Text (default)
   textEl.textContent =
     (target != null && !Number.isNaN(target))
       ? `${curr.toFixed(1)}°C / ${Math.round(target)}°`
       : `${curr.toFixed(1)}°C`;
 
   // Reset base classes
-  pillEl.classList.remove(
-    'offline','idle','ready','heating','cooling','pulse','warn','ok','bad'
-  );
+  pillEl.classList.remove('offline','idle','ready','heating','cooling','pulse','warn','ok','bad');
 
-  // If this pill is the current PID target, force orange pulse
+  // If PID is running, keep orange pulse
   if (pidTarget && pidTarget === type) {
     pillEl.classList.add('warn','pulse');
     return;
   }
 
-  // Normal state
+  // ✅ Ambient plateau override: target off/zero and temp has stabilised for ~5 min
+  if (target == null || target <= 0) {
+    const tool = (type === 'hotend') ? 'hot' : 'bed';
+    const amb = _ambientPlateau(tool);
+    if (amb) {
+      pillEl.classList.add('ready');            // green
+      pillEl.classList.remove('pulse');
+      textEl.textContent = `${curr.toFixed(1)}°C (ambient≈${amb.ambient.toFixed(1)}°)`;
+      return;                                   // don't fall through to 'cooling'
+    }
+  }
+
+  // Normal state machine
   const state = tempState(curr, target); // 'idle' | 'ready' | 'heating' | 'cooling'
   pillEl.classList.add(state);
-
-  // Pulse only while heating/cooling and no PID is running
   if ((state === 'heating' || state === 'cooling') && !pidTarget) {
     pillEl.classList.add('pulse');
   }
@@ -1774,9 +1825,9 @@ async function readLoop() {
       if (value == null) continue;
 
       // Normalize chunk to string for both reader types
-const chunk = (value instanceof Uint8Array)
-  ? textDecoder.decode(value, { stream: true })
-  : value;
+      const chunk = (value instanceof Uint8Array)
+        ? textDecoder.decode(value, { stream: true })
+        : value;
 
       rxBuffer += chunk;
       const parts = rxBuffer.split(/\r?\n/);
@@ -1796,6 +1847,10 @@ const chunk = (value instanceof Uint8Array)
           if (Number.isFinite(tCur)) {
             temps.hot = tCur;
             temps.hotTarget = Number.isFinite(tTar) ? tTar : null;
+
+            // ambient sampling for hotend
+            _pushAmbientSample('hot', temps.hot ?? 0, temps.hotTarget);
+
             setTempPill(topHotendPill, topHotendText, temps.hot, temps.hotTarget, 'hotend');
           }
         }
@@ -1805,6 +1860,10 @@ const chunk = (value instanceof Uint8Array)
           if (Number.isFinite(bCur)) {
             temps.bed = bCur;
             temps.bedTarget = Number.isFinite(bTar) ? bTar : null;
+
+            // ambient sampling for bed
+            _pushAmbientSample('bed', temps.bed ?? 0, temps.bedTarget);
+
             setTempPill(topBedPill, topBedText, temps.bed, temps.bedTarget, 'bed');
           }
         }
@@ -1853,32 +1912,32 @@ const chunk = (value instanceof Uint8Array)
           resetMeshScratch();
         }
 
-        // --- PID state hints ---
-if (/PID Autotune start/i.test(line)) {
-  setActivity('PID tuning…', 'warn');
-  if (!pidTarget) {
-    if (/\(bed\)/i.test(line) || /\bE-?1\b/i.test(line) || /\bBED\b/i.test(line)) {
-      setPidActive('bed', true);
-    } else if (/\(hotend\)/i.test(line) || /\bE0\b/i.test(line) || /\bHOTEND\b/i.test(line)) {
-      setPidActive('hotend', true);
-    } else {
-      setPidActive('hotend', true);
-    }
-  }
-}
+        // --- PID state hints (don't override if already set) ---
+        if (/PID Autotune start/i.test(out)) {
+          setActivity('PID tuning…', 'warn');
+          if (!pidTarget) {
+            if (/\(bed\)/i.test(out) || /\bE-?1\b/i.test(out) || /\bBED\b/i.test(out)) {
+              setPidActive('bed', true);
+            } else if (/\(hotend\)/i.test(out) || /\bE0\b/i.test(out) || /\bHOTEND\b/i.test(out)) {
+              setPidActive('hotend', true);
+            } else {
+              setPidActive('hotend', true); // default if unknown
+            }
+          }
+        }
 
-if (/PID Autotune finished/i.test(line)) {
-  setActivity('PID tuning complete', 'ok');
-  clearAllPidUi();
-}
+        if (/PID Autotune finished/i.test(out)) {
+          setActivity('PID tuning complete', 'ok');
+          clearAllPidUi();
+        }
 
-if (/PID Autotune failed/i.test(line)) {
-  setActivity('PID tuning failed', 'bad');
-  clearAllPidUi();
-}
+        if (/PID Autotune failed/i.test(out)) {
+          setActivity('PID tuning failed', 'bad');
+          clearAllPidUi();
+        }
 
         // --- OK resolver ---
-        if (/^ok\b/i.test(line)) {
+        if (/^ok\b/i.test(out)) {
           updateLastUpdated();
           if (captureMode) { captureMode = null; startTempPolling(); }
           _resolveNextOk();
