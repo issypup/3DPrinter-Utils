@@ -1189,24 +1189,15 @@ function processMeshLineFromAnywhere(line) {
 async function homeAndProbe() {
   try {
     setActivity('Homing…', 'warn');
-    await sendCmd('G28'); 
-    await waitForOk();
+    await sendCmd('G28');   await waitForOk();
 
     setActivity('Probing…', 'warn');
-    await sendCmd('G29 T'); 
-    await waitForOk();
+    await sendCmd('G29 T'); await waitForOk();
 
-    // Ensure probe motion queue is totally flushed
-    await sendCmd('M400'); 
-    await waitForOk();
+    // <-- key line: sync + gentle cooldown to avoid DWIN lock
+    await coolToIdle({ postSync: true });
 
-    // Give the DWIN a moment to finish its screen changes/EEPROM writes
-    await sleep(900);
-
-    // Only cool if we actually had targets set; otherwise skip
-    await coolToIdle();
-
-    setActivity('Parsing…', 'warn'); // readLoop will finish parsing mesh lines
+    setActivity('Parsing…', 'warn');
   } catch (e) {
     setActivity('Home & probe failed', 'bad');
     logMsg('⚠️ Home & probe error: ' + (e?.message || e));
@@ -2184,14 +2175,22 @@ async function streamGcode(file) {
 
 //Quick helpers
 async function coolToIdle(opts = {}) {
-  const force = !!opts.force;
-  const wantHotOff = force || (temps.hotTarget ?? 0) > 0;
-  const wantBedOff = force || (temps.bedTarget ?? 0) > 0;
-  if (!wantHotOff && !wantBedOff) return;
+  const { force = false, postSync = false } = opts;
 
   try {
-    if (wantHotOff) { await sendCmd('M104 S0'); await waitForOk().catch(()=>{}); }
-    if (wantBedOff) { await sendCmd('M140 S0'); await waitForOk().catch(()=>{}); }
+    // If we're calling right after G29 T, let firmware settle
+    if (postSync) {
+      await sendCmd('M400');              // wait for all moves/ISR queue
+      await waitForOk().catch(()=>{});
+      await sleep(150);                   // tiny UI/EEPROM settle
+    }
+
+    // Don’t spam heat-off if already “off” unless forced
+    const wantHot = force || ((temps.hotTarget ?? 0) > 0);
+    const wantBed = force || ((temps.bedTarget ?? 0) > 0);
+
+    if (wantHot) { await sendCmd('M104 S0'); await waitForOk().catch(()=>{}); }
+    if (wantBed) { await sendCmd('M140 S0'); await waitForOk().catch(()=>{}); }
   } finally {
     clearAllPidUi();
     setActivity('Temps set to 0', 'ok');
