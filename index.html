@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>3D Printer Utils TEST</title>
+<title>3D Printer Utils</title>
 <meta name="author" content="issypup">
 <meta name="date" content="2025-08-10">
 <style>
@@ -195,7 +195,7 @@
 <span id="etaPill" class="pill" style="display:none;">ETA: —</span>
 </div>
 
-<h1>3D Printer Utils TEST</h1>
+<h1>3D Printer Utils</h1>
 
 <!-- Tabs -->
 <div id="tabButtons">
@@ -825,7 +825,6 @@ case /^G29\b/i.test(line) && /\bT\b/i.test(line): {
   }
 }
 
-
 function refreshVirtualTemps() {
   // Mirror vState → temps
   temps.hot = vState.hot;
@@ -856,7 +855,6 @@ function startVirtualSim() {
   }, 100);
 }
 
-
 function stopVirtualSim() {
   if (vSimTimer) { clearInterval(vSimTimer); vSimTimer = null; }
 }
@@ -880,6 +878,7 @@ async function disconnectVirtual() {
 }
 
 function isNoisyLine(s){ return NOISY_REGEX.test(s); }
+
 function isSetNewScreenLine(s){ return /^setnewscreen\b/i.test(s); }
 
 function normalizeLine(s){
@@ -914,6 +913,7 @@ function setActivity(text, cls='') {
   activityBadge.textContent = text;
   activityBadge.className = 'pill ' + cls;
 }
+
 function setConnected(connected) {
   if (connected) {
     connBadge.textContent = 'Connected';
@@ -1054,6 +1054,7 @@ function _logBase(msg) {
   printerLog.textContent += msg;
   printerLog.scrollTop = printerLog.scrollHeight;
 }
+
 function logMsg(msg) {
   const lines = String(msg).split(/\r?\n/);
   for (let line of lines) {
@@ -1084,11 +1085,11 @@ function setLastCmd(cmd){ lastCmd.textContent = 'Last Cmd: ' + cmd; }
 function startTempPolling(){
   if (!tempTimer) tempTimer = setInterval(() => sendCmd('M105', true), 3000);
 }
+
 function stopTempPolling(){
   if (tempTimer){ clearInterval(tempTimer); tempTimer = null; }
 }
 
-/* Close (exit) printer’s “printing” screen now or after a delay */
 function exitPrintScreen(delayMs = 0) {
   if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
 
@@ -1319,9 +1320,11 @@ function loadMeshLS() {
   const hist = JSON.parse(localStorage.getItem('levels') || '[]');
   return hist.at(-1) || Array.from({length:4},()=>Array(4).fill(''));
 }
+
 function saveMeshLS(mesh) {
   const hist = JSON.parse(localStorage.getItem('levels') || '[]');
   hist.push(mesh);
+  while (hist.length > 10) hist.shift();  // keep last 10
   localStorage.setItem('levels', JSON.stringify(hist));
 }
 
@@ -1414,7 +1417,11 @@ async function connectPrinter() {
 
     // Real serial path
     if (!('serial' in navigator)) {
+      setConnected(false);
+      setActivity('Web Serial not supported', 'bad');
+      logMsg('❌ Web Serial API not supported. Use Chrome/Edge/Brave on desktop.');
       alert('Web Serial API not supported. Use Chrome/Edge/Brave on desktop.');
+      connKind = 'none';
       return;
     }
 
@@ -1458,29 +1465,50 @@ async function connectPrinter() {
     setConnected(false);
     setActivity('Connect error', 'bad');
     logMsg(String(err?.message || err));
+
+    _rejectAllOk(new Error('Connect failed'));
+    hideEtaPill();
+
     connKind = 'none';
   } finally {
     isConnecting = false;
   }
 }
 
-async function disconnectPrinter() {
+// Pass reason = 'lost' when we detect an unexpected drop
+async function disconnectPrinter(reason = 'user') {
   if (isDisconnecting) return;
   isDisconnecting = true;
+
+  const lost = reason === 'lost';
   try {
+    // Fail any pending waits / streams immediately
+    _rejectAllOk(new Error(lost ? 'Connection lost' : 'Disconnected'));
+    cancelStream = true;
+
+    // Reset sender UI + ETA
+    if (sendProgress) sendProgress.style.width = '0%';
+    if (sendStatus)   sendStatus.textContent = 'Idle';
+    hideEtaPill();
+
     if (connKind === 'virtual' || virtualMode) {
       await disconnectVirtual();
       connKind = 'none';
+      stopTempPolling();
+      setActivity(lost ? 'Connection lost (virtual)' : 'Disconnected', lost ? 'bad' : 'ok');
+      if (lost) logMsg('❌ Connection lost (virtual).'); else logMsg('🔌 Virtual printer disconnected.');
       return;
     }
 
+    // Real serial path
     setConnected(false);
-    setActivity('Disconnecting…', 'warn');
+    setActivity(lost ? 'Connection lost…' : 'Disconnecting…', lost ? 'bad' : 'warn');
+    stopTempPolling();
 
     try { if (reader) await reader.cancel(); } catch {}
     try { if (reader) reader.releaseLock(); } catch {}
     try { if (writer) writer.releaseLock(); } catch {}
-    try { if (port)   await port.close(); } catch {}
+    try { if (port)   await port.close();   } catch {}
 
     port = null;
     reader = null;
@@ -1488,11 +1516,13 @@ async function disconnectPrinter() {
 
     if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
 
-    setActivity('Disconnected', 'ok');
-    logMsg('🔌 Disconnected.');
+    setActivity(lost ? 'Connection lost' : 'Disconnected', lost ? 'bad' : 'ok');
+    logMsg(lost ? '❌ Connection to printer was lost.' : '🔌 Disconnected.');
     connKind = 'none';
   } catch (err) {
-    logMsg('❌ Disconnect error: ' + err.message);
+    logMsg('❌ Disconnect error: ' + (err?.message || err));
+    setActivity('Disconnect error', 'bad');
+    connKind = 'none';
   } finally {
     isDisconnecting = false;
   }
@@ -1538,7 +1568,13 @@ async function readLoop() {
   try {
     while (true) {
       const { value, done } = await reader.read();
-      if (done) break;
+
+      // 🔴 If the stream closed, disconnect as "lost"
+      if (done) {
+        if (!isDisconnecting) await disconnectPrinter('lost');
+        break;
+      }
+
       if (value == null) continue;
 
       rxBuffer += value;
@@ -1625,6 +1661,9 @@ async function readLoop() {
     }
   } catch (err) {
     logMsg('⚠️ Read error: ' + err.message);
+
+    // 🔴 On read error, treat as lost connection (unless we're already disconnecting)
+    if (!isDisconnecting) await disconnectPrinter('lost');
   } finally {
     reading = false;
   }
@@ -1736,9 +1775,9 @@ async function streamGcode(file) {
   cancelSend.disabled = true;
   hideEtaPill(); // reset any previous run
 
-  // ✅ Reset progress UI at start
-  sendProgress.style.width = '0%';
-  sendStatus.textContent = 'Homing…';
+  // ✅ Reset progress UI at start (with guards)
+  if (sendProgress) sendProgress.style.width = '0%';
+  if (sendStatus) sendStatus.textContent = 'Homing…';
 
   try {
     // Read and preprocess the file up-front so we can early-exit on empty
@@ -1808,7 +1847,6 @@ async function streamGcode(file) {
       sendStatus.textContent = 'Done';
       showEtaPill('Complete', 'ok');
       exitPrintScreen(0);
-      hideEtaPill();
     }
 
     // Optionally fade pill shortly after finish/cancel
@@ -1828,7 +1866,10 @@ async function streamGcode(file) {
 // Connection
 function trace(msg) { console.debug('[TRACE]', msg); }
 connectBtn.addEventListener('click', () => { trace('Connect button'); connectPrinter(); });
-disconnectBtn.addEventListener('click', () => { trace('Disconnect button'); disconnectPrinter(); });
+disconnectBtn.addEventListener('click', () => {
+  trace('Disconnect button');
+  disconnectPrinter('user');
+});
 
 // Leveling
 readMeshBtn.addEventListener('click', readMesh);
@@ -2009,13 +2050,20 @@ gcodeFile.addEventListener('change', () => {
 sendGcode.addEventListener('click',  () => {
   if (gcodeFile.files[0]) streamGcode(gcodeFile.files[0]);
 });
+
 cancelSend.addEventListener('click', async () => {
+  if (sendStatus) sendStatus.textContent = 'Cancelling…';
+  cancelSend.disabled = true;              // ✅ prevent double taps
+  showEtaPill('Cancelling…', 'warn');      // ✅ mirror status up top
+
   cancelStream = true;
-  _rejectAllOk(new Error('Cancelled')); // abort any waits right now
-  await sendCmd('M104 S0'); await waitForOk().catch(()=>{});
-  await sendCmd('M140 S0'); await waitForOk().catch(()=>{});
-  await sendCmd('G90');     await waitForOk().catch(()=>{});
-  await sendCmd('G1 X0 Y0 Z10 F3000'); await waitForOk().catch(()=>{});
+  _rejectAllOk(new Error('Cancelled'));
+
+  await sendCmd('M104 S0'); await waitForOk().catch(() => {});
+  await sendCmd('M140 S0'); await waitForOk().catch(() => {});
+  await sendCmd('G90');     await waitForOk().catch(() => {});
+  await sendCmd('G1 X0 Y0 Z10 F3000'); await waitForOk().catch(() => {});
+
   exitPrintScreen(0);
   hideEtaPill();
 });
