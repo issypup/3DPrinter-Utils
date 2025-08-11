@@ -638,6 +638,9 @@ let pidActiveBed    = false;
 let pidTarget = null; // 'hotend', 'bed', or null
 let isHomed = false;
 
+// Leveling / Probing flow control
+let probeLatch = null; // resolved when G29 T finishes (grid header or DWIN “Settings Stored”)
+
 //Mesh and Temps
 let meshScratch    = Array.from({ length: 4 }, () => Array(4).fill(null));
 let temps          = { hot: null, hotTarget: null, bed: null, bedTarget: null };
@@ -1189,14 +1192,20 @@ function processMeshLineFromAnywhere(line) {
 async function homeAndProbe() {
   try {
     setActivity('Homing…', 'warn');
-    await sendCmd('G28');   await waitForOk();
+    await sendCmd('G28'); await waitForOk();
+
+    // set up latch that will resolve when printer says it's done
+    probeLatch = {};
+    probeLatch.promise = new Promise((resolve, reject) => {
+      probeLatch.resolve = resolve;
+      probeLatch.reject  = reject;
+    });
 
     setActivity('Probing…', 'warn');
-    await sendCmd('G29 T'); await waitForOk();
+    await sendCmd('G29 T');            // don't await waitForOk here
+    await probeLatch.promise;          // wait for "Settings Stored" / grid header
 
-    // <-- key line: sync + gentle cooldown to avoid DWIN lock
-    await coolToIdle({ postSync: true });
-
+    await coolToIdle();
     setActivity('Parsing…', 'warn');
   } catch (e) {
     setActivity('Home & probe failed', 'bad');
@@ -1212,8 +1221,25 @@ function updateLevelView() {
   if (cr6seLevelWrap) cr6seLevelWrap.style.display = isCR6 ? '' : 'none';
   if (unsupportedMsg) unsupportedMsg.style.display = isCR6 ? 'none' : '';
 
-  readMeshBtn.disabled = !isCR6 || !isConnectedNow;
+  // Home & Probe button
+  if (readMeshBtn) {
+    readMeshBtn.style.display = isCR6 ? '' : 'none';
+    readMeshBtn.disabled = !isCR6 || !isConnectedNow;
+  }
+
+  // Export Mesh button (hide when not CR-6)
+  if (exportMeshBtn) {
+    exportMeshBtn.style.display = isCR6 ? '' : 'none';
+    // optional: only enable if we actually have a mesh to export
+    const hasInputs = typeof collectMeshFromInputs === 'function' && !!collectMeshFromInputs();
+    const latest = (() => {
+      try { return JSON.parse(localStorage.getItem('levels') || '[]').at(-1); } catch { return null; }
+    })();
+    const hasSaved = Array.isArray(latest) && latest.length === 4;
+    exportMeshBtn.disabled = !(hasInputs || hasSaved);
+  }
 }
+
 
 //Scratch mgmt.
 function meshIsComplete(m = meshScratch) {
@@ -1475,6 +1501,10 @@ async function disconnectPrinter(reason = 'user') {
   try {
     // Fail any pending waits / streams immediately
     _rejectAllOk(new Error(lost ? 'Connection lost' : 'Disconnected'));
+    if (probeLatch) {
+  try { probeLatch.reject(new Error(lost ? 'lost' : 'disconnected')); }
+  finally { probeLatch = null; }
+}
     cancelStream = true;
 
     // Reset sender UI + ETA
@@ -1852,6 +1882,16 @@ async function readLoop() {
           resetMeshScratch();
         }
 
+        // ---- Probe completion latch (no timeout) ----
+if (probeLatch) {
+  if (
+    out.includes('//action:notification Settings Stored') || // exact DWIN save event
+    /Bilinear Leveling Grid:/i.test(out)                     // fallback
+  ) {
+    try { probeLatch.resolve(); } finally { probeLatch = null; }
+  }
+}
+
         // --- PID state hints (don't override if already set) ---
         if (/PID Autotune start/i.test(out)) {
           setActivity('PID tuning…', 'warn');
@@ -1893,6 +1933,7 @@ async function readLoop() {
   }
 }
 
+
 //Wait plumbing
 function waitForOk() {
   beginCritical();
@@ -1922,6 +1963,13 @@ function _rejectAllOk(err) {
   for (const w of all) {
     try { w.reject(err || new Error('Aborted')); } catch {}
   }
+
+  // also reject an in-flight probe latch
+  if (probeLatch) {
+    try { probeLatch.reject(err || new Error('disconnected')); }
+    finally { probeLatch = null; }
+  }
+
   // Ensure we don't leave polling paused
   criticalDepth = 0;
   startTempPolling();
