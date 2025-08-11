@@ -671,6 +671,21 @@ if (debugToggle) {
   });
 }
 
+async function sendCmdsSequential(...cmds) {
+  for (const c of cmds) {
+    // Skip empty or whitespace-only commands
+    if (!c || !c.trim()) continue;
+
+    try {
+      await sendCmd(c.trim());       // send the command
+      await waitForOk();             // wait for ack from printer
+    } catch (err) {
+      console.error(`Error sending command "${c}":`, err);
+      break; // stop sending further commands if one fails
+    }
+  }
+}
+
 async function sendCmdVirtual(cmd, quiet = false) {
   const line = String(cmd).trim();
   setLastCmd(line);
@@ -1078,10 +1093,9 @@ function exitPrintScreen(delayMs = 0) {
   if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
 
   const fire = () => {
-    if (port && writer) {
-      logMsg('⌛ Closing print screen in firmware…');
-      sendCmd('//action:cancel', true); // quiet; often no OK
-    }
+    logMsg('⌛ Closing print screen in firmware…');
+    // Let sendCmd route to real/virtual; keep it quiet
+    sendCmd('//action:cancel', true);
   };
 
   if (delayMs > 0) {
@@ -1498,13 +1512,26 @@ function resolveAllWaiting() {
   waitingResolvers.splice(0).forEach(fn => { try { fn(); } catch {} });
 }
 
-function waitForOk() {
+function waitForOk(timeoutMs = 30000) {
   return new Promise((resolve, reject) => {
-    if (!port || !writer) { reject(new Error('Disconnected')); return; }
-    if (cancelStream)     { reject(new Error('Cancelled'));    return; }
-    pendingOk.push({ resolve, reject });
+    const needsRealConn = (connKind !== 'virtual' && !virtualMode);
+    if (needsRealConn && (!port || !writer)) return reject(new Error('Disconnected'));
+    if (cancelStream) return reject(new Error('Cancelled'));
+    const entry = { resolve, reject };
+    pendingOk.push(entry);
+    const t = setTimeout(() => {
+      // prune this waiter if still pending
+      const i = pendingOk.indexOf(entry);
+      if (i >= 0) pendingOk.splice(i, 1);
+      reject(new Error('Timeout waiting for ok'));
+    }, timeoutMs);
+    // clear the timeout when we resolve/reject
+    const origResolve = entry.resolve, origReject = entry.reject;
+    entry.resolve = () => { clearTimeout(t); origResolve(); };
+    entry.reject  = (e) => { clearTimeout(t); origReject(e); };
   });
 }
+
 
 async function readLoop() {
   reading = true;
@@ -1677,8 +1704,7 @@ async function readMesh(){
   setActivity('Parsing…', 'warn');
 }
 async function reprobe(){
-  await sendCmd('G28');
-  await sendCmd('G29 T');
+  await sendCmdsSequential('G28', 'G29 T');
   setActivity('Probing…', 'warn');
 }
 function sendManual(){
@@ -1691,86 +1717,110 @@ function sendManual(){
 function jog(axis, dir) {
   const step = parseFloat(jogStep.value);
   const dist = dir * step;
-  sendCmd('G91');
   const feed = (axis === 'Z') ? 300 : 3000;
-  sendCmd(`G1 ${axis}${dist.toFixed(3)} F${feed}`);
-  sendCmd('G90');
+  sendCmdsSequential(
+    'G91',
+    `G1 ${axis}${dist.toFixed(3)} F${feed}`,
+    'G90'
+  );
 }
 
 async function streamGcode(file) {
-  if (!writer) { alert('Not connected.'); return; }
+  // Require either a real writer or virtual connection
+  if (!(connKind === 'virtual' || writer)) {
+    alert('Not connected.');
+    return;
+  }
 
   cancelStream = false;
-  sendStatus.textContent = 'Homing…';
   cancelSend.disabled = true;
-  hideEtaPill(); // reset from any previous run
+  hideEtaPill(); // reset any previous run
 
-  // Home
-  logMsg('🏠 Homing all axes (G28)…');
-  await sendCmd('G28');
-  await waitForOk().catch(err => { throw err; });
+  // ✅ Reset progress UI at start
+  sendProgress.style.width = '0%';
+  sendStatus.textContent = 'Homing…';
 
-  // Prepare file
-  const text = await file.text();
-  const lines = text
-    .split(/\r?\n/)
-    .map(l => l.replace(/;.*/, '').trim())
-    .filter(Boolean);
+  try {
+    // Read and preprocess the file up-front so we can early-exit on empty
+    const text = await file.text();
+    const lines = text
+      .split(/\r?\n/)
+      .map(l => l.replace(/;.*/, '').trim()) // strip ';' comments
+      .filter(Boolean);
 
-  let sent = 0;
-  const total = lines.length;
-  let startTime = 0;                 // set on first line actually sent
-  const warmupLines = Math.min(10, Math.max(3, Math.floor(total * 0.02))); // wait a few lines before ETA
-
-  cancelSend.disabled = false;
-  sendStatus.textContent = 'Sending…';
-  showEtaPill('ETA: estimating…', 'warn');
-
-  for (const line of lines) {
-    if (cancelStream) break;
-
-    if (!startTime) startTime = Date.now();
-
-    await sendCmd(line);
-    await waitForOk().catch(err => { throw err; });
-
-    sent++;
-
-    // Progress
-    const pct = Math.round((sent / total) * 100);
-    sendProgress.style.width = pct + '%';
-    sendStatus.textContent = `Sent ${sent}/${total} (${pct}%)`;
-
-    // ETA (after warmup to avoid wild swings)
-    if (sent >= warmupLines) {
-      const elapsedSec = (Date.now() - startTime) / 1000;
-      const avgPerLine = elapsedSec / (sent - warmupLines + 1);
-      const remainingLines = total - sent;
-      const remainingSec = avgPerLine * remainingLines;
-      showEtaPill('ETA: ' + formatETA(remainingSec), 'warn');
+    if (lines.length === 0) {
+      sendStatus.textContent = 'No G-code lines found';
+      return;
     }
 
-    await new Promise(r => setTimeout(r, 10));
+    // Home before sending
+    logMsg('🏠 Homing all axes (G28)…');
+    await sendCmd('G28');
+    await waitForOk();
+
+    let sent = 0;
+    const total = lines.length;
+    let startTime = 0; // set when first line is actually sent
+    const warmupLines = Math.min(10, Math.max(3, Math.floor(total * 0.02)));
+
+    cancelSend.disabled = false;
+    sendStatus.textContent = 'Sending…';
+    showEtaPill('ETA: estimating…', 'warn');
+
+    for (const line of lines) {
+      if (cancelStream) break;
+
+      if (!startTime) startTime = Date.now();
+
+      await sendCmd(line);
+      await waitForOk();
+
+      sent++;
+
+      // Progress UI
+      const pct = Math.round((sent / total) * 100);
+      sendProgress.style.width = pct + '%';
+      sendStatus.textContent = `Sent ${sent}/${total} (${pct}%)`;
+
+      // ETA after warmup to avoid early noise
+      if (sent >= warmupLines) {
+        const elapsedSec = (Date.now() - startTime) / 1000;
+        const denom = (sent - warmupLines + 1);
+        const avgPerLine = denom > 0 ? elapsedSec / denom : 0;
+        const remainingLines = total - sent;
+        const remainingSec = avgPerLine * remainingLines;
+        showEtaPill('ETA: ' + formatETA(remainingSec), 'warn');
+      }
+
+      // Small pacing delay to avoid flooding slower boards
+      await new Promise(r => setTimeout(r, 10));
+    }
+
+    cancelSend.disabled = true;
+
+    if (cancelStream) {
+      sendStatus.textContent = 'Cancelled';
+      showEtaPill('ETA: —', 'bad');
+      exitPrintScreen(0);
+      hideEtaPill();
+    } else {
+      sendProgress.style.width = '100%';
+      sendStatus.textContent = 'Done';
+      showEtaPill('Complete', 'ok');
+      exitPrintScreen(0);
+      hideEtaPill();
+    }
+
+    // Optionally fade pill shortly after finish/cancel
+    setTimeout(hideEtaPill, 2500);
+  } catch (err) {
+    cancelSend.disabled = true;
+    sendStatus.textContent = 'Error during send';
+    showEtaPill('Error', 'bad');
+    logMsg('❌ Send error: ' + (err?.message || err));
+    setTimeout(hideEtaPill, 2500);
   }
-
-  cancelSend.disabled = true;
-
-  if (cancelStream) {
-    sendStatus.textContent = 'Cancelled';
-    showEtaPill('ETA: —', 'bad');
-    exitPrintScreen(0);
-    hideEtaPill();
-  } else {
-    sendStatus.textContent = 'Done';
-    showEtaPill('Complete', 'ok');
-    exitPrintScreen(0);
-    hideEtaPill();
-  }
-
-  // optionally hide the pill a bit after finish/cancel
-  setTimeout(hideEtaPill, 2500);
 }
-
 
 /* =========================================================
    9) EVENT LISTENERS
@@ -1865,7 +1915,8 @@ yMinus.addEventListener('click', () => jog('Y', -1));
 yPlus .addEventListener('click', () => jog('Y', +1));
 zMinus.addEventListener('click', () => jog('Z', -1));
 zPlus .addEventListener('click', () => jog('Z', +1));
-parkHead.addEventListener('click', () => sendCmd('G90\nG1 X0 Y0 Z10 F3000'));
+parkHead.addEventListener('click', () =>sendCmdsSequential('G90', 'G1 X0 Y0 Z10 F3000')
+);
 
 // EEPROM / Config
 readCfg.addEventListener('click', async () => {
@@ -1877,10 +1928,18 @@ readCfg.addEventListener('click', async () => {
 saveCfg.addEventListener('click', async () => { await sendCmd('M500'); });
 
 // Maintenance
-preheatPLA .addEventListener('click', () => sendCmd('M104 S200\nM140 S60'));
-preheatPETG.addEventListener('click', () => sendCmd('M104 S240\nM140 S80'));
-preheatABS .addEventListener('click', () => sendCmd('M104 S250\nM140 S100'));
-cooldown   .addEventListener('click', () => sendCmd('M104 S0\nM140 S0'));
+preheatPLA .addEventListener('click', async () => {
+  await sendCmdsSequential('M104 S200', 'M140 S60');
+});
+preheatPETG.addEventListener('click', async () => {
+  await sendCmdsSequential('M104 S240', 'M140 S80');
+});
+preheatABS .addEventListener('click', async () => {
+  await sendCmdsSequential('M104 S250', 'M140 S100');
+});
+cooldown   .addEventListener('click', async () => {
+  await sendCmdsSequential('M104 S0', 'M140 S0');
+});
 
 loadFil.addEventListener('click', async () => {
   const mm   = parseFloat(prompt('How many mm to LOAD?', '60'));
@@ -1947,10 +2006,6 @@ gcodeFile.addEventListener('change', () => {
   sendGcode.disabled = !gcodeFile.files.length || !connected;
 });
 
-// G-code Sender
-gcodeFile.addEventListener('change', () => {
-  sendGcode.disabled = !gcodeFile.files.length || !writer;
-});
 sendGcode.addEventListener('click',  () => {
   if (gcodeFile.files[0]) streamGcode(gcodeFile.files[0]);
 });
