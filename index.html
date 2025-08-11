@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>3D Printer Utils TEST</title>
+<title>3D Printer Utils</title>
 <meta name="author" content="issypup">
 <meta name="date" content="2025-08-10">
 <style>
@@ -196,7 +196,7 @@
 <span id="etaPill" class="pill" style="display:none;">ETA: —</span>
 </div>
 
-<h1>3D Printer Utils TEST</h1>
+<h1>3D Printer Utils</h1>
 
 <!-- Tabs -->
 <div id="tabButtons">
@@ -676,6 +676,47 @@ if (debugToggle) {
   });
 }
 
+function isCountingLine(g) {
+  const s = g.trim();
+  if (!s || s.startsWith(';')) return false;
+
+  // Ignore homing/leveling/heating/waits/setup
+  if (/^(?:G28|G29|M104|M109|M140|M190|M82|M83|G90|G91|M84|M400)\b/i.test(s)) return false;
+
+  // Count real motion lines; require X or Y or E (ignore pure Z hops)
+  if (/^G0?1\b/i.test(s)) {
+    const hasXorY = /[XY]/i.test(s);
+    const hasE    = /\bE[-+]?\d/i.test(s);
+    const hasOnlyZ= /Z[-+]?\d/i.test(s) && !hasXorY && !hasE;
+    return (hasE || hasXorY) && !hasOnlyZ;
+  }
+  return false;
+}
+
+function getPidCycles(tool) {
+  const key = `pidCycles:${tool}`;            // tool = 'hotend' | 'bed'
+  const saved = parseInt(localStorage.getItem(key) || '', 10);
+  return Number.isFinite(saved) && saved >= 1 && saved <= 20 ? saved : 5; // default 5
+}
+
+function setPidCycles(tool, c) {
+  const key = `pidCycles:${tool}`;
+  localStorage.setItem(key, String(c));
+}
+
+function promptCycles(tool) {
+  const def = getPidCycles(tool);
+  const raw = safePrompt(`How many PID cycles? (1–20)`, String(def));
+  if (raw === null) return null;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1 || n > 20) {
+    alert('Invalid cycle count. Enter a whole number between 1 and 20.');
+    return null;
+  }
+  setPidCycles(tool, n);
+  return n;
+}
+
 async function coolToIdle() {
   try {
     await sendCmd('M104 S0'); await waitForOk().catch(()=>{});
@@ -694,13 +735,10 @@ async function markHomedAfterG28() {
 }
 
 function setPidActive(tool, on = true) {
+  if (on && pidTarget && pidTarget !== tool) return; // don't flip mid-run
   if (tool === 'hotend') pidActiveHotend = !!on;
   if (tool === 'bed')    pidActiveBed    = !!on;
-
-  // keep the pill behavior consistent with whatever started PID
   pidTarget = on ? tool : null;
-
-  // refresh pills immediately
   setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
   setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget, 'bed');
 }
@@ -766,9 +804,16 @@ async function sendCmdVirtual(cmd, quiet = false) {
     }
 
 case /^M303\b/i.test(line): {
-  logMsg('PID Autotune start');
-  // …maybe after 3s…
-  setTimeout(() => logMsg('PID Autotune finished'), 3000);
+  const eParam = line.match(/\bE\s*(-?\d+)/i);
+  const cParam = line.match(/\bC\s*(\d+)/i);
+  const tool = eParam ? (parseInt(eParam[1], 10) === -1 ? 'bed' : 'hotend') : 'hotend';
+  const cycles = cParam ? Math.max(1, Math.min(20, parseInt(cParam[1], 10))) : 5;
+
+  logMsg(`PID Autotune start (${tool}) C=${cycles}`);
+  setPidActive(tool, true);
+
+  // Simulate ~0.6s per cycle (tweak as you like)
+  setTimeout(() => logMsg('PID Autotune finished'), Math.round(cycles * 600));
   ok();
   break;
 }
@@ -1811,22 +1856,25 @@ const chunk = (value instanceof Uint8Array)
         // --- PID state hints ---
 if (/PID Autotune start/i.test(line)) {
   setActivity('PID tuning…', 'warn');
-  // Guess target: E-1 = bed, E0 = hotend (fallback to hotend if unknown)
-  if (/\bE-?1\b/.test(line) || /\bBED\b/i.test(line)) {
-    setPidActive('bed', true);
-  } else {
-    setPidActive('hotend', true);
+  if (!pidTarget) {
+    if (/\(bed\)/i.test(line) || /\bE-?1\b/i.test(line) || /\bBED\b/i.test(line)) {
+      setPidActive('bed', true);
+    } else if (/\(hotend\)/i.test(line) || /\bE0\b/i.test(line) || /\bHOTEND\b/i.test(line)) {
+      setPidActive('hotend', true);
+    } else {
+      setPidActive('hotend', true);
+    }
   }
 }
 
 if (/PID Autotune finished/i.test(line)) {
   setActivity('PID tuning complete', 'ok');
-  clearAllPidUi();                               // stop orange pulse
+  clearAllPidUi();
 }
 
 if (/PID Autotune failed/i.test(line)) {
   setActivity('PID tuning failed', 'bad');
-  clearAllPidUi();                               // stop orange pulse
+  clearAllPidUi();
 }
 
         // --- OK resolver ---
@@ -1901,38 +1949,36 @@ async function waitForBed(target, tol = 1.0) {
 ========================================================= */
 async function runBedPID() {
   const t = promptNumber('Enter bed PID target temp (S):', 60);
-  if (t === null) return;
-  if (!Number.isFinite(t)) return alert('Invalid temperature.');
+  if (t === null || !Number.isFinite(t)) return alert('Invalid temperature.');
+  const c = promptCycles('bed');
+  if (c === null) return;
 
-  setActivity(`PID bed @ ${t}°C…`, 'warn');
-
+  setActivity(`PID bed @ ${t}°C (C=${c})…`, 'warn');
   pidTarget = 'bed';
   try {
-    await sendCmd(`M303 C5 E-1 S${t} U`);
-    await waitForOk(); // resolves on real 'ok', no timeout
+    await sendCmd(`M303 C${c} E-1 S${t} U`);
+    await waitForOk();
   } finally {
-    pidTarget = null;  // always clear even if user cancels/disconnects
+    pidTarget = null;
   }
-
-  logMsg('ℹ️ PID tuning can take a few minutes. After success, send M500 to save if required.');
+  logMsg('ℹ️ PID tuning can take a few minutes. Send M500 to save if required.');
 }
 
 async function runHotendPID() {
   const t = promptNumber('Enter nozzle PID target temp (S):', 220);
-  if (t === null) return;
-  if (!Number.isFinite(t)) return alert('Invalid temperature.');
+  if (t === null || !Number.isFinite(t)) return alert('Invalid temperature.');
+  const c = promptCycles('hotend');
+  if (c === null) return;
 
-  setActivity(`PID hotend @ ${t}°C…`, 'warn');
-
+  setActivity(`PID hotend @ ${t}°C (C=${c})…`, 'warn');
   pidTarget = 'hotend';
   try {
-    await sendCmd(`M303 C5 E0 S${t} U`);
-    await waitForOk(); // resolves on real 'ok', no timeout
+    await sendCmd(`M303 C${c} E0 S${t} U`);
+    await waitForOk();
   } finally {
-    pidTarget = null;  // always clear even if user cancels/disconnects
+    pidTarget = null;
   }
-
-  logMsg('ℹ️ PID tuning can take a few minutes. After success, send M500 to save if required.');
+  logMsg('ℹ️ PID tuning can take a few minutes. Send M500 to save if required.');
 }
 
 async function readMesh(){
@@ -1959,18 +2005,23 @@ async function jog(axis, dir) {
     // Auto-home once if needed
     if (!isHomed) {
       setActivity('Auto-homing before jog…', 'warn');
-      await markHomedAfterG28();
+      await sendCmd('G28'); await waitForOk().catch(()=>{});
+      isHomed = true;
+
+      // ⬇️ Cool to 0 after auto-home triggered by a jog
+      await coolToIdle();
+
       setActivity('Jogging…', 'warn');
     }
 
     // Relative move, then back to absolute
-    await sendCmd('G91');                       await waitForOk().catch(()=>{});
-    await sendCmd(`G1 ${axis}${dist} F${feed}`);await waitForOk().catch(()=>{});
-    await sendCmd('G90');                       await waitForOk().catch(()=>{});
+    await sendCmd('G91');                        await waitForOk().catch(()=>{});
+    await sendCmd(`G1 ${axis}${dist} F${feed}`); await waitForOk().catch(()=>{});
+    await sendCmd('G90');                        await waitForOk().catch(()=>{});
     setActivity('Idle');
 
-    // Optionally query position so the UI updates even if firmware doesn't echo after G1
-    await sendCmd('M114', true);                await waitForOk().catch(()=>{});
+    // Update position readout
+    await sendCmd('M114', true);                 await waitForOk().catch(()=>{});
   } catch (e) {
     setActivity('Jog failed', 'bad');
     logMsg('⚠️ Jog error: ' + (e?.message || e));
@@ -1978,7 +2029,6 @@ async function jog(axis, dir) {
 }
 
 async function streamGcode(file) {
-  // Require either a real writer or virtual connection
   if (!(connKind === 'virtual' || writer)) {
     alert('Not connected.');
     return;
@@ -1986,62 +2036,88 @@ async function streamGcode(file) {
 
   cancelStream = false;
   cancelSend.disabled = true;
-  hideEtaPill(); // reset any previous run
+  hideEtaPill();
 
-  // ✅ Reset progress UI at start (with guards)
   if (sendProgress) sendProgress.style.width = '0%';
-  if (sendStatus) sendStatus.textContent = 'Homing…';
+  if (sendStatus)   sendStatus.textContent   = 'Homing…';
 
   try {
-    // Read and preprocess the file up-front so we can early-exit on empty
-    const text = await file.text();
+    const text  = await file.text();
     const lines = text
       .split(/\r?\n/)
-      .map(l => l.replace(/;.*/, '').trim()) // strip ';' comments
+      .map(l => l.replace(/;.*/, '').trim())
       .filter(Boolean);
 
-    if (lines.length === 0) {
-      sendStatus.textContent = 'No G-code lines found';
-      return;
-    }
+    if (!lines.length) { sendStatus.textContent = 'No G-code lines found'; return; }
+
+    // Precompute "counting" stats for ETA
+    const countingMask   = lines.map(isCountingLine);
+    const countingTotal  = countingMask.reduce((a,b)=>a+(b?1:0),0);
+    const warmupCount    = Math.min(400, Math.max(50, Math.floor(countingTotal * 0.01))); // 1% (50–400)
+
+    // EMA for time/line (s), starts after first counting line
+    let emaSecPerLine    = 0;
+    const alpha          = 0.15;  // smoothing
+    let sentCounting     = 0;
+    let lastCountTs      = 0;
+    let startedETA       = false;
 
     // Home before sending
     logMsg('🏠 Homing all axes (G28)…');
-    await sendCmd('G28');
-    await waitForOk();
+    await sendCmd('G28'); await waitForOk();
 
     let sent = 0;
     const total = lines.length;
-    let startTime = 0; // set when first line is actually sent
-    const warmupLines = Math.min(10, Math.max(3, Math.floor(total * 0.02)));
 
     cancelSend.disabled = false;
     sendStatus.textContent = 'Sending…';
-    showEtaPill('ETA: estimating…', 'warn');
+    showEtaPill('ETA: heating/preamble…', 'warn');
 
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i++) {
       if (cancelStream) break;
 
-      if (!startTime) startTime = Date.now();
+      const line = lines[i];
 
+      // Send + wait
       await sendCmd(line);
+      const t0 = Date.now();
       await waitForOk();
+      const t1 = Date.now();
 
       sent++;
 
-      // Progress UI
+      // Progress bar remains based on all lines
       const pct = Math.round((sent / total) * 100);
       sendProgress.style.width = pct + '%';
       sendStatus.textContent = `Sent ${sent}/${total} (${pct}%)`;
 
-      // ETA after warmup to avoid early noise
-      if (sent >= warmupLines) {
-        const elapsedSec = (Date.now() - startTime) / 1000;
-        const denom = (sent - warmupLines + 1);
-        const avgPerLine = denom > 0 ? elapsedSec / denom : 0;
-        const remainingLines = total - sent;
-        const remainingSec = avgPerLine * remainingLines;
-        showEtaPill('ETA: ' + formatETA(remainingSec), 'warn');
+      // ---- ETA: count only real "print" lines ----
+      if (countingMask[i]) {
+        const deltaSec = (t1 - (lastCountTs || t1)) / 1000;
+        lastCountTs = t1;
+
+        if (!startedETA) {
+          // First counting line establishes the clock
+          startedETA = true;
+          emaSecPerLine = Math.max(0.001, deltaSec);
+          sentCounting = 1;
+          showEtaPill('ETA: estimating…', 'warn');
+        } else {
+          sentCounting++;
+          // Skip warmup lines from ETA display (but keep training EMA)
+          emaSecPerLine = alpha * deltaSec + (1 - alpha) * emaSecPerLine;
+
+          if (sentCounting >= warmupCount) {
+            const remaining = Math.max(0, countingTotal - sentCounting);
+            const remainingSec = emaSecPerLine * remaining;
+            showEtaPill('ETA: ' + formatETA(remainingSec), 'warn');
+          } else {
+            showEtaPill(`ETA: stabilising… (${sentCounting}/${warmupCount})`, 'warn');
+          }
+        }
+      } else {
+        // While still in setup/heating, keep the pill clear and honest
+        if (!startedETA) showEtaPill('ETA: heating/preamble…', 'warn');
       }
 
       // Small pacing delay to avoid flooding slower boards
@@ -2055,7 +2131,7 @@ async function streamGcode(file) {
       showEtaPill('ETA: —', 'bad');
       exitPrintScreen(0);
       hideEtaPill();
-clearAllPidUi();
+      clearAllPidUi();
     } else {
       sendProgress.style.width = '100%';
       sendStatus.textContent = 'Done';
@@ -2063,7 +2139,6 @@ clearAllPidUi();
       exitPrintScreen(0);
     }
 
-    // Optionally fade pill shortly after finish/cancel
     setTimeout(hideEtaPill, 2500);
   } catch (err) {
     cancelSend.disabled = true;
@@ -2073,6 +2148,7 @@ clearAllPidUi();
     setTimeout(hideEtaPill, 2500);
   }
 }
+
 
 /* =========================================================
    9) EVENT LISTENERS
