@@ -30,22 +30,20 @@
     background: #222; color: #fff; display: flex; align-items: center;
     gap: 12px; padding: 0 12px; z-index: 9999; font-weight: 600;
   }
- #statusBar .pill { 
+#statusBar .pill { 
+  /* background:#444; */  /* remove this line if needed */
   transition: background-color 200ms ease, filter 200ms ease, transform 200ms ease;
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 10px; border-radius: 999px; background: #444; 
-  font-weight: 600;
+  display:inline-flex; align-items:center; gap:6px;
+  padding:4px 10px; border-radius:999px; font-weight:600;
 }
 
-/* colors */
-.pill.idle   { background:#555; }         /* no target / idle */
-.pill.ready  { background:#2ecc71; }  /* green, stable */
-.pill.heating{ background:#e74c3c; }  /* red, heating */
-.pill.cooling{ background:#3498db; }  /* blue, cooling */
-.pill.offline {
-  background: #444; /* light grey */ 
-  color: #fff;
-}
+/* state colors – more specific than #statusBar .pill */
+#statusBar .pill.idle    { background:#555; }     /* no target / idle */
+#statusBar .pill.ready   { background:#2ecc71; }  /* green, stable */
+#statusBar .pill.heating { background:#e74c3c; }  /* red, heating */
+#statusBar .pill.cooling { background:#3498db; }  /* blue, cooling */
+#statusBar .pill.offline { background:#444; color:#fff; }
+
 /* pulse effect (used for heating/cooling) */
 .pulse { animation: pillPulse 1.0s ease-in-out infinite; }
 @keyframes pillPulse {
@@ -306,6 +304,11 @@
       <button id="zMinus" disabled>Z-</button>
       <button id="zPlus"  disabled>Z+</button>
     </div>
+    <div id="axisPositions">
+  <div>X: <span id="posX">—</span></div>
+  <div>Y: <span id="posY">—</span></div>
+  <div>Z: <span id="posZ">—</span></div>
+</div>
   </div>
   <div class="row box">
     <button id="parkHead" disabled>Park Head (X0 Y0 Z10)</button>
@@ -422,8 +425,29 @@ if (debugToggle) {
 }
 
 // Lines that are noisy and should be hidden unless Debug is ON
-const NOISY_REGEX = /^(?:echo:busy:\s*processing|\/\/action:.*|SetNewScreen:.*|Invoking handler for screen.*)/i;
+const NOISY_REGEX =
+  /^(?:echo:busy:\s*processing|\/\/action:.*|setnewscreen(?:\s*\([^)]*\))?:?.*|invoking handler for screen.*)/i;
+
 function isNoisyLine(s) { return NOISY_REGEX.test(s); }
+
+// Extra guard: catch any future SetNewScreen format
+function isSetNewScreenLine(s) {
+  return /^setnewscreen\b/i.test(s);
+}
+
+function normalizeLine(s) {
+  // strip ANSI colors / odd control chars just in case
+  s = s.replace(/\x1b\[[0-9;]*m/g, '').replace(/[\u0000-\u001F\u007F]/g, '');
+  // fix common firmware typos
+  s = s.replace(/\bcontinueing\b/gi, 'continuing');
+  return s;
+}
+
+const posXEl = document.getElementById('posX');
+const posYEl = document.getElementById('posY');
+const posZEl = document.getElementById('posZ');
+
+const POS_REGEX = /X:?\s*([+-]?\d*\.?\d+)\s+Y:?\s*([+-]?\d*\.?\d+)\s+Z:?\s*([+-]?\d*\.?\d+)/i;
 
 const meshInput = document.getElementById('meshInput');
 const screwTable = document.getElementById('screwTable');
@@ -491,6 +515,8 @@ const activityBadge = document.getElementById('activityBadge');
 const lastUpdated = document.getElementById('lastUpdated');
 const lastCmd = document.getElementById('lastCmd');
 
+let meshScratch = Array.from({ length: 4 }, () => Array(4).fill(null));
+
 // Serial state
 let port = null;
 let reader = null;
@@ -500,6 +526,7 @@ let reading = false;
 let tempTimer = null;     // M105 poll timer
 let cancelStream = false; // gcode sender cancel flag
 let captureMode = null;   // null | 'config' | 'diag'
+let postPrintTimer = null;
 
 /* =============================
    Constants & maps
@@ -525,14 +552,44 @@ const topBedPill    = document.getElementById('topBedPill');
 const topHotendText = document.getElementById('topHotend');
 const topBedText    = document.getElementById('topBed');
 
+function exitPrintScreen(delayMs = 0) {
+  if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
+
+  const fire = () => {
+    if (port && writer) {
+      logMsg('⌛ Closing print screen in firmware…');
+      // Quiet; firmware usually doesn’t send an OK for this
+      sendCmd('//action:cancel', true);
+    }
+  };
+
+  if (delayMs > 0) {
+    postPrintTimer = setTimeout(() => {
+      fire();
+      postPrintTimer = null;
+    }, delayMs);
+  } else {
+    fire();
+  }
+}
+
+// Clear pending timer when the page unloads
+window.addEventListener('unload', () => { 
+  if (postPrintTimer) clearTimeout(postPrintTimer); 
+});
+
 function setOfflinePills() {
   topHotendText.textContent = '--°C';
   topBedText.textContent = '--°C';
   topHotendPill.className = 'pill offline';
   topBedPill.className = 'pill offline';
+  hotendNow.textContent = 'Current: —';
+  bedNow.textContent = 'Current: —';
 }
 
-const TEMP_LINE = /T\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?.*?B\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
+// Support lines with only T or only B (in any order)
+const TEMP_T = /T\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
+const TEMP_B = /B\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
 
 const TELEMETRY_REGEX = /(?:\bT\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|(?:\bB\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|(?:\b@:\s*\d+)|(?:\bB@:\s*\d+)/i;
 function isTelemetryLine(s) { return TELEMETRY_REGEX.test(s); }
@@ -562,6 +619,71 @@ function stopTempPolling() {
    UI helpers & logging
 ============================= */
 
+// Accepts *one* G29-related line and updates meshScratch.
+// Supports: "X0 Y1 Z-0.0945" and row lines like "1 -0.095 -0.057 +0.006 +0.025"
+function ingestMeshLine(line) {
+  const s = line.trim();
+
+  // Row-based: "0  -0.148  -0.107  -0.074  -0.012"
+  const row = s.match(/^([0-3])\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)/);
+  if (row) {
+    const fwY = parseInt(row[1], 10);
+    const uiY = 3 - fwY;                          // <-- flip Y here
+    meshScratch[uiY][0] = parseFloat(row[2]);
+    meshScratch[uiY][1] = parseFloat(row[3]);
+    meshScratch[uiY][2] = parseFloat(row[4]);
+    meshScratch[uiY][3] = parseFloat(row[5]);
+    return meshIsComplete();
+  }
+
+  // Point formats: "X0 Y1 Z-0.0945" / "X: 0; Y: 1; ... Z..." / "X0 Y1 Z..."
+  const pXY = s.match(/X\s*:?\s*(\d)\s*[,; ]\s*Y\s*:?\s*(\d).*?\bZ\s*([+-]?\d*\.?\d+)/i)
+            || s.match(/X\s*(\d)\s*Y\s*(\d)\s*Z\s*([+-]?\d*\.?\d+)/i);
+  if (pXY) {
+    const x = parseInt(pXY[1], 10);
+    const fwY = parseInt(pXY[2], 10);
+    const uiY = 3 - fwY;                          // <-- flip Y here
+    const val = parseFloat(pXY[3]);
+    if (x < 4 && fwY < 4 && Number.isFinite(val)) {
+      meshScratch[uiY][x] = val;
+      return meshIsComplete();
+    }
+  }
+
+  return false;
+}
+
+
+
+function resetMeshScratch() {
+  meshScratch = Array.from({ length: 4 }, () => Array(4).fill(null));
+}
+function meshIsComplete(m = meshScratch) {
+  return m.every(row => row.every(v => typeof v === 'number' && !Number.isNaN(v)));
+}
+
+function updateAxisPanel(x, y, z) {
+  posXEl.textContent = x.toFixed(3);
+  posYEl.textContent = y.toFixed(3);
+  posZEl.textContent = z.toFixed(3);
+}
+
+function updateTempPanel() {
+  if (temps.hot != null) {
+    hotendNow.textContent = `Current: ${temps.hot.toFixed(1)}°C` +
+      (temps.hotTarget != null ? ` / ${Math.round(temps.hotTarget)}°` : '');
+  } else {
+    hotendNow.textContent = 'Current: —';
+  }
+
+  if (temps.bed != null) {
+    bedNow.textContent = `Current: ${temps.bed.toFixed(1)}°C` +
+      (temps.bedTarget != null ? ` / ${Math.round(temps.bedTarget)}°` : '');
+  } else {
+    bedNow.textContent = 'Current: —';
+  }
+}
+
 // Decide state from current vs target
 function tempState(current, target, tolerance = 0.5) {
   if (target == null || Number.isNaN(target)) return 'idle';
@@ -585,7 +707,7 @@ function setPillState(pillEl, state) {
 }
 
 // Track previous temps to detect direction if you ever want trend-based logic
-const lastTemps = { hot: null, bed: null };
+const temps = { hot: null, hotTarget: null, bed: null, bedTarget: null };
 
 function setActivity(text, cls='') {
   activityBadge.textContent = text;
@@ -601,7 +723,7 @@ function setConnected(connected) {
     topBedPill.classList.remove('offline');
     topHotendPill.classList.add('idle');
     topBedPill.classList.add('idle');
-
+    updateTempPanel();
     startTempPolling();
   } else {
     connBadge.textContent = 'Disconnected';
@@ -655,14 +777,12 @@ function _logBase(msg) {
 }
 function logMsg(msg) {
   const lines = String(msg).split(/\r?\n/);
-  for (const line of lines) {
+  for (let line of lines) {
     if (!line) continue;
+    line = normalizeLine(line);
 
-    // 🔇 hide temperature & power chatter
-    if (isTelemetryLine(line)) continue;
-
-    // 🔇 hide busy/screen/action spam unless Debug is ON
-    if (!debugMode && isNoisyLine(line)) continue;
+    if (!debugMode && (isSetNewScreenLine(line) || isNoisyLine(line))) continue;
+    if (!debugMode && isTelemetryLine(line)) continue;
 
     if (captureMode === 'config') {
       configBox.value += line + '\n';
@@ -676,7 +796,12 @@ function logMsg(msg) {
 }
 
 
-function updateLastUpdated() { lastUpdated.textContent = 'Last updated: ' + new Date().toLocaleTimeString(); }
+
+function updateLastUpdated() { 
+  lastUpdated.textContent = 'Last updated: ' + new Date().toLocaleTimeString(); 
+  updateTempPanel();
+}
+
 function setLastCmd(cmd) { lastCmd.textContent = 'Last Cmd: ' + cmd; }
 
 /* =============================
@@ -688,31 +813,34 @@ function tryParseMeshFromLines(lines) {
   for (const raw of lines) {
     const line = raw.trim();
 
-    // Row-based: "0  +0.025  +0.013  -0.002  -0.020"
+    // Row-based
     const m = line.match(/^([0-3])\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)/);
     if (m) {
-      const rowIdx = parseInt(m[1], 10);
+      const fwY = parseInt(m[1], 10);
+      const uiY = 3 - fwY; // flip Y
       const vals = [parseFloat(m[2]), parseFloat(m[3]), parseFloat(m[4]), parseFloat(m[5])];
-      mesh[rowIdx] = vals;
+      mesh[uiY] = vals;
       continue;
     }
 
-    // Point-by-point: "(x,y)  +0.012" or "[x,y] +0.012" OR "X0 Y1 Z-0.1505"
+    // Point-by-point
     const p1 = line.match(/[\(\[](\d)\s*,\s*(\d)[\)\]]\s+([+-]?\d*\.?\d+)/);
     const p2 = line.match(/X\s*:?\s*(\d)\s*;?\s*[, ]\s*Y\s*:?\s*(\d).*?\bZ\s*([+-]?\d*\.?\d+)/i);
     const p3 = line.match(/X\s*(\d)\s*Y\s*(\d)\s*Z\s*([+-]?\d*\.?\d+)/i);
     const mP = p1 || p2 || p3;
     if (mP) {
-      const x = parseInt(mP[1], 10);
-      const y = parseInt(mP[2], 10);
+      const x   = parseInt(mP[1], 10);
+      const fwY = parseInt(mP[2], 10);
+      const uiY = 3 - fwY; // flip Y
       const val = parseFloat(mP[3]);
-      if (x < 4 && y < 4) mesh[y][x] = val;
+      if (x < 4 && fwY < 4) mesh[uiY][x] = val;
     }
   }
 
   const complete = mesh.every(row => row.every(val => typeof val === 'number' && !isNaN(val)));
   return complete ? mesh : null;
 }
+
 function loadMeshLS() {
   const hist = JSON.parse(localStorage.getItem('levels') || '[]');
   return hist.at(-1) || Array.from({length:4},()=>Array(4).fill(''));
@@ -777,91 +905,89 @@ function renderSuggestions(mesh) {
   }
 }
 
+console.log('SYNC CHECK REACHED');
+
 /* =============================
    Serial I/O
 ============================= */
 async function connectPrinter() {
   try {
     if (!('serial' in navigator)) {
-      alert('⚠️ Web Serial API not supported. Use Chrome/Edge/Brave on desktop.');
+      alert('Web Serial API not supported. Use Chrome/Edge/Brave on desktop.');
       return;
     }
 
-    setActivity('Connecting…', 'warn');
+    setActivity('Connecting...', 'warn');
 
-    // Reuse existing granted port if possible
     if (!port) {
       const granted = await navigator.serial.getPorts();
       port = granted[0] || await navigator.serial.requestPort();
     }
 
-    // If the port isn't open, try to open it
     if (!port.readable || !port.writable) {
       try {
         await port.open({ baudRate: 115200 });
       } catch (e) {
-        // If it’s already open, we can proceed to (re)attach streams
         if (!/already open/i.test(String(e))) throw e;
-        logMsg('ℹ️ Port is already open; reusing existing connection.');
+        logMsg('Port is already open; reusing existing connection.');
       }
     }
 
-    // Clean up any old streams before (re)attaching
-    try { await reader?.cancel(); } catch {}
-    try { reader?.releaseLock(); } catch {}
-    try { writer?.releaseLock(); } catch {}
+    // clean up old streams (no optional chaining)
+    try { if (reader) await reader.cancel(); } catch (e) {}
+    try { if (reader) reader.releaseLock(); } catch (e) {}
+    try { if (writer) writer.releaseLock(); } catch (e) {}
 
     const tds = new TextDecoderStream();
     textDecoder = tds;
-    port.readable.pipeTo(tds.writable).catch(()=>{});
+    port.readable.pipeTo(tds.writable).catch(function() {});
     reader = tds.readable.getReader();
     writer = port.writable.getWriter();
 
     setConnected(true);
-    startTempPolling();           // make sure temps resume
+    updateTempPanel();
+    startTempPolling();
     updateLastUpdated();
     setActivity('Connected', 'ok');
-    logMsg('✅ Connected.');
+    logMsg('Connected.');
 
     if (!reading) readLoop();
   } catch (err) {
     setConnected(false);
     setActivity('Connect error', 'bad');
-    logMsg('❌ ' + err.message);
+    logMsg('' + err.message);
   }
 }
 
+
 async function disconnectPrinter() {
-  setActivity('Disconnecting…', 'warn');
   try {
-    stopTempPolling();
+    setConnected(false);
+    setActivity('Disconnecting…', 'warn');
 
     try { await reader?.cancel(); } catch {}
     try { reader?.releaseLock(); } catch {}
     try { writer?.releaseLock(); } catch {}
+    try { await port?.close(); } catch {}
 
-    try {
-      // Break the pipe so close() isn’t blocked by the stream
-      await textDecoder?.readable?.cancel?.();
-    } catch {}
+    port = null;
+    reader = null;
+    writer = null;
 
-    if (port) await port.close();
-  } catch (e) {
-    console.warn('Disconnect error:', e);
-  } finally {
-setOfflinePills();
-    _rejectAllOk(new Error('Disconnected'));
-    port = null; reader = null; writer = null; textDecoder = null;
-    setConnected(false);
-    setActivity('Idle');
-    updateLastUpdated();
+    // 🧹 Clear any pending post-print exit timers
+    if (postPrintTimer) {
+      clearTimeout(postPrintTimer);
+      postPrintTimer = null;
+    }
+
+    setActivity('Disconnected', 'ok');
     logMsg('🔌 Disconnected.');
+  } catch (err) {
+    logMsg('❌ Disconnect error: ' + err.message);
   }
 }
 
-
 let rxBuffer = '';
-
 
 // --- ACK / flow control state ---
 let waitingResolvers = [];       // array of resolve() for waitForOk()
@@ -964,55 +1090,103 @@ async function readLoop() {
         const line = raw.trim();
         if (!line) continue;
 
-        // 1) TEMP UPDATE FIRST (so UI always updates even if we hide the line)
-        const tm = line.match(TEMP_LINE);
-        if (tm) {
-  const tCur = parseFloat(tm[1]);
-  const tTar = tm[2] !== undefined ? parseFloat(tm[2]) : null;
-  const bCur = parseFloat(tm[3]);
-  const bTar = tm[4] !== undefined ? parseFloat(tm[4]) : null;
+        // 👇 declare per-line matches *here*
+        const tMatch = line.match(TEMP_T);
+        const bMatch = line.match(TEMP_B);
 
-  if (Number.isFinite(tCur)) {
-    temps.hot = tCur;
-    temps.hotTarget = Number.isFinite(tTar) ? tTar : null;
-  }
-  if (Number.isFinite(bCur)) {
-    temps.bed = bCur;
-    temps.bedTarget = Number.isFinite(bTar) ? bTar : null;
-  }
+        let prettyTempLog = null;
+
+        // --- 1) TEMP UPDATE FIRST (robust to T:/B: arriving separately) ---
+        if (tMatch) {
+          const tCur = parseFloat(tMatch[1]);
+          const tTar = tMatch[2] !== undefined ? parseFloat(tMatch[2]) : null;
+          if (Number.isFinite(tCur)) {
+            temps.hot = tCur;
+            temps.hotTarget = Number.isFinite(tTar) ? tTar : null;
+            setTempPill(topHotendPill, topHotendText, temps.hot, temps.hotTarget);
+          }
         }
 
-        // 2) Hide telemetry spam from the main log/capture
+        if (bMatch) {
+          const bCur = parseFloat(bMatch[1]);
+          const bTar = bMatch[2] !== undefined ? parseFloat(bMatch[2]) : null;
+          if (Number.isFinite(bCur)) {
+            temps.bed = bCur;
+            temps.bedTarget = Number.isFinite(bTar) ? bTar : null;
+            setTempPill(topBedPill, topBedText, temps.bed, temps.bedTarget);
+          }
+        }
+
+        if (tMatch || bMatch) updateTempPanel();
+
+        // If Debug is ON and this was a telemetry line, prepare pretty format
+        if (debugMode && (tMatch || bMatch)) {
+          const hotStr = temps.hot != null
+            ? `${temps.hot.toFixed(1)}${temps.hotTarget != null ? ' / ' + Math.round(temps.hotTarget) : ''}`
+            : '--';
+          const bedStr = temps.bed != null
+            ? `${temps.bed.toFixed(1)}${temps.bedTarget != null ? ' / ' + Math.round(temps.bedTarget) : ''}`
+            : '--';
+          prettyTempLog = `🌡 Hotend ${hotStr} · Bed ${bedStr}`;
+        }
+
+        // --- 2) Hide telemetry spam from the main log/capture (but show when Debug is ON) ---
         const isTelemetry = TELEMETRY_REGEX.test(line);
-        if (!isTelemetry) {
-          logMsg(line);
+        let out = normalizeLine(line);
+
+        const posMatch = line.match(POS_REGEX);
+        if (posMatch) {
+          const x = parseFloat(posMatch[1]);
+          const y = parseFloat(posMatch[2]);
+          const z = parseFloat(posMatch[3]);
+          if ([x, y, z].every(Number.isFinite)) {
+            updateAxisPanel(x, y, z);
+          }
         }
 
-        // 3) Mesh parse from this single line (covers point formats)
-        const parsed = tryParseMeshFromLines([line]);
-        if (parsed) {
-          const mesh = parsed.reverse(); // bottom-left → top-left for UI
-          setActivity('Mesh parsed', 'ok');
-          saveMeshLS(mesh);
-          renderMeshInputs(mesh);
-          renderSuggestions(mesh);
-          updateLastUpdated();
+        // 🔇 hard skip for screen chatter when Debug is OFF
+        if (!debugMode && (isSetNewScreenLine(out) || isNoisyLine(out))) {
+          continue;
         }
 
-        // 4) PID status lights
+        // ✅ If Debug ON: log pretty temp if available, else log raw line
+        // ✅ If Debug OFF: skip telemetry but log others
+        if (debugMode) {
+          if (prettyTempLog) {
+            logMsg(prettyTempLog);
+          } else {
+            logMsg(out);
+          }
+        } else if (!isTelemetry) {
+          logMsg(out);
+        }
+
+        // --- 3) Mesh parse from this single line (covers point formats) ---
+        const justCompleted = ingestMeshLine(out);
+if (justCompleted) {
+  const meshForUi = meshScratch.map(r => r.slice());     // orientation already correct
+  setActivity('Mesh parsed', 'ok');
+  saveMeshLS(meshForUi);
+  renderMeshInputs(meshForUi);
+  renderSuggestions(meshForUi);
+  updateLastUpdated();
+  resetMeshScratch();
+}
+
+        // --- 4) PID status lights ---
         if (/PID Autotune start/i.test(line))    setActivity('PID tuning…', 'warn');
         if (/PID Autotune finished/i.test(line)) setActivity('PID tuning complete', 'ok');
         if (/PID Autotune failed/i.test(line))   setActivity('PID tuning failed', 'bad');
 
-        // 5) Handle 'ok' (always update clock; if capturing, also resume temp polling)
-if (/^ok\b/i.test(line)) {
-  updateLastUpdated();
-  if (captureMode) {
-    captureMode = null;
-    startTempPolling();
-  }
-  _resolveNextOk(); // <-- unblocks streamGcode/waiters
-}
+        // --- 5) Handle 'ok' ---
+        if (/^ok\b/i.test(line)) {
+          updateLastUpdated();
+          if (captureMode) {
+            captureMode = null;
+            startTempPolling();
+          }
+          _resolveNextOk(); // unblocks waitForOk() callers
+        }
       }
     }
   } catch (err) {
@@ -1089,6 +1263,7 @@ function jog(axis, dir) {
   sendCmd(`G1 ${axis}${dist.toFixed(3)} F${feed}`);
   sendCmd('G90');
 }
+
 async function streamGcode(file) {
   if (!writer) { alert('Not connected.'); return; }
 
@@ -1096,16 +1271,14 @@ async function streamGcode(file) {
   sendStatus.textContent = 'Homing…';
   cancelSend.disabled = true;
 
-  // 1) Home all axes (no timeout; will wait for ok)
   logMsg('🏠 Homing all axes (G28)…');
   await sendCmd('G28');
   await waitForOk().catch(err => { throw err; });
 
-  // 2) Read file lines
   const text = await file.text();
   const lines = text
     .split(/\r?\n/)
-    .map(l => l.replace(/;.*/,'').trim())
+    .map(l => l.replace(/;.*/, '').trim())
     .filter(Boolean);
 
   let sent = 0;
@@ -1116,49 +1289,37 @@ async function streamGcode(file) {
     if (cancelStream) break;
 
     await sendCmd(line);
-    // Wait forever for ok, unless cancel/disconnect happens
     await waitForOk().catch(err => { throw err; });
 
     sent++;
-    const pct = Math.round(sent / lines.length * 100);
+    const pct = Math.round((sent / lines.length) * 100);
     sendProgress.style.width = pct + '%';
     sendStatus.textContent = `Sent ${sent}/${lines.length} (${pct}%)`;
 
-    // Small pacing so we don’t flood slow boards
     await new Promise(r => setTimeout(r, 10));
   }
 
   if (cancelStream) {
     sendStatus.textContent = 'Cancelled';
+    exitPrintScreen(0);
   } else {
     sendStatus.textContent = 'Done';
+    exitPrintScreen(0);
   }
   cancelSend.disabled = true;
 
-// ⬆️ top-level (near other globals)
-let postPrintTimer = null;
-
-// ... inside streamGcode, after you set sendStatus/cancelSend:
-if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
-
-if (!cancelStream) {
-  postPrintTimer = setTimeout(() => {
-    if (port && writer) {
-      logMsg('⌛ Auto-closing print screen in firmware…');
-      sendCmd('//action:cancel', true); // quiet, no ok expected
-    }
-    postPrintTimer = null;
-  }, 60_000);
+  // ⬇️ Post-print auto-close timer (safe inside this function)
+  if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
+  if (!cancelStream) {
+    postPrintTimer = setTimeout(() => {
+      if (port && writer) {
+        logMsg('⌛ Auto-closing print screen in firmware…');
+        sendCmd('//action:cancel', true); // quiet; no ok expected
+      }
+      postPrintTimer = null;
+    }, 60_000);
+  }
 }
-
-// (only once, not inside the function)
-window.addEventListener('unload', () => { if (postPrintTimer) clearTimeout(postPrintTimer); });
-
-// ... in disconnectPrinter() finally block:
-if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
-
-}
-
 
 /* =============================
    Export helpers
@@ -1290,6 +1451,10 @@ loadFil.addEventListener('click', async () => {
   if (!Number.isFinite(temp) || temp <= 0) return;
 
   try {
+
+    // 🔹 Home all axes first
+    await sendCmd('G28');                    await waitForOk().catch(()=>{});
+
     await sendCmd('G90');                    await waitForOk().catch(()=>{});
     await sendCmd('G1 Z110 F300');           await waitForOk().catch(()=>{});
 
@@ -1319,6 +1484,10 @@ unloadFil.addEventListener('click', async () => {
   if (!Number.isFinite(temp) || temp <= 0) return;
 
   try {
+
+    // 🔹 Home all axes first
+    await sendCmd('G28');                    await waitForOk().catch(()=>{});
+
     await sendCmd('G90');                    await waitForOk().catch(()=>{});
     await sendCmd('G1 Z110 F300');           await waitForOk().catch(()=>{});
 
@@ -1371,6 +1540,7 @@ cancelSend.addEventListener('click', async () => {
   await waitForOk().catch(()=>{});
   await sendCmd('G1 X0 Y0 Z10 F3000');
   await waitForOk().catch(()=>{});
+  exitPrintScreen(0);
 });
 
 /* =============================
@@ -1384,6 +1554,7 @@ cancelSend.addEventListener('click', async () => {
   setConnected(false);
   setOfflinePills(); 
 })();
+
 </script>
 </body>
 </html>
