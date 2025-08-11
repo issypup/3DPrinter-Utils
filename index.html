@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>3D Printer Utils Test</title>
+<title>3D Printer Utils</title>
 <meta name="author" content="issypup">
 <meta name="date" content="2025-08-10">
 <style>
@@ -608,11 +608,11 @@ const TELEMETRY_REGEX =
 ========================================================= */
 let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
 
+let pidActiveHotend = false;
+let pidActiveBed    = false;
+
 let meshScratch    = Array.from({ length: 4 }, () => Array(4).fill(null));
 let temps          = { hot: null, hotTarget: null, bed: null, bedTarget: null };
-
-let pidHotendActive = false;
-let pidBedActive = false;
 
 let virtualMode = false;      
 let vSimTimer = null;         
@@ -675,6 +675,24 @@ if (debugToggle) {
   });
 }
 
+function setPidActive(tool, on = true) {
+  if (tool === 'hotend') pidActiveHotend = !!on;
+  if (tool === 'bed')    pidActiveBed    = !!on;
+
+  // refresh both pills immediately
+  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
+  setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget);
+}
+
+function clearAllPidUi() {
+  pidActiveHotend = false;
+  pidActiveBed = false;
+  topHotendPill.classList.remove('warn', 'pulse');
+  topBedPill.classList.remove('warn', 'pulse');
+  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
+  setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget);
+}
+
 async function sendCmdsSequential(...cmds) {
   for (const c of cmds) {
     // Skip empty or whitespace-only commands
@@ -722,6 +740,14 @@ async function sendCmdVirtual(cmd, quiet = false) {
       ok();
       break;
     }
+
+case /^M303\b/i.test(line): {
+  logMsg('PID Autotune start');
+  // …maybe after 3s…
+  setTimeout(() => logMsg('PID Autotune finished'), 3000);
+  ok();
+  break;
+}
 
     // --- Targets / basic controls ---
     case /^M104\b/i.test(line): {
@@ -1026,24 +1052,23 @@ function tempState(current, target, tolerance = 0.5) {
 }
 
 function setTempPill(pillEl, textEl, curr, target) {
-  const hasTarget = target != null && !Number.isNaN(target);
-  const safeCurr = Number.isFinite(curr) ? curr : 0;
-  textEl.textContent = hasTarget
-    ? `${safeCurr.toFixed(1)}°C / ${Math.round(target)}°`
-    : `${safeCurr.toFixed(1)}°C`;
+  textEl.textContent = (target != null && !Number.isNaN(target))
+    ? `${curr.toFixed(1)}°C / ${Math.round(target)}°`
+    : `${curr.toFixed(1)}°C`;
 
-  // PID override check
-  const forcePid =
-    (pillEl === topHotendPill && pidHotendActive) ||
-    (pillEl === topBedPill    && pidBedActive);
-
-  const state = forcePid ? 'pid' : tempState(safeCurr, target);
-
-  pillEl.classList.remove('offline','idle','ready','heating','cooling','pid','pulse');
-  pillEl.classList.add(state);
-  if (state === 'heating' || state === 'cooling' || state === 'pid') {
-    pillEl.classList.add('pulse');
+  // If PID active for this tool, force orange pulse
+  if ((pillEl === topHotendPill && pidActiveHotend) ||
+      (pillEl === topBedPill    && pidActiveBed)) {
+    pillEl.classList.remove('offline','idle','ready','heating','cooling','pulse','ok','bad');
+    pillEl.classList.add('warn','pulse');
+    return;
   }
+
+  // Normal state logic
+  const state = tempState(curr, target);
+  pillEl.classList.remove('offline','idle','ready','heating','cooling','pulse','warn');
+  pillEl.classList.add(state);
+  if (state === 'heating' || state === 'cooling') pillEl.classList.add('pulse');
 }
 
 // Now updateTempPanel simply calls setTempPill for each
@@ -1542,7 +1567,7 @@ async function disconnectPrinter(reason = 'user') {
     if (sendProgress) sendProgress.style.width = '0%';
     if (sendStatus)   sendStatus.textContent = 'Idle';
     hideEtaPill();
-
+	clearAllPidUi();
     if (connKind === 'virtual' || virtualMode) {
       await disconnectVirtual();
       connKind = 'none';
@@ -1711,33 +1736,23 @@ const chunk = (value instanceof Uint8Array)
         // --- PID state hints ---
 if (/PID Autotune start/i.test(line)) {
   setActivity('PID tuning…', 'warn');
-  // Guess target: E-1 = bed, E0 = hotend. Fall back to hotend if unknown.
-  if (/\bE-?1\b/.test(line) || /Bed/i.test(line)) {
-    pidBedActive = true;
-    setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget);
+  // Guess target: E-1 = bed, E0 = hotend (fallback to hotend if unknown)
+  if (/\bE-?1\b/.test(line) || /\bBED\b/i.test(line)) {
+    setPidActive('bed', true);
   } else {
-    pidHotendActive = true;
-    setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
+    setPidActive('hotend', true);
   }
 }
 
 if (/PID Autotune finished/i.test(line)) {
   setActivity('PID tuning complete', 'ok');
-  pidHotendActive = false;
-  pidBedActive = false;
-  // refresh pills to normal state
-  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
-  setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget);
+  clearAllPidUi();                               // stop orange pulse
 }
 
 if (/PID Autotune failed/i.test(line)) {
   setActivity('PID tuning failed', 'bad');
-  pidHotendActive = false;
-  pidBedActive = false;
-  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
-  setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget);
+  clearAllPidUi();                               // stop orange pulse
 }
-
 
         // --- OK resolver ---
         if (/^ok\b/i.test(line)) {
@@ -1810,22 +1825,22 @@ async function waitForBed(target, tol = 1.0) {
 ========================================================= */
 async function runBedPID() {
   const t = promptNumber('Enter bed PID target temp (S):', 60);
-  if (t === null || !Number.isFinite(t)) return alert('Invalid temperature.');
-  pidBedActive = true;
-  setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget);
+  if (t === null) return;
+  if (!Number.isFinite(t)) return alert('Invalid temperature.');
+  setPidActive('bed', true);                 // 👈 turn on orange pulse
   setActivity(`PID bed @ ${t}°C…`, 'warn');
   await sendCmd(`M303 C5 E-1 S${t} U`);
-  logMsg('ℹ️ After success, send M500 to save if required.');
+  logMsg('ℹ️ PID tuning can take a few minutes. After success, send M500 to save if required.');
 }
 
 async function runHotendPID() {
   const t = promptNumber('Enter nozzle PID target temp (S):', 220);
-  if (t === null || !Number.isFinite(t)) return alert('Invalid temperature.');
-  pidHotendActive = true;
-  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
+  if (t === null) return;
+  if (!Number.isFinite(t)) return alert('Invalid temperature.');
+  setPidActive('hotend', true);              // 👈 turn on orange pulse
   setActivity(`PID hotend @ ${t}°C…`, 'warn');
   await sendCmd(`M303 C5 E0 S${t} U`);
-  logMsg('ℹ️ After success, send M500 to save if required.');
+  logMsg('ℹ️ PID tuning can take a few minutes. After success, send M500 to save if required.');
 }
 
 async function readMesh(){
@@ -1932,6 +1947,7 @@ async function streamGcode(file) {
       showEtaPill('ETA: —', 'bad');
       exitPrintScreen(0);
       hideEtaPill();
+clearAllPidUi();
     } else {
       sendProgress.style.width = '100%';
       sendStatus.textContent = 'Done';
@@ -2156,6 +2172,7 @@ cancelSend.addEventListener('click', async () => {
 
   exitPrintScreen(0);
   hideEtaPill();
+clearAllPidUi();
 });
 
 /* =========================================================
