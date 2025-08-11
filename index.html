@@ -474,44 +474,48 @@
 /* =========================================================
    1) DOM REFERENCES (all const)
 ========================================================= */
+
+//Toggles and core controls
 const debugToggle     = document.getElementById('debugToggle');
-
-const mockMesh = [
-  "Bed Topography Report:",
-  "    0      1      2      3",
-  "0  +0.025  +0.013  -0.002  -0.020",
-  "1  +0.018  +0.005  -0.010  -0.022",
-  "2  +0.030  +0.015  +0.003  -0.015",
-  "3  +0.035  +0.020  +0.010  -0.012",
-  "ok"
-];
-
-const vState = {
-  hot: 25, hotTarget: null,
-  bed: 25, bedTarget: null,
-  x: 0, y: 0, z: 0
-};
-
-const posXEl          = document.getElementById('posX');
-const posYEl          = document.getElementById('posY');
-const posZEl          = document.getElementById('posZ');
-
-const meshInput       = document.getElementById('meshInput');
-const screwTable      = document.getElementById('screwTable');
-const printerLog      = document.getElementById('printerLog');
-
+const virtualToggle = document.getElementById('virtualToggle');
 const connectBtn      = document.getElementById('connectBtn');
 const disconnectBtn   = document.getElementById('disconnectBtn');
-const readMeshBtn     = document.getElementById('readMeshBtn');
 const sendCmdBtn      = document.getElementById('sendCmdBtn');
-const manualCmd       = document.getElementById('manualCmd');
 const clearLogBtn     = document.getElementById('clearLogBtn');
+
+//Log/UI text
+const printerLog      = document.getElementById('printerLog');
+const lastUpdated     = document.getElementById('lastUpdated');
+const lastCmd         = document.getElementById('lastCmd');
+const activityBadge   = document.getElementById('activityBadge');
+const connBadge       = document.getElementById('connBadge');
+const printerNameEl = document.getElementById('printerName');
+
+//Top status pills
+const topHotendPill   = document.getElementById('topHotendPill');
+const topBedPill      = document.getElementById('topBedPill');
+const topHotendText   = document.getElementById('topHotend');
+const topBedText      = document.getElementById('topBed');
+const etaPill = document.getElementById('etaPill');
+
+//Manual G-code
+const manualCmd       = document.getElementById('manualCmd');
+
+//Leveling UI
+const readMeshBtn     = document.getElementById('readMeshBtn');
+const exportMeshBtn   = document.getElementById('exportMeshBtn');
+const meshInput       = document.getElementById('meshInput');
+const screwTable      = document.getElementById('screwTable');
+const levelPrinterSelect = document.getElementById('levelPrinterSelect');
+const unsupportedMsg     = document.getElementById('unsupportedMsg');
+const cr6seLevelWrap     = document.getElementById('cr6seLevelWrap');
 const resetBtn        = document.getElementById('resetBtn');
+
+//PID UI
 const bedPidBtn       = document.getElementById('bedPidBtn');
 const hotendPidBtn    = document.getElementById('hotendPidBtn');
 
-const exportMeshBtn   = document.getElementById('exportMeshBtn');
-
+//Temps and fan
 const hotendSet       = document.getElementById('hotendSet');
 const bedSet          = document.getElementById('bedSet');
 const hotendApply     = document.getElementById('hotendApply');
@@ -525,6 +529,7 @@ const fanVal          = document.getElementById('fanVal');
 const fanApply        = document.getElementById('fanApply');
 const fanOff          = document.getElementById('fanOff');
 
+//Movement UI
 const jogStep         = document.getElementById('jogStep');
 const homeAll         = document.getElementById('homeAll');
 const disableMotors   = document.getElementById('disableMotors');
@@ -535,11 +540,28 @@ const yPlus           = document.getElementById('yPlus');
 const zMinus          = document.getElementById('zMinus');
 const zPlus           = document.getElementById('zPlus');
 const parkHead        = document.getElementById('parkHead');
+const posXEl          = document.getElementById('posX');
+const posYEl          = document.getElementById('posY');
+const posZEl          = document.getElementById('posZ');
 
+//eeprom and Config
 const readCfg         = document.getElementById('readCfg');
 const saveCfg         = document.getElementById('saveCfg');
 const configBox       = document.getElementById('configBox');
 
+//Diagnostics
+const fwInfo          = document.getElementById('fwInfo');
+const tmcDiag         = document.getElementById('tmcDiag');
+const diagBox         = document.getElementById('diagBox');
+
+//Sender
+const gcodeFile       = document.getElementById('gcodeFile');
+const sendGcode       = document.getElementById('sendGcode');
+const cancelSend      = document.getElementById('cancelSend');
+const sendProgress    = document.getElementById('sendProgress');
+const sendStatus      = document.getElementById('sendStatus');
+
+//Maintenance controls
 const preheatPLA      = document.getElementById('preheatPLA');
 const preheatPETG     = document.getElementById('preheatPETG');
 const preheatABS      = document.getElementById('preheatABS');
@@ -547,43 +569,12 @@ const cooldown        = document.getElementById('cooldown');
 const loadFil         = document.getElementById('loadFil');
 const unloadFil       = document.getElementById('unloadFil');
 
-const fwInfo          = document.getElementById('fwInfo');
-const tmcDiag         = document.getElementById('tmcDiag');
-const diagBox         = document.getElementById('diagBox');
-
-const gcodeFile       = document.getElementById('gcodeFile');
-const sendGcode       = document.getElementById('sendGcode');
-const cancelSend      = document.getElementById('cancelSend');
-const sendProgress    = document.getElementById('sendProgress');
-const sendStatus      = document.getElementById('sendStatus');
-
-const printerNameEl = document.getElementById('printerName');
-const connBadge       = document.getElementById('connBadge');
-const activityBadge   = document.getElementById('activityBadge');
-const lastUpdated     = document.getElementById('lastUpdated');
-const lastCmd         = document.getElementById('lastCmd');
-
-const topHotendPill   = document.getElementById('topHotendPill');
-const topBedPill      = document.getElementById('topBedPill');
-const topHotendText   = document.getElementById('topHotend');
-const topBedText      = document.getElementById('topBed');
-
-const etaPill = document.getElementById('etaPill');
-
-const levelPrinterSelect = document.getElementById('levelPrinterSelect');
-const unsupportedMsg     = document.getElementById('unsupportedMsg');
-const cr6seLevelWrap     = document.getElementById('cr6seLevelWrap');
-
-const AMBIENT_WINDOW_SEC   = 300;   // track last 5 minutes
-const AMBIENT_MIN_SEC      = 240;   // require at least 4 minutes observed
-const AMBIENT_MAX_SPREAD   = 0.8;   // max range (°C) over window (±0.4°C)
-const AMBIENT_MAX_SLOPE    = 0.01;  // °C per second (~0.6°C/min) max drift
-
-const _ambientBuf = { hot: [], bed: [] }; // arrays of [tsSec, temp]
 
 /* =========================================================
    2) CONSTANTS (maps, regex, fixed values)
 ========================================================= */
+
+//Mesh and screws map
 const screwAffects = {
   A1: [[0,0],[0,1],[1,0],[1,1]],
   A2: [[0,1],[0,2],[1,1],[1,2]],
@@ -598,6 +589,7 @@ const screwAffects = {
   C4: [[3,3]]
 };
 
+//Regex
 const NOISY_REGEX = /^(?:echo:busy:\s*processing|\/\/action:.*|setnewscreen(?:\s*\([^)]*\))?:?.*|invoking handler for screen.*)/i;
 const POS_REGEX   = /X:?\s*([+-]?\d*\.?\d+)\s+Y:?\s*([+-]?\d*\.?\d+)\s+Z:?\s*([+-]?\d*\.?\d+)/i;
 
@@ -607,44 +599,80 @@ const TEMP_B = /B\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
 const TELEMETRY_REGEX =
   /(?:\bT\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|(?:\bB\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|(?:\b@:\s*\d+)|(?:\bB@:\s*\d+)/i;
 
+//Ambient-detection tuning
+const AMBIENT_WINDOW_SEC   = 300;   // track last 5 minutes
+const AMBIENT_MIN_SEC      = 240;   // require at least 4 minutes observed
+const AMBIENT_MAX_SPREAD   = 0.8;   // max range (°C) over window (±0.4°C)
+const AMBIENT_MAX_SLOPE    = 0.01;  // °C per second (~0.6°C/min) max drift
+
+//Buffers
+const _ambientBuf = { hot: [], bed: [] }; // arrays of [tsSec, temp]
+
+//Virtual data
+const mockMesh = [
+  "Bed Topography Report:",
+  "    0      1      2      3",
+  "0  +0.025  +0.013  -0.002  -0.020",
+  "1  +0.018  +0.005  -0.010  -0.022",
+  "2  +0.030  +0.015  +0.003  -0.015",
+  "3  +0.035  +0.020  +0.010  -0.012",
+  "ok"
+];
+
+//Virtual printer state object
+const vState = {
+  hot: 25, hotTarget: null,
+  bed: 25, bedTarget: null,
+  x: 0, y: 0, z: 0
+};
+
 /* =========================================================
    3) STATE (all let)
 ========================================================= */
-let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
 
+//UI and State flags
+let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
+let criticalDepth = 0;
 let pidActiveHotend = false;
 let pidActiveBed    = false;
 let pidTarget = null; // 'hotend', 'bed', or null
+let isHomed = false;
 
+//Mesh and Temps
 let meshScratch    = Array.from({ length: 4 }, () => Array(4).fill(null));
 let temps          = { hot: null, hotTarget: null, bed: null, bedTarget: null };
 
-let virtualMode = false;      
-let vSimTimer = null;         
-
+//Connection lifecycle
 let connKind = 'none'; // 'none' | 'virtual' | 'real'
 let isConnecting = false;
 let isDisconnecting = false;
 
+//Serial — device handles
 let port           = null;
 let reader         = null;
 let writer         = null;
 let textDecoder    = null;
+
+//Comms - I/O state, buffers, timers
 let reading        = false;
-let tempTimer      = null;
+let rxBuffer       = '';
 let cancelStream   = false;
 let captureMode    = null; // null | 'config' | 'diag'
+let tempTimer      = null;
 let postPrintTimer = null;
 
-let rxBuffer       = '';
-
+//Read and Telemetry
 let waitingResolvers = []; // (kept for compatibility)
 let isBusyProcessing  = false;
 let lastOkAt          = 0;
-
 let pendingOk      = []; // queue for waitForOk()
 
-let isHomed = false;
+//Virtual printer
+let virtualMode = false;
+let vSimTimer = null;
+
+//Easter Egg
+let streak = 0;
 
 /* =========================================================
    4) TABS BOOTSTRAP (runs once)
@@ -674,14 +702,13 @@ let isHomed = false;
 /* =========================================================
    5) HELPERS (pure UI / formatting / state)
 ========================================================= */
-if (debugToggle) {
-  debugToggle.checked = !!debugMode;
-  debugToggle.addEventListener('change', () => {
-    debugMode = debugToggle.checked;
-    localStorage.setItem('debugMode', JSON.stringify(debugMode));
-  });
-}
 
+//Critical section helpers
+function beginCritical() { if (criticalDepth++ === 0) stopTempPolling(); }
+
+function endCritical()   { if (criticalDepth > 0 && --criticalDepth === 0) startTempPolling(); }
+
+//Ambient sampling
 function _pushAmbientSample(tool, temp, target) {
   const now = Date.now() / 1000;
   const buf = _ambientBuf[tool];
@@ -715,6 +742,7 @@ function _ambientPlateau(tool) {
   return null;
 }
 
+//ETA helpers
 function isCountingLine(g) {
   const s = g.trim();
   if (!s || s.startsWith(';')) return false;
@@ -732,45 +760,35 @@ function isCountingLine(g) {
   return false;
 }
 
+function formatETA(seconds) {
+  if (!isFinite(seconds) || seconds <= 0) return '0s';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  if (m > 59) {
+    const h = Math.floor(m / 60);
+    const mm = m % 60;
+    return `${h}h ${mm}m`;
+  }
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+function showEtaPill(text, cls = 'warn') {
+  if (!etaPill) return;
+  etaPill.textContent = text;
+  etaPill.className = 'pill ' + cls;
+  etaPill.style.display = 'inline-flex';
+}
+
+function hideEtaPill() {
+  if (!etaPill) return;
+  etaPill.style.display = 'none';
+}
+
+//PID Prefs
 function getPidCycles(tool) {
   const key = `pidCycles:${tool}`;            // tool = 'hotend' | 'bed'
   const saved = parseInt(localStorage.getItem(key) || '', 10);
   return Number.isFinite(saved) && saved >= 1 && saved <= 20 ? saved : 5; // default 5
-}
-
-function setPidCycles(tool, c) {
-  const key = `pidCycles:${tool}`;
-  localStorage.setItem(key, String(c));
-}
-
-function promptCycles(tool) {
-  const def = getPidCycles(tool);
-  const raw = safePrompt(`How many PID cycles? (1–20)`, String(def));
-  if (raw === null) return null;
-  const n = parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 1 || n > 20) {
-    alert('Invalid cycle count. Enter a whole number between 1 and 20.');
-    return null;
-  }
-  setPidCycles(tool, n);
-  return n;
-}
-
-async function coolToIdle() {
-  try {
-    await sendCmd('M104 S0'); await waitForOk().catch(()=>{});
-    await sendCmd('M140 S0'); await waitForOk().catch(()=>{});
-  } finally {
-    clearAllPidUi();
-    setActivity('Temps set to 0', 'ok');
-    updateLastUpdated();
-  }
-}
-
-async function markHomedAfterG28() {
-  await sendCmd('G28'); 
-  await waitForOk().catch(()=>{});
-  isHomed = true;
 }
 
 function setPidActive(tool, on = true) {
@@ -794,6 +812,280 @@ function clearAllPidUi() {
   setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget, 'bed');
 }
 
+function setPidCycles(tool, c) {
+  const key = `pidCycles:${tool}`;
+  localStorage.setItem(key, String(c));
+}
+
+function promptCycles(tool) {
+  const def = getPidCycles(tool);
+  const raw = safePrompt(`How many PID cycles? (1–20)`, String(def));
+  if (raw === null) return null;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1 || n > 20) {
+    alert('Invalid cycle count. Enter a whole number between 1 and 20.');
+    return null;
+  }
+  setPidCycles(tool, n);
+  return n;
+}
+
+//Temp and UI state
+function tempState(current, target, tolerance = 0.5) {
+  if (target == null || Number.isNaN(target)) return 'idle';
+  const diff = target - current;
+  if (Math.abs(diff) <= tolerance) return 'ready';
+  return diff > 0 ? 'heating' : 'cooling';
+}
+
+function setTempPill(pillEl, textEl, curr, target, type /* 'hotend'|'bed' */) {
+  // Text (default)
+  textEl.textContent =
+    (target != null && !Number.isNaN(target))
+      ? `${curr.toFixed(1)}°C / ${Math.round(target)}°`
+      : `${curr.toFixed(1)}°C`;
+
+  // Reset base classes
+  pillEl.classList.remove('offline','idle','ready','heating','cooling','pulse','warn','ok','bad');
+
+  // If PID is running, keep orange pulse
+  if (pidTarget && pidTarget === type) {
+    pillEl.classList.add('warn','pulse');
+    return;
+  }
+
+  // ✅ Ambient plateau override: target off/zero and temp has stabilised for ~5 min
+  if (target == null || target <= 0) {
+    const tool = (type === 'hotend') ? 'hot' : 'bed';
+    const amb = _ambientPlateau(tool);
+    if (amb) {
+      pillEl.classList.add('ready');            // green
+      pillEl.classList.remove('pulse');
+      textEl.textContent = `${curr.toFixed(1)}°C (ambient≈${amb.ambient.toFixed(1)}°)`;
+      return;                                   // don't fall through to 'cooling'
+    }
+  }
+
+  // Normal state machine
+  const state = tempState(curr, target); // 'idle' | 'ready' | 'heating' | 'cooling'
+  pillEl.classList.add(state);
+  if ((state === 'heating' || state === 'cooling') && !pidTarget) {
+    pillEl.classList.add('pulse');
+  }
+}
+
+// Now updateTempPanel simply calls setTempPill for each
+function updateTempPanel() {
+  if (temps.hot != null || temps.hotTarget != null) {
+setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
+    hotendNow.textContent = `Current: ${temps.hot?.toFixed(1) ?? '—'}°C` +
+      (temps.hotTarget != null ? ` / ${Math.round(temps.hotTarget)}°` : '');
+  } else {
+    hotendNow.textContent = 'Current: —';
+  }
+
+  if (temps.bed != null || temps.bedTarget != null) {
+    setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget, 'bed');
+    bedNow.textContent = `Current: ${temps.bed?.toFixed(1) ?? '—'}°C` +
+      (temps.bedTarget != null ? ` / ${Math.round(temps.bedTarget)}°` : '');
+  } else {
+    bedNow.textContent = 'Current: —';
+  }
+}
+
+function setOfflinePills() {
+  topHotendText.textContent = '--°C';
+  topBedText.textContent    = '--°C';
+  topHotendPill.className   = 'pill offline';
+  topBedPill.className      = 'pill offline';
+  hotendNow.textContent     = 'Current: —';
+  bedNow.textContent        = 'Current: —';
+}
+
+
+//Axis UI
+function updateAxisPanel(x, y, z) {
+  posXEl.textContent = x.toFixed(3);
+  posYEl.textContent = y.toFixed(3);
+  posZEl.textContent = z.toFixed(3);
+}
+
+
+//Logging and Format
+function normalizeLine(s){
+  s = s.replace(/\x1b\[[0-9;]*m/g, '').replace(/[\u0000-\u001F\u007F]/g, '');
+  s = s.replace(/\bcontinueing\b/gi, 'continuing');
+  return s;
+}
+
+function isNoisyLine(s){ return NOISY_REGEX.test(s); }
+
+function isSetNewScreenLine(s){ return /^setnewscreen\b/i.test(s); }
+
+function trace(msg) { console.debug('[TRACE]', msg); }
+
+function _logBase(msg) {
+  if (!msg.endsWith('\n')) msg += '\n';
+  printerLog.textContent += msg;
+  printerLog.scrollTop = printerLog.scrollHeight;
+}
+
+function logMsg(msg) {
+  const lines = String(msg).split(/\r?\n/);
+  for (let line of lines) {
+    if (!line) continue;
+    line = normalizeLine(line);
+
+    if (!debugMode && (isSetNewScreenLine(line) || isNoisyLine(line))) continue;
+    if (!debugMode && TELEMETRY_REGEX.test(line)) continue;
+
+    if (captureMode === 'config') {
+      configBox.value += line + '\n';
+      configBox.scrollTop = configBox.scrollHeight;
+    } else if (captureMode === 'diag') {
+      diagBox.value += line + '\n';
+      diagBox.scrollTop = diagBox.scrollHeight;
+    }
+    _logBase(line);
+  }
+}
+
+//Header and UI
+function setActivity(text, cls='') {
+  activityBadge.textContent = text;
+  activityBadge.className = 'pill ' + cls;
+}
+
+function setConnected(connected) {
+  if (connected) {
+    connBadge.textContent = 'Connected';
+    connBadge.className = 'pill ok';
+
+    topHotendPill.classList.remove('offline');
+    topBedPill.classList.remove('offline');
+    topHotendPill.classList.add('idle');
+    topBedPill.classList.add('idle');
+    updateTempPanel();
+    startTempPolling();
+    hideEtaPill();
+  } else {
+    connBadge.textContent = 'Disconnected';
+    connBadge.className = 'pill bad';
+    stopTempPolling();
+    setOfflinePills();
+  }
+
+  connectBtn.disabled    = connected;
+  disconnectBtn.disabled = !connected;
+  readMeshBtn.disabled   = !connected;
+  sendCmdBtn.disabled    = !connected;
+  bedPidBtn.disabled     = !connected;
+  hotendPidBtn.disabled  = !connected;
+  clearLogBtn.disabled   = !connected;
+
+  hotendApply.disabled = !connected;
+  hotendOff.disabled   = !connected;
+  bedApply.disabled    = !connected;
+  bedOff.disabled      = !connected;
+  fanApply.disabled    = !connected;
+  fanOff.disabled      = !connected;
+
+  homeAll.disabled      = !connected;
+  disableMotors.disabled= !connected;
+  xMinus.disabled = xPlus.disabled =
+  yMinus.disabled = yPlus.disabled =
+  zMinus.disabled = zPlus.disabled = !connected;
+  parkHead.disabled     = !connected;
+
+  readCfg.disabled      = !connected;
+  saveCfg.disabled      = !connected;
+
+  preheatPLA.disabled = preheatPETG.disabled =
+  preheatABS.disabled = cooldown.disabled =
+  loadFil.disabled = unloadFil.disabled = !connected;
+
+  fwInfo.disabled = tmcDiag.disabled = !connected;
+
+  sendGcode.disabled   = !connected || !gcodeFile.files.length;
+  cancelSend.disabled  = true;
+}
+
+function updateLastUpdated(){
+  lastUpdated.textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+  updateTempPanel();
+}
+
+function setLastCmd(cmd){ lastCmd.textContent = 'Last Cmd: ' + cmd; }
+
+//Polling
+function startTempPolling(){
+  if (!tempTimer) tempTimer = setInterval(() => sendCmd('M105', true), 3000);
+}
+
+function stopTempPolling(){
+  if (tempTimer){ clearInterval(tempTimer); tempTimer = null; }
+}
+
+//Printer Name
+function loadPrinterName() {
+  const saved = localStorage.getItem('printerName');
+  printerNameEl.textContent = saved || 'PRINTER';
+}
+
+function savePrinterName(name) {
+  const cleanName = name.trim() || 'PRINTER';
+  printerNameEl.textContent = cleanName;
+  localStorage.setItem('printerName', cleanName);
+}
+
+function initPrinterName() {
+  loadPrinterName();
+  printerNameEl.addEventListener('click', () => {
+    const currentName = printerNameEl.textContent.trim();
+    const newName = safePrompt('Enter your printer name:', currentName);
+    if (newName !== null) {
+      savePrinterName(newName);
+    }
+  });
+}
+
+//Prompts
+function safePrompt(message, def = '') {
+  if (typeof window !== 'undefined' && typeof window.prompt === 'function') {
+    return window.prompt(message, String(def));
+  }
+  console.warn('[prompt] not available; using default value.');
+  return String(def);
+}
+
+function safeConfirm(message) {
+  if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    return window.confirm(message);
+  }
+  console.warn('[confirm] not available; defaulting to false.');
+  return false;
+}
+
+//Firmware screen exit
+function exitPrintScreen(delayMs = 0) {
+  if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
+
+  const fire = () => {
+    logMsg('⌛ Closing print screen in firmware…');
+    // Let sendCmd route to real/virtual; keep it quiet
+    sendCmd('//action:cancel', true);
+  };
+
+  if (delayMs > 0) {
+    postPrintTimer = setTimeout(() => { fire(); postPrintTimer = null; }, delayMs);
+  } else {
+    fire();
+  }
+}
+
+//Misc
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 async function sendCmdsSequential(...cmds) {
   for (const c of cmds) {
     // Skip empty or whitespace-only commands
@@ -807,6 +1099,510 @@ async function sendCmdsSequential(...cmds) {
       break; // stop sending further commands if one fails
     }
   }
+}
+
+function trace(msg) { console.debug('[TRACE]', msg); }
+
+//Easter EGG
+  const resetStreak = () => { streak = 0; };
+
+  const openEasterEgg = () => {
+    eeBody.textContent = [
+      "This was a triumph,",
+      "I’m making a note here: “BUILD SUCCESS.”",
+      "It’s hard to overstate my satisfaction.",
+      "Perfect adhesion,",
+      "With just a touch of calibration. 🎵",
+      "",
+      "But there’s no sense whining when the layer’s too thin,",
+      "You just tweak the Z-offset and then try it again.",
+      "When the G-code’s complete,",
+      "And the model’s elite,",
+      "For the projects that are…",
+      "Still printing. 🎵",
+      "",
+      "I’m not even angry,",
+      "I’m being so sincere right now,",
+      "Even though the extruder jammed and delayed my grand plans",
+      "But I tuned the retraction",
+      "And got a smooth reaction,",
+      "",
+      "Now the hours are flying, but I’m still having fun,",
+      "Got a ten-hour Benchy and it’s only on run one.",
+      "There’s a cat on the bed,",
+      "And I’m filled with dread,",
+      "For the projects that are…",
+      "Still printing. 🎵",
+      "",
+      "Anyway, this print is great, it’s so dimensionally sweet,",
+      "Look at me still sanding when there’s more stuff to complete.",
+      "I’ve got spools in a row,",
+      "And they’re ready to go,",
+      "For the models that are…",
+      "Still printing. 🎵"
+    ].join('\n');
+
+    eeOverlay.style.display = 'block';
+    eeModal.style.display = 'grid';
+    eeClose.focus();
+  };
+
+  const closeEasterEgg = () => {
+    eeModal.style.display = 'none';
+    eeOverlay.style.display = 'none';
+  };
+
+/* =========================================================
+   6) MESH UTILS (parse, store, render)
+========================================================= */
+
+//Flow Helpers
+
+function collectMeshFromInputs() {
+  const mesh = [];
+  for (let y = 0; y < 4; y++) {
+    const row = [];
+    for (let x = 0; x < 4; x++) {
+      const el = document.getElementById(`cell-${y}-${x}`);
+      const v = el ? parseFloat(el.value) : NaN;
+      row.push(Number.isFinite(v) ? v : null);
+    }
+    mesh.push(row);
+  }
+  const complete = mesh.every(r => r.every(v => typeof v === 'number' && !Number.isNaN(v)));
+  return complete ? mesh : null;
+}
+
+function processMeshLineFromAnywhere(line) {
+  const completed = ingestMeshLine(line);
+  if (completed) {
+    const meshForUi = meshScratch.map(r => r.slice()); // already Y-flipped
+    setActivity('Mesh parsed', 'ok');
+    saveMeshLS(meshForUi);
+    renderMeshInputs(meshForUi);
+    renderSuggestions(meshForUi);
+    updateLastUpdated();
+    resetMeshScratch();
+  }
+}
+
+async function homeAndProbe() {
+  try {
+    setActivity('Homing…', 'warn');
+    await sendCmd('G28'); 
+    await waitForOk();
+
+    setActivity('Probing…', 'warn');
+    await sendCmd('G29 T'); 
+    await waitForOk();
+
+    // Ensure probe motion queue is totally flushed
+    await sendCmd('M400'); 
+    await waitForOk();
+
+    // Give the DWIN a moment to finish its screen changes/EEPROM writes
+    await sleep(900);
+
+    // Only cool if we actually had targets set; otherwise skip
+    await coolToIdle();
+
+    setActivity('Parsing…', 'warn'); // readLoop will finish parsing mesh lines
+  } catch (e) {
+    setActivity('Home & probe failed', 'bad');
+    logMsg('⚠️ Home & probe error: ' + (e?.message || e));
+  }
+}
+
+function updateLevelView() {
+  const choice = (levelPrinterSelect?.value || 'cr6se');
+  const isCR6  = choice === 'cr6se';
+  const isConnectedNow = (connKind === 'virtual') || !!writer;
+
+  if (cr6seLevelWrap) cr6seLevelWrap.style.display = isCR6 ? '' : 'none';
+  if (unsupportedMsg) unsupportedMsg.style.display = isCR6 ? 'none' : '';
+
+  readMeshBtn.disabled = !isCR6 || !isConnectedNow;
+}
+
+//Scratch mgmt.
+function meshIsComplete(m = meshScratch) {
+  return m.every(row => row.every(v => typeof v === 'number' && !Number.isNaN(v)));
+}
+
+function resetMeshScratch() {
+  meshScratch = Array.from({ length: 4 }, () => Array(4).fill(null));
+}
+
+//Parsing
+function ingestMeshLine(line) {
+  const s = line.trim();
+
+  // Row-based: "y  v0 v1 v2 v3"
+  const row = s.match(/^([0-3])\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)/);
+  if (row) {
+    const fwY = parseInt(row[1], 10);
+    const uiY = 3 - fwY; // flip Y for UI
+    meshScratch[uiY][0] = parseFloat(row[2]);
+    meshScratch[uiY][1] = parseFloat(row[3]);
+    meshScratch[uiY][2] = parseFloat(row[4]);
+    meshScratch[uiY][3] = parseFloat(row[5]);
+    return meshIsComplete();
+  }
+
+  // Point formats: "X0 Y1 Z-0.0945", "X: 0; Y: 1 ... Z..."
+  const pXY = s.match(/X\s*:?\s*(\d)\s*[,; ]\s*Y\s*:?\s*(\d).*?\bZ\s*([+-]?\d*\.?\d+)/i)
+            || s.match(/X\s*(\d)\s*Y\s*(\d)\s*Z\s*([+-]?\d*\.?\d+)/i);
+  if (pXY) {
+    const x   = parseInt(pXY[1], 10);
+    const fwY = parseInt(pXY[2], 10);
+    const uiY = 3 - fwY;
+    const val = parseFloat(pXY[3]);
+    if (x < 4 && fwY < 4 && Number.isFinite(val)) {
+      meshScratch[uiY][x] = val;
+      return meshIsComplete();
+    }
+  }
+
+  return false;
+}
+
+function tryParseMeshFromLines(lines) {
+  const mesh = Array.from({ length: 4 }, () => Array(4).fill(null));
+
+  for (const raw of lines) {
+    const line = raw.trim();
+
+    // Row-based
+    const m = line.match(/^([0-3])\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)/);
+    if (m) {
+      const fwY = parseInt(m[1], 10);
+      const uiY = 3 - fwY;
+      const vals = [parseFloat(m[2]), parseFloat(m[3]), parseFloat(m[4]), parseFloat(m[5])];
+      mesh[uiY] = vals;
+      continue;
+    }
+
+    // Point-by-point
+    const p1 = line.match(/[\(\[](\d)\s*,\s*(\d)[\)\]]\s+([+-]?\d*\.?\d+)/);
+    const p2 = line.match(/X\s*:?\s*(\d)\s*;?\s*[, ]\s*Y\s*:?\s*(\d).*?\bZ\s*([+-]?\d*\.?\d+)/i);
+    const p3 = line.match(/X\s*(\d)\s*Y\s*(\d)\s*Z\s*([+-]?\d*\.?\d+)/i);
+    const mP = p1 || p2 || p3;
+    if (mP) {
+      const x   = parseInt(mP[1], 10);
+      const fwY = parseInt(mP[2], 10);
+      const uiY = 3 - fwY;
+      const val = parseFloat(mP[3]);
+      if (x < 4 && fwY < 4) mesh[uiY][x] = val;
+    }
+  }
+
+  const complete = mesh.every(row => row.every(v => typeof v === 'number' && !isNaN(v)));
+  return complete ? mesh : null;
+}
+
+//Persistence
+function loadMeshLS() {
+  const hist = JSON.parse(localStorage.getItem('levels') || '[]');
+  return hist.at(-1) || Array.from({length:4},()=>Array(4).fill(''));
+}
+
+function saveMeshLS(mesh) {
+  const hist = JSON.parse(localStorage.getItem('levels') || '[]');
+  hist.push(mesh);
+  while (hist.length > 10) hist.shift();  // keep last 10
+  localStorage.setItem('levels', JSON.stringify(hist));
+}
+
+//Presentation
+function getScrewData(mesh) {
+  const result = {};
+  for (const screw in screwAffects) {
+    const points = screwAffects[screw];
+    const values = points
+      .map(([y,x]) => mesh?.[y]?.[x])
+      .filter(v => typeof v === 'number' && !isNaN(v));
+    const avg = values.length ? values.reduce((a,b)=>a+b,0)/values.length : null;
+
+    let suggestion='N/A', turn='N/A';
+    if (avg !== null) {
+      if (avg >  0.07)      { suggestion='Tighten (Clockwise)';           turn='Strong (1/4 turn)'; }
+      else if (avg > 0.04)  { suggestion='Tighten (Clockwise)';           turn='Moderate (1/8 turn)'; }
+      else if (avg > 0.02)  { suggestion='Tighten (Clockwise)';           turn='Slight (1/16 turn)'; }
+      else if (avg < -0.07) { suggestion='Loosen (Counterclockwise)';     turn='Strong (1/4 turn)'; }
+      else if (avg < -0.04) { suggestion='Loosen (Counterclockwise)';     turn='Moderate (1/8 turn)'; }
+      else if (avg < -0.02) { suggestion='Loosen (Counterclockwise)';     turn='Slight (1/16 turn)'; }
+      else { suggestion='No change'; }
+    }
+    result[screw] = { avg: avg?.toFixed(3) ?? 'N/A', suggestion, turn };
+  }
+  return result;
+}
+
+function renderMeshInputs(mesh) {
+  meshInput.innerHTML = '';
+  for (let y=0; y<4; y++) {
+    const tr = document.createElement('tr');
+    for (let x=0; x<4; x++) {
+      const v = mesh?.[y]?.[x];
+      tr.innerHTML += `<td><input type="number" step="0.001" id="cell-${y}-${x}" value="${typeof v==='number'? v.toFixed(3): ''}" required></td>`;
+    }
+    meshInput.appendChild(tr);
+  }
+}
+
+function renderSuggestions(mesh) {
+  const data = getScrewData(mesh);
+  screwTable.innerHTML = '';
+  const layout = ['A1','GAP','A2','A3','B1','B2','B3','B4','C1','C2','C3','C4'];
+  for (const sName of layout) {
+    if (sName === 'GAP') continue;
+    const s = data[sName];
+    const tr = document.createElement('tr');
+    tr.className = s.suggestion.includes('Tighten') ? 'tighten'
+               :  s.suggestion.includes('Loosen')  ? 'loosen'
+               :  'na';
+    tr.innerHTML = `<td>${sName}</td><td>${s.avg}</td><td>${s.suggestion}</td><td>${s.turn}</td>`;
+    screwTable.appendChild(tr);
+    const cell = document.getElementById(sName);
+    if (cell) {
+      cell.className = tr.className;
+      cell.innerHTML = `<strong>${sName}</strong><br>${s.avg} mm<br>${s.turn!=='N/A'? s.turn : ''}`;
+    }
+  }
+}
+
+//Export and Numeric
+function exportMeshAsFile(mesh, label) {
+  const blob = new Blob([JSON.stringify(mesh, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `cr6se-mesh-${label}-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function promptNumber(message, def) {
+  const raw = safePrompt(message, String(def));
+  if (raw === null) return null;
+  const n = parseFloat(raw);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+/* =========================================================
+   7) SERIAL / COMMS (connect, read loop, send, waits)
+========================================================= */
+
+//Real Connection
+async function connectPrinter() {
+  if (isConnecting) return;
+  isConnecting = true;
+  try {
+    // Virtual path
+    if (virtualMode) {
+      await connectVirtual();
+      connKind = 'virtual';
+      return;
+    }
+
+    // Real serial path
+    if (!('serial' in navigator)) {
+      setConnected(false);
+      setActivity('Web Serial not supported', 'bad');
+      logMsg('❌ Web Serial API not supported. Use Chrome/Edge/Brave on desktop.');
+      alert('Web Serial API not supported. Use Chrome/Edge/Brave on desktop.');
+      connKind = 'none';
+      return;
+    }
+
+    setActivity('Connecting...', 'warn');
+
+    if (!port) {
+      const granted = await navigator.serial.getPorts();
+      port = granted[0] || await navigator.serial.requestPort();
+    }
+
+    if (!port.readable || !port.writable) {
+      try {
+        await port.open({ baudRate: 115200 });
+      } catch (e) {
+        if (!/already open/i.test(String(e))) throw e;
+        logMsg('Port is already open; reusing existing connection.');
+      }
+    }
+
+    try { if (reader) await reader.cancel(); } catch (e) {}
+    try { if (reader) reader.releaseLock(); } catch (e) {}
+    try { if (writer) writer.releaseLock(); } catch (e) {}
+
+// Robust reader setup (works even if TextDecoderStream is missing)
+let useBinaryReader = false; // optional flag if you want to branch on it later
+if (typeof TextDecoderStream !== 'undefined') {
+  const tds = new TextDecoderStream();
+  textDecoder = tds; // keep ref for symmetry
+  port.readable.pipeTo(tds.writable).catch(() => {});
+  reader = tds.readable.getReader();          // yields strings
+} else {
+  // Fallback: read raw bytes and decode manually in readLoop
+  useBinaryReader = true;
+  textDecoder = new TextDecoder();
+  reader = port.readable.getReader();         // yields Uint8Array
+}
+writer = port.writable.getWriter();
+
+
+    setConnected(true);
+updateLevelView();
+    hideEtaPill();
+    updateTempPanel();
+    startTempPolling();
+    updateLastUpdated();
+    setActivity('Connected', 'ok');
+    logMsg('Connected.');
+    if (!reading) readLoop();
+
+    connKind = 'real';
+  } catch (err) {
+    setConnected(false);
+    setActivity('Connect error', 'bad');
+    logMsg(String(err?.message || err));
+
+    _rejectAllOk(new Error('Connect failed'));
+    hideEtaPill();
+
+    connKind = 'none';
+  } finally {
+    isConnecting = false;
+  }
+}
+
+async function disconnectPrinter(reason = 'user') {
+  if (isDisconnecting) return;
+  isDisconnecting = true;
+
+  const lost = reason === 'lost';
+  try {
+    // Fail any pending waits / streams immediately
+    _rejectAllOk(new Error(lost ? 'Connection lost' : 'Disconnected'));
+    cancelStream = true;
+
+    // Reset sender UI + ETA
+    if (sendProgress) sendProgress.style.width = '0%';
+    if (sendStatus)   sendStatus.textContent = 'Idle';
+    hideEtaPill();
+  clearAllPidUi();
+    if (connKind === 'virtual' || virtualMode) {
+      await disconnectVirtual();
+      connKind = 'none';
+      stopTempPolling();
+      setActivity(lost ? 'Connection lost (virtual)' : 'Disconnected', lost ? 'bad' : 'ok');
+      if (lost) logMsg('❌ Connection lost (virtual).'); else logMsg('🔌 Virtual printer disconnected.');
+      return;
+    }
+
+    // Real serial path
+    setConnected(false);
+    setActivity(lost ? 'Connection lost…' : 'Disconnecting…', lost ? 'bad' : 'warn');
+    stopTempPolling();
+
+    try { if (reader) await reader.cancel(); } catch {}
+    try { if (reader) reader.releaseLock(); } catch {}
+    try { if (writer) writer.releaseLock(); } catch {}
+    try { if (port)   await port.close();   } catch {}
+
+    port = null;
+    reader = null;
+    writer = null;
+
+    if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
+
+    setActivity(lost ? 'Connection lost' : 'Disconnected', lost ? 'bad' : 'ok');
+    logMsg(lost ? '❌ Connection to printer was lost.' : '🔌 Disconnected.');
+    connKind = 'none';
+  } catch (err) {
+    logMsg('❌ Disconnect error: ' + (err?.message || err));
+    setActivity('Disconnect error', 'bad');
+    connKind = 'none';
+  } finally {
+    isDisconnecting = false;
+  }
+}
+
+//Virtual Connection
+async function connectVirtual() {
+  if (connKind === 'virtual') { logMsg('🧪 Already in virtual mode.'); return; }
+  setConnected(true);
+updateLevelView();
+  setActivity('Connected (virtual)', 'ok');
+  logMsg('🧪 Virtual printer connected.');
+  startVirtualSim();
+  startTempPolling();
+  updateLastUpdated();
+}
+
+async function disconnectVirtual() {
+  if (connKind !== 'virtual') { logMsg('🧪 Virtual not active.'); }
+  stopVirtualSim();
+  setConnected(false);
+  setActivity('Disconnected', 'ok');
+  logMsg('🔌 Virtual printer disconnected.');
+}
+
+//Virtual temps and sim
+function refreshVirtualTemps() {
+  // Mirror vState → temps
+  temps.hot = vState.hot;
+  temps.hotTarget = vState.hotTarget;
+  temps.bed = vState.bed;
+  temps.bedTarget = vState.bedTarget;
+
+  // ✅ ADD THESE:
+  _pushAmbientSample('hot', temps.hot ?? 0, temps.hotTarget);
+  _pushAmbientSample('bed', temps.bed ?? 0, temps.bedTarget);
+
+  // Update the pills + panel (normally done by readLoop in real mode)
+  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
+  setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget, 'bed');
+  updateTempPanel();
+}
+
+function startVirtualSim() {
+  if (vSimTimer) return;
+  vSimTimer = setInterval(() => {
+    const stepHot = 0.6, stepBed = 0.35;
+    if (Number.isFinite(vState.hotTarget)) {
+      const d = vState.hotTarget - vState.hot;
+      vState.hot += Math.sign(d) * Math.min(Math.abs(d), stepHot);
+    }
+    if (Number.isFinite(vState.bedTarget)) {
+      const d = vState.bedTarget - vState.bed;
+      vState.bed += Math.sign(d) * Math.min(Math.abs(d), stepBed);
+    }
+    // keep temps in sync and refresh UI
+    refreshVirtualTemps();
+  }, 100);
+}
+
+function stopVirtualSim() {
+  if (vSimTimer) { clearInterval(vSimTimer); vSimTimer = null; }
+}
+
+//Send paths
+async function sendCmd(cmd, quiet = false) {
+  // Route commands properly only if we're actually in virtual mode *now*
+  if (connKind === 'virtual') {
+    return sendCmdVirtual(cmd, quiet);
+  }
+
+  if (!writer) { logMsg('⚠️ Not connected.'); return; }
+  setLastCmd(cmd);
+  setActivity('Sending…', 'warn');
+
+  await writer.write(new TextEncoder().encode(cmd + '\n'));
+  if (!quiet) logMsg('>> ' + cmd);
+
+  updateLastUpdated();
+  setActivity('Waiting…', 'warn');
 }
 
 async function sendCmdVirtual(cmd, quiet = false) {
@@ -963,854 +1759,7 @@ case /^G29\b/i.test(line) && /\bT\b/i.test(line): {
   }
 }
 
-function refreshVirtualTemps() {
-  // Mirror vState → temps
-  temps.hot = vState.hot;
-  temps.hotTarget = vState.hotTarget;
-  temps.bed = vState.bed;
-  temps.bedTarget = vState.bedTarget;
-
-  // ✅ ADD THESE:
-  _pushAmbientSample('hot', temps.hot ?? 0, temps.hotTarget);
-  _pushAmbientSample('bed', temps.bed ?? 0, temps.bedTarget);
-
-  // Update the pills + panel (normally done by readLoop in real mode)
-  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
-  setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget, 'bed');
-  updateTempPanel();
-}
-
-function startVirtualSim() {
-  if (vSimTimer) return;
-  vSimTimer = setInterval(() => {
-    const stepHot = 0.6, stepBed = 0.35;
-    if (Number.isFinite(vState.hotTarget)) {
-      const d = vState.hotTarget - vState.hot;
-      vState.hot += Math.sign(d) * Math.min(Math.abs(d), stepHot);
-    }
-    if (Number.isFinite(vState.bedTarget)) {
-      const d = vState.bedTarget - vState.bed;
-      vState.bed += Math.sign(d) * Math.min(Math.abs(d), stepBed);
-    }
-    // keep temps in sync and refresh UI
-    refreshVirtualTemps();
-  }, 100);
-}
-
-function stopVirtualSim() {
-  if (vSimTimer) { clearInterval(vSimTimer); vSimTimer = null; }
-}
-
-async function connectVirtual() {
-  if (connKind === 'virtual') { logMsg('🧪 Already in virtual mode.'); return; }
-  setConnected(true);
-updateLevelView();
-  setActivity('Connected (virtual)', 'ok');
-  logMsg('🧪 Virtual printer connected.');
-  startVirtualSim();
-  startTempPolling();
-  updateLastUpdated();
-}
-
-async function disconnectVirtual() {
-  if (connKind !== 'virtual') { logMsg('🧪 Virtual not active.'); }
-  stopVirtualSim();
-  setConnected(false);
-  setActivity('Disconnected', 'ok');
-  logMsg('🔌 Virtual printer disconnected.');
-}
-
-function isNoisyLine(s){ return NOISY_REGEX.test(s); }
-
-function isSetNewScreenLine(s){ return /^setnewscreen\b/i.test(s); }
-
-function normalizeLine(s){
-  s = s.replace(/\x1b\[[0-9;]*m/g, '').replace(/[\u0000-\u001F\u007F]/g, '');
-  s = s.replace(/\bcontinueing\b/gi, 'continuing');
-  return s;
-}
-
-function loadPrinterName() {
-  const saved = localStorage.getItem('printerName');
-  printerNameEl.textContent = saved || 'PRINTER';
-}
-
-function savePrinterName(name) {
-  const cleanName = name.trim() || 'PRINTER';
-  printerNameEl.textContent = cleanName;
-  localStorage.setItem('printerName', cleanName);
-}
-
-function initPrinterName() {
-  loadPrinterName();
-  printerNameEl.addEventListener('click', () => {
-    const currentName = printerNameEl.textContent.trim();
-    const newName = safePrompt('Enter your printer name:', currentName);
-    if (newName !== null) {
-      savePrinterName(newName);
-    }
-  });
-}
-
-function setActivity(text, cls='') {
-  activityBadge.textContent = text;
-  activityBadge.className = 'pill ' + cls;
-}
-
-function setConnected(connected) {
-  if (connected) {
-    connBadge.textContent = 'Connected';
-    connBadge.className = 'pill ok';
-
-    topHotendPill.classList.remove('offline');
-    topBedPill.classList.remove('offline');
-    topHotendPill.classList.add('idle');
-    topBedPill.classList.add('idle');
-    updateTempPanel();
-    startTempPolling();
-    hideEtaPill();
-  } else {
-    connBadge.textContent = 'Disconnected';
-    connBadge.className = 'pill bad';
-    stopTempPolling();
-    setOfflinePills();
-  }
-
-  connectBtn.disabled    = connected;
-  disconnectBtn.disabled = !connected;
-  readMeshBtn.disabled   = !connected;
-  sendCmdBtn.disabled    = !connected;
-  bedPidBtn.disabled     = !connected;
-  hotendPidBtn.disabled  = !connected;
-  clearLogBtn.disabled   = !connected;
-
-  hotendApply.disabled = !connected;
-  hotendOff.disabled   = !connected;
-  bedApply.disabled    = !connected;
-  bedOff.disabled      = !connected;
-  fanApply.disabled    = !connected;
-  fanOff.disabled      = !connected;
-
-  homeAll.disabled      = !connected;
-  disableMotors.disabled= !connected;
-  xMinus.disabled = xPlus.disabled =
-  yMinus.disabled = yPlus.disabled =
-  zMinus.disabled = zPlus.disabled = !connected;
-  parkHead.disabled     = !connected;
-
-  readCfg.disabled      = !connected;
-  saveCfg.disabled      = !connected;
-
-  preheatPLA.disabled = preheatPETG.disabled =
-  preheatABS.disabled = cooldown.disabled =
-  loadFil.disabled = unloadFil.disabled = !connected;
-
-  fwInfo.disabled = tmcDiag.disabled = !connected;
-
-  sendGcode.disabled   = !connected || !gcodeFile.files.length;
-  cancelSend.disabled  = true;
-}
-
-// Level tab: printer selector
-if (levelPrinterSelect) {
-  const saved = localStorage.getItem('levelPrinterChoice');
-  if (saved) levelPrinterSelect.value = saved;
-
-  levelPrinterSelect.addEventListener('change', () => {
-    localStorage.setItem('levelPrinterChoice', levelPrinterSelect.value);
-    updateLevelView();
-  });
-}
-
-function formatETA(seconds) {
-  if (!isFinite(seconds) || seconds <= 0) return '0s';
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  if (m > 59) {
-    const h = Math.floor(m / 60);
-    const mm = m % 60;
-    return `${h}h ${mm}m`;
-  }
-  return m > 0 ? `${m}m ${s}s` : `${s}s`;
-}
-
-function showEtaPill(text, cls = 'warn') {
-  if (!etaPill) return;
-  etaPill.textContent = text;
-  etaPill.className = 'pill ' + cls;
-  etaPill.style.display = 'inline-flex';
-}
-
-function hideEtaPill() {
-  if (!etaPill) return;
-  etaPill.style.display = 'none';
-}
-
-function setOfflinePills() {
-  topHotendText.textContent = '--°C';
-  topBedText.textContent    = '--°C';
-  topHotendPill.className   = 'pill offline';
-  topBedPill.className      = 'pill offline';
-  hotendNow.textContent     = 'Current: —';
-  bedNow.textContent        = 'Current: —';
-}
-
-function tempState(current, target, tolerance = 0.5) {
-  if (target == null || Number.isNaN(target)) return 'idle';
-  const diff = target - current;
-  if (Math.abs(diff) <= tolerance) return 'ready';
-  return diff > 0 ? 'heating' : 'cooling';
-}
-
-function setTempPill(pillEl, textEl, curr, target, type /* 'hotend'|'bed' */) {
-  // Text (default)
-  textEl.textContent =
-    (target != null && !Number.isNaN(target))
-      ? `${curr.toFixed(1)}°C / ${Math.round(target)}°`
-      : `${curr.toFixed(1)}°C`;
-
-  // Reset base classes
-  pillEl.classList.remove('offline','idle','ready','heating','cooling','pulse','warn','ok','bad');
-
-  // If PID is running, keep orange pulse
-  if (pidTarget && pidTarget === type) {
-    pillEl.classList.add('warn','pulse');
-    return;
-  }
-
-  // ✅ Ambient plateau override: target off/zero and temp has stabilised for ~5 min
-  if (target == null || target <= 0) {
-    const tool = (type === 'hotend') ? 'hot' : 'bed';
-    const amb = _ambientPlateau(tool);
-    if (amb) {
-      pillEl.classList.add('ready');            // green
-      pillEl.classList.remove('pulse');
-      textEl.textContent = `${curr.toFixed(1)}°C (ambient≈${amb.ambient.toFixed(1)}°)`;
-      return;                                   // don't fall through to 'cooling'
-    }
-  }
-
-  // Normal state machine
-  const state = tempState(curr, target); // 'idle' | 'ready' | 'heating' | 'cooling'
-  pillEl.classList.add(state);
-  if ((state === 'heating' || state === 'cooling') && !pidTarget) {
-    pillEl.classList.add('pulse');
-  }
-}
-
-// Now updateTempPanel simply calls setTempPill for each
-function updateTempPanel() {
-  if (temps.hot != null || temps.hotTarget != null) {
-setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
-    hotendNow.textContent = `Current: ${temps.hot?.toFixed(1) ?? '—'}°C` +
-      (temps.hotTarget != null ? ` / ${Math.round(temps.hotTarget)}°` : '');
-  } else {
-    hotendNow.textContent = 'Current: —';
-  }
-
-  if (temps.bed != null || temps.bedTarget != null) {
-    setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget, 'bed');
-    bedNow.textContent = `Current: ${temps.bed?.toFixed(1) ?? '—'}°C` +
-      (temps.bedTarget != null ? ` / ${Math.round(temps.bedTarget)}°` : '');
-  } else {
-    bedNow.textContent = 'Current: —';
-  }
-}
-
-function updateAxisPanel(x, y, z) {
-  posXEl.textContent = x.toFixed(3);
-  posYEl.textContent = y.toFixed(3);
-  posZEl.textContent = z.toFixed(3);
-}
-
-function _logBase(msg) {
-  if (!msg.endsWith('\n')) msg += '\n';
-  printerLog.textContent += msg;
-  printerLog.scrollTop = printerLog.scrollHeight;
-}
-
-function logMsg(msg) {
-  const lines = String(msg).split(/\r?\n/);
-  for (let line of lines) {
-    if (!line) continue;
-    line = normalizeLine(line);
-
-    if (!debugMode && (isSetNewScreenLine(line) || isNoisyLine(line))) continue;
-    if (!debugMode && TELEMETRY_REGEX.test(line)) continue;
-
-    if (captureMode === 'config') {
-      configBox.value += line + '\n';
-      configBox.scrollTop = configBox.scrollHeight;
-    } else if (captureMode === 'diag') {
-      diagBox.value += line + '\n';
-      diagBox.scrollTop = diagBox.scrollHeight;
-    }
-    _logBase(line);
-  }
-}
-
-function updateLastUpdated(){
-  lastUpdated.textContent = 'Last updated: ' + new Date().toLocaleTimeString();
-  updateTempPanel();
-}
-
-function setLastCmd(cmd){ lastCmd.textContent = 'Last Cmd: ' + cmd; }
-
-function startTempPolling(){
-  if (!tempTimer) tempTimer = setInterval(() => sendCmd('M105', true), 3000);
-}
-
-function stopTempPolling(){
-  if (tempTimer){ clearInterval(tempTimer); tempTimer = null; }
-}
-
-function exitPrintScreen(delayMs = 0) {
-  if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
-
-  const fire = () => {
-    logMsg('⌛ Closing print screen in firmware…');
-    // Let sendCmd route to real/virtual; keep it quiet
-    sendCmd('//action:cancel', true);
-  };
-
-  if (delayMs > 0) {
-    postPrintTimer = setTimeout(() => { fire(); postPrintTimer = null; }, delayMs);
-  } else {
-    fire();
-  }
-}
-
-window.addEventListener('unload', () => {
-  if (postPrintTimer) clearTimeout(postPrintTimer);
-});
-
-// Virtual toggle: remember in LS and reflect on UI
-const virtualToggle = document.getElementById('virtualToggle');
-if (virtualToggle) {
-  virtualMode = JSON.parse(localStorage.getItem('virtualMode') || 'false');
-  virtualToggle.checked = virtualMode;
-
-  virtualToggle.addEventListener('change', () => {
-    virtualMode = virtualToggle.checked;
-    localStorage.setItem('virtualMode', JSON.stringify(virtualMode));
-    // If user flips on while connected to real printer, we keep the current connection
-    // The "Connect" button will use virtual when not already connected.
-  });
-}
-
-function safePrompt(message, def = '') {
-  if (typeof window !== 'undefined' && typeof window.prompt === 'function') {
-    return window.prompt(message, String(def));
-  }
-  console.warn('[prompt] not available; using default value.');
-  return String(def);
-}
-
-function safeConfirm(message) {
-  if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
-    return window.confirm(message);
-  }
-  console.warn('[confirm] not available; defaulting to false.');
-  return false;
-}
-
-/* =============================
-   Easter Egg — "Still Printing"
-   (5 clicks on About tab opens a closable modal)
-============================= */
-document.addEventListener('DOMContentLoaded', () => {
-  const aboutBtn = document.querySelector('#tabButtons button[data-tab="aboutTab"]');
-  const allTabBtns = Array.from(document.querySelectorAll('#tabButtons button'));
-  const eeOverlay = document.getElementById('eeOverlay');
-  const eeModal   = document.getElementById('eeModal');
-  const eeClose   = document.getElementById('eeClose');
-  const eeBody    = document.getElementById('eeBody');
-
-  if (!aboutBtn || !eeOverlay || !eeModal || !eeClose || !eeBody) {
-    console.warn('[EE] Modal wiring skipped (missing elements).');
-    return;
-  }
-
-  let streak = 0;
-  const resetStreak = () => { streak = 0; };
-
-  const openEasterEgg = () => {
-    eeBody.textContent = [
-      "This was a triumph,",
-      "I’m making a note here: “BUILD SUCCESS.”",
-      "It’s hard to overstate my satisfaction.",
-      "Perfect adhesion,",
-      "With just a touch of calibration. 🎵",
-      "",
-      "But there’s no sense whining when the layer’s too thin,",
-      "You just tweak the Z-offset and then try it again.",
-      "When the G-code’s complete,",
-      "And the model’s elite,",
-      "For the projects that are…",
-      "Still printing. 🎵",
-      "",
-      "I’m not even angry,",
-      "I’m being so sincere right now,",
-      "Even though the extruder jammed and delayed my grand plans",
-      "But I tuned the retraction",
-      "And got a smooth reaction,",
-      "",
-      "Now the hours are flying, but I’m still having fun,",
-      "Got a ten-hour Benchy and it’s only on run one.",
-      "There’s a cat on the bed,",
-      "And I’m filled with dread,",
-      "For the projects that are…",
-      "Still printing. 🎵",
-      "",
-      "Anyway, this print is great, it’s so dimensionally sweet,",
-      "Look at me still sanding when there’s more stuff to complete.",
-      "I’ve got spools in a row,",
-      "And they’re ready to go,",
-      "For the models that are…",
-      "Still printing. 🎵"
-    ].join('\n');
-
-    eeOverlay.style.display = 'block';
-    eeModal.style.display = 'grid';
-    eeClose.focus();
-  };
-
-  const closeEasterEgg = () => {
-    eeModal.style.display = 'none';
-    eeOverlay.style.display = 'none';
-  };
-
-  // Only increments when About is clicked
-  aboutBtn.addEventListener('click', () => {
-    streak++;
-    if (streak >= 5) {
-      resetStreak();
-      openEasterEgg();
-    }
-  });
-
-  // Any other tab click resets
-  allTabBtns.forEach(btn => {
-    if (btn !== aboutBtn) btn.addEventListener('click', resetStreak);
-  });
-
-  // Close handlers
-  eeClose.addEventListener('click', closeEasterEgg);
-  eeOverlay.addEventListener('click', closeEasterEgg);
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && eeModal.style.display !== 'none') closeEasterEgg();
-  });
-});
-
-bedPidBtn.addEventListener('click', runBedPID);
-hotendPidBtn.addEventListener('click', runHotendPID);
-
-/* =========================================================
-   6) MESH UTILS (parse, store, render)
-========================================================= */
-
-function collectMeshFromInputs() {
-  const mesh = [];
-  for (let y = 0; y < 4; y++) {
-    const row = [];
-    for (let x = 0; x < 4; x++) {
-      const el = document.getElementById(`cell-${y}-${x}`);
-      const v = el ? parseFloat(el.value) : NaN;
-      row.push(Number.isFinite(v) ? v : null);
-    }
-    mesh.push(row);
-  }
-  const complete = mesh.every(r => r.every(v => typeof v === 'number' && !Number.isNaN(v)));
-  return complete ? mesh : null;
-}
-
-exportMeshBtn.addEventListener('click', () => {
-  const fromInputs = collectMeshFromInputs();
-  if (fromInputs) {
-    exportMeshAsFile(fromInputs, 'current');
-    return;
-  }
-  const hist = JSON.parse(localStorage.getItem('levels') || '[]');
-  const latest = hist.at(-1);
-  if (latest && Array.isArray(latest) && latest.length === 4) {
-    exportMeshAsFile(latest, 'latest');
-  } else {
-    alert('⚠️ No mesh available to export yet.');
-  }
-});
-
-function processMeshLineFromAnywhere(line) {
-  const completed = ingestMeshLine(line);
-  if (completed) {
-    const meshForUi = meshScratch.map(r => r.slice()); // already Y-flipped
-    setActivity('Mesh parsed', 'ok');
-    saveMeshLS(meshForUi);
-    renderMeshInputs(meshForUi);
-    renderSuggestions(meshForUi);
-    updateLastUpdated();
-    resetMeshScratch();
-  }
-}
-
-async function homeAndProbe() {
-  try {
-    setActivity('Homing…', 'warn');
-    await sendCmd('G28'); await waitForOk();
-
-    setActivity('Probing…', 'warn');
-    await sendCmd('G29 T'); await waitForOk();
-
-    await coolToIdle();               // ← cool after probe
-    setActivity('Parsing…', 'warn');
-  } catch (e) {
-    setActivity('Home & probe failed', 'bad');
-    logMsg('⚠️ Home & probe error: ' + (e?.message || e));
-  }
-}
-
-function updateLevelView() {
-  const choice = (levelPrinterSelect?.value || 'cr6se');
-  const isCR6  = choice === 'cr6se';
-  const isConnectedNow = (connKind === 'virtual') || !!writer;
-
-  if (cr6seLevelWrap) cr6seLevelWrap.style.display = isCR6 ? '' : 'none';
-  if (unsupportedMsg) unsupportedMsg.style.display = isCR6 ? 'none' : '';
-
-  readMeshBtn.disabled = !isCR6 || !isConnectedNow;
-}
-
-
-function meshIsComplete(m = meshScratch) {
-  return m.every(row => row.every(v => typeof v === 'number' && !Number.isNaN(v)));
-}
-function resetMeshScratch() {
-  meshScratch = Array.from({ length: 4 }, () => Array(4).fill(null));
-}
-
-// Accepts one G29-related line and updates meshScratch
-function ingestMeshLine(line) {
-  const s = line.trim();
-
-  // Row-based: "y  v0 v1 v2 v3"
-  const row = s.match(/^([0-3])\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)/);
-  if (row) {
-    const fwY = parseInt(row[1], 10);
-    const uiY = 3 - fwY; // flip Y for UI
-    meshScratch[uiY][0] = parseFloat(row[2]);
-    meshScratch[uiY][1] = parseFloat(row[3]);
-    meshScratch[uiY][2] = parseFloat(row[4]);
-    meshScratch[uiY][3] = parseFloat(row[5]);
-    return meshIsComplete();
-  }
-
-  // Point formats: "X0 Y1 Z-0.0945", "X: 0; Y: 1 ... Z..."
-  const pXY = s.match(/X\s*:?\s*(\d)\s*[,; ]\s*Y\s*:?\s*(\d).*?\bZ\s*([+-]?\d*\.?\d+)/i)
-            || s.match(/X\s*(\d)\s*Y\s*(\d)\s*Z\s*([+-]?\d*\.?\d+)/i);
-  if (pXY) {
-    const x   = parseInt(pXY[1], 10);
-    const fwY = parseInt(pXY[2], 10);
-    const uiY = 3 - fwY;
-    const val = parseFloat(pXY[3]);
-    if (x < 4 && fwY < 4 && Number.isFinite(val)) {
-      meshScratch[uiY][x] = val;
-      return meshIsComplete();
-    }
-  }
-
-  return false;
-}
-
-function tryParseMeshFromLines(lines) {
-  const mesh = Array.from({ length: 4 }, () => Array(4).fill(null));
-
-  for (const raw of lines) {
-    const line = raw.trim();
-
-    // Row-based
-    const m = line.match(/^([0-3])\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)\s+([+-]?\d*\.?\d+)/);
-    if (m) {
-      const fwY = parseInt(m[1], 10);
-      const uiY = 3 - fwY;
-      const vals = [parseFloat(m[2]), parseFloat(m[3]), parseFloat(m[4]), parseFloat(m[5])];
-      mesh[uiY] = vals;
-      continue;
-    }
-
-    // Point-by-point
-    const p1 = line.match(/[\(\[](\d)\s*,\s*(\d)[\)\]]\s+([+-]?\d*\.?\d+)/);
-    const p2 = line.match(/X\s*:?\s*(\d)\s*;?\s*[, ]\s*Y\s*:?\s*(\d).*?\bZ\s*([+-]?\d*\.?\d+)/i);
-    const p3 = line.match(/X\s*(\d)\s*Y\s*(\d)\s*Z\s*([+-]?\d*\.?\d+)/i);
-    const mP = p1 || p2 || p3;
-    if (mP) {
-      const x   = parseInt(mP[1], 10);
-      const fwY = parseInt(mP[2], 10);
-      const uiY = 3 - fwY;
-      const val = parseFloat(mP[3]);
-      if (x < 4 && fwY < 4) mesh[uiY][x] = val;
-    }
-  }
-
-  const complete = mesh.every(row => row.every(v => typeof v === 'number' && !isNaN(v)));
-  return complete ? mesh : null;
-}
-
-function loadMeshLS() {
-  const hist = JSON.parse(localStorage.getItem('levels') || '[]');
-  return hist.at(-1) || Array.from({length:4},()=>Array(4).fill(''));
-}
-
-function saveMeshLS(mesh) {
-  const hist = JSON.parse(localStorage.getItem('levels') || '[]');
-  hist.push(mesh);
-  while (hist.length > 10) hist.shift();  // keep last 10
-  localStorage.setItem('levels', JSON.stringify(hist));
-}
-
-function getScrewData(mesh) {
-  const result = {};
-  for (const screw in screwAffects) {
-    const points = screwAffects[screw];
-    const values = points
-      .map(([y,x]) => mesh?.[y]?.[x])
-      .filter(v => typeof v === 'number' && !isNaN(v));
-    const avg = values.length ? values.reduce((a,b)=>a+b,0)/values.length : null;
-
-    let suggestion='N/A', turn='N/A';
-    if (avg !== null) {
-      if (avg >  0.07)      { suggestion='Tighten (Clockwise)';           turn='Strong (1/4 turn)'; }
-      else if (avg > 0.04)  { suggestion='Tighten (Clockwise)';           turn='Moderate (1/8 turn)'; }
-      else if (avg > 0.02)  { suggestion='Tighten (Clockwise)';           turn='Slight (1/16 turn)'; }
-      else if (avg < -0.07) { suggestion='Loosen (Counterclockwise)';     turn='Strong (1/4 turn)'; }
-      else if (avg < -0.04) { suggestion='Loosen (Counterclockwise)';     turn='Moderate (1/8 turn)'; }
-      else if (avg < -0.02) { suggestion='Loosen (Counterclockwise)';     turn='Slight (1/16 turn)'; }
-      else { suggestion='No change'; }
-    }
-    result[screw] = { avg: avg?.toFixed(3) ?? 'N/A', suggestion, turn };
-  }
-  return result;
-}
-
-function renderMeshInputs(mesh) {
-  meshInput.innerHTML = '';
-  for (let y=0; y<4; y++) {
-    const tr = document.createElement('tr');
-    for (let x=0; x<4; x++) {
-      const v = mesh?.[y]?.[x];
-      tr.innerHTML += `<td><input type="number" step="0.001" id="cell-${y}-${x}" value="${typeof v==='number'? v.toFixed(3): ''}" required></td>`;
-    }
-    meshInput.appendChild(tr);
-  }
-}
-function renderSuggestions(mesh) {
-  const data = getScrewData(mesh);
-  screwTable.innerHTML = '';
-  const layout = ['A1','GAP','A2','A3','B1','B2','B3','B4','C1','C2','C3','C4'];
-  for (const sName of layout) {
-    if (sName === 'GAP') continue;
-    const s = data[sName];
-    const tr = document.createElement('tr');
-    tr.className = s.suggestion.includes('Tighten') ? 'tighten'
-               :  s.suggestion.includes('Loosen')  ? 'loosen'
-               :  'na';
-    tr.innerHTML = `<td>${sName}</td><td>${s.avg}</td><td>${s.suggestion}</td><td>${s.turn}</td>`;
-    screwTable.appendChild(tr);
-    const cell = document.getElementById(sName);
-    if (cell) {
-      cell.className = tr.className;
-      cell.innerHTML = `<strong>${sName}</strong><br>${s.avg} mm<br>${s.turn!=='N/A'? s.turn : ''}`;
-    }
-  }
-}
-
-function exportMeshAsFile(mesh, label) {
-  const blob = new Blob([JSON.stringify(mesh, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `cr6se-mesh-${label}-${Date.now()}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function promptNumber(message, def) {
-  const raw = safePrompt(message, String(def));
-  if (raw === null) return null;
-  const n = parseFloat(raw);
-  return Number.isFinite(n) ? n : NaN;
-}
-
-/* =========================================================
-   7) SERIAL / COMMS (connect, read loop, send, waits)
-========================================================= */
-async function connectPrinter() {
-  if (isConnecting) return;
-  isConnecting = true;
-  try {
-    // Virtual path
-    if (virtualMode) {
-      await connectVirtual();
-      connKind = 'virtual';
-      return;
-    }
-
-    // Real serial path
-    if (!('serial' in navigator)) {
-      setConnected(false);
-      setActivity('Web Serial not supported', 'bad');
-      logMsg('❌ Web Serial API not supported. Use Chrome/Edge/Brave on desktop.');
-      alert('Web Serial API not supported. Use Chrome/Edge/Brave on desktop.');
-      connKind = 'none';
-      return;
-    }
-
-    setActivity('Connecting...', 'warn');
-
-    if (!port) {
-      const granted = await navigator.serial.getPorts();
-      port = granted[0] || await navigator.serial.requestPort();
-    }
-
-    if (!port.readable || !port.writable) {
-      try {
-        await port.open({ baudRate: 115200 });
-      } catch (e) {
-        if (!/already open/i.test(String(e))) throw e;
-        logMsg('Port is already open; reusing existing connection.');
-      }
-    }
-
-    try { if (reader) await reader.cancel(); } catch (e) {}
-    try { if (reader) reader.releaseLock(); } catch (e) {}
-    try { if (writer) writer.releaseLock(); } catch (e) {}
-
-// Robust reader setup (works even if TextDecoderStream is missing)
-let useBinaryReader = false; // optional flag if you want to branch on it later
-if (typeof TextDecoderStream !== 'undefined') {
-  const tds = new TextDecoderStream();
-  textDecoder = tds; // keep ref for symmetry
-  port.readable.pipeTo(tds.writable).catch(() => {});
-  reader = tds.readable.getReader();          // yields strings
-} else {
-  // Fallback: read raw bytes and decode manually in readLoop
-  useBinaryReader = true;
-  textDecoder = new TextDecoder();
-  reader = port.readable.getReader();         // yields Uint8Array
-}
-writer = port.writable.getWriter();
-
-
-    setConnected(true);
-updateLevelView();
-    hideEtaPill();
-    updateTempPanel();
-    startTempPolling();
-    updateLastUpdated();
-    setActivity('Connected', 'ok');
-    logMsg('Connected.');
-    if (!reading) readLoop();
-
-    connKind = 'real';
-  } catch (err) {
-    setConnected(false);
-    setActivity('Connect error', 'bad');
-    logMsg(String(err?.message || err));
-
-    _rejectAllOk(new Error('Connect failed'));
-    hideEtaPill();
-
-    connKind = 'none';
-  } finally {
-    isConnecting = false;
-  }
-}
-
-// Pass reason = 'lost' when we detect an unexpected drop
-async function disconnectPrinter(reason = 'user') {
-  if (isDisconnecting) return;
-  isDisconnecting = true;
-
-  const lost = reason === 'lost';
-  try {
-    // Fail any pending waits / streams immediately
-    _rejectAllOk(new Error(lost ? 'Connection lost' : 'Disconnected'));
-    cancelStream = true;
-
-    // Reset sender UI + ETA
-    if (sendProgress) sendProgress.style.width = '0%';
-    if (sendStatus)   sendStatus.textContent = 'Idle';
-    hideEtaPill();
-  clearAllPidUi();
-    if (connKind === 'virtual' || virtualMode) {
-      await disconnectVirtual();
-      connKind = 'none';
-      stopTempPolling();
-      setActivity(lost ? 'Connection lost (virtual)' : 'Disconnected', lost ? 'bad' : 'ok');
-      if (lost) logMsg('❌ Connection lost (virtual).'); else logMsg('🔌 Virtual printer disconnected.');
-      return;
-    }
-
-    // Real serial path
-    setConnected(false);
-    setActivity(lost ? 'Connection lost…' : 'Disconnecting…', lost ? 'bad' : 'warn');
-    stopTempPolling();
-
-    try { if (reader) await reader.cancel(); } catch {}
-    try { if (reader) reader.releaseLock(); } catch {}
-    try { if (writer) writer.releaseLock(); } catch {}
-    try { if (port)   await port.close();   } catch {}
-
-    port = null;
-    reader = null;
-    writer = null;
-
-    if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
-
-    setActivity(lost ? 'Connection lost' : 'Disconnected', lost ? 'bad' : 'ok');
-    logMsg(lost ? '❌ Connection to printer was lost.' : '🔌 Disconnected.');
-    connKind = 'none';
-  } catch (err) {
-    logMsg('❌ Disconnect error: ' + (err?.message || err));
-    setActivity('Disconnect error', 'bad');
-    connKind = 'none';
-  } finally {
-    isDisconnecting = false;
-  }
-}
-
-function _resolveNextOk() {
-  const waiter = pendingOk.shift();
-  if (waiter) waiter.resolve();
-}
-function _rejectAllOk(err) {
-  const all = pendingOk.splice(0);
-  for (const w of all) w.reject(err || new Error('Aborted'));
-}
-
-function resolveAllWaiting() {
-  lastOkAt = Date.now();
-  waitingResolvers.splice(0).forEach(fn => { try { fn(); } catch {} });
-}
-
-
-//FIX Below for Gcode send error
-function waitForOk() {
-  return new Promise((resolve, reject) => {
-    // Real serial requires a live port/writer; virtual can proceed.
-    const isReal = (connKind === 'real');
-    if (isReal && (!port || !writer)) {
-      reject(new Error('Disconnected'));
-      return;
-    }
-    if (cancelStream) {
-      reject(new Error('Cancelled'));
-      return;
-    }
-    // Resolve only when an actual 'ok' arrives (readLoop → _resolveNextOk),
-    // or reject immediately via disconnect/cancel (_rejectAllOk).
-    pendingOk.push({ resolve, reject });
-  });
-}
-
+//Read and parse loop
 async function readLoop() {
   reading = true;
   try {
@@ -1953,25 +1902,41 @@ async function readLoop() {
   }
 }
 
-//should fix bed heating bug
-async function sendCmd(cmd, quiet = false) {
-  // Route commands properly only if we're actually in virtual mode *now*
-  if (connKind === 'virtual') {
-    return sendCmdVirtual(cmd, quiet);
-  }
+//Wait plumbing
+function waitForOk() {
+  beginCritical();
+  return new Promise((resolve, reject) => {
+    const wrapResolve = () => { try { resolve(); } finally { if (pendingOk.length === 0) endCritical(); } };
+    const wrapReject  = (err) => { try { reject(err); }  finally { if (pendingOk.length === 0) endCritical(); } };
 
-  if (!writer) { logMsg('⚠️ Not connected.'); return; }
-  setLastCmd(cmd);
-  setActivity('Sending…', 'warn');
+    // Real serial requires a live port/writer; virtual can proceed.
+    const isReal = (connKind === 'real');
+    if (isReal && (!port || !writer)) { wrapReject(new Error('Disconnected')); return; }
+    if (cancelStream) { wrapReject(new Error('Cancelled')); return; }
 
-  await writer.write(new TextEncoder().encode(cmd + '\n'));
-  if (!quiet) logMsg('>> ' + cmd);
-
-  updateLastUpdated();
-  setActivity('Waiting…', 'warn');
+    pendingOk.push({ resolve: wrapResolve, reject: wrapReject });
+  });
 }
 
+function _resolveNextOk() {
+  const waiter = pendingOk.shift();
+  if (waiter) {
+    try { waiter.resolve(); }
+    finally { if (pendingOk.length === 0) endCritical(); }
+  }
+}
 
+function _rejectAllOk(err) {
+  const all = pendingOk.splice(0);
+  for (const w of all) {
+    try { w.reject(err || new Error('Aborted')); } catch {}
+  }
+  // Ensure we don't leave polling paused
+  criticalDepth = 0;
+  startTempPolling();
+}
+
+//Heater waiters
 async function waitForHotend(target, tol = 1.0) {
   await sendCmd(`M104 S${Math.round(target)}`);
   await waitForOk().catch(()=>{});
@@ -1987,6 +1952,7 @@ async function waitForHotend(target, tol = 1.0) {
     check();
   });
 }
+
 async function waitForBed(target, tol = 1.0) {
   await sendCmd(`M140 S${Math.round(target)}`);
   await waitForOk().catch(()=>{});
@@ -2006,6 +1972,8 @@ async function waitForBed(target, tol = 1.0) {
 /* =========================================================
    8) UI ACTIONS (PID, leveling, movement, sender, config)
 ========================================================= */
+
+//PID
 async function runBedPID() {
   const t = promptNumber('Enter bed PID target temp (S):', 60);
   if (t === null || !Number.isFinite(t)) return alert('Invalid temperature.');
@@ -2040,14 +2008,18 @@ async function runHotendPID() {
   logMsg('ℹ️ PID tuning can take a few minutes. Send M500 to save if required.');
 }
 
+//Leveling Shortcuts
 async function readMesh(){
   await sendCmd('G29 T');
   setActivity('Parsing…', 'warn');
 }
+
 async function reprobe(){
   await sendCmdsSequential('G28', 'G29 T');
   setActivity('Probing…', 'warn');
 }
+
+//Manual
 function sendManual(){
   const cmd = manualCmd.value.trim();
   if (!cmd) return;
@@ -2055,6 +2027,7 @@ function sendManual(){
   manualCmd.value = '';
 }
 
+//Jog and move
 async function jog(axis, dir) {
   const step = parseFloat(jogStep.value) || 1;
   const dist = (dir * step).toFixed(3);
@@ -2087,6 +2060,7 @@ async function jog(axis, dir) {
   }
 }
 
+//Sender
 async function streamGcode(file) {
   if (!(connKind === 'virtual' || writer)) {
     alert('Not connected.');
@@ -2208,27 +2182,64 @@ async function streamGcode(file) {
   }
 }
 
+//Quick helpers
+async function coolToIdle(opts = {}) {
+  const force = !!opts.force;
+  const wantHotOff = force || (temps.hotTarget ?? 0) > 0;
+  const wantBedOff = force || (temps.bedTarget ?? 0) > 0;
+  if (!wantHotOff && !wantBedOff) return;
+
+  try {
+    if (wantHotOff) { await sendCmd('M104 S0'); await waitForOk().catch(()=>{}); }
+    if (wantBedOff) { await sendCmd('M140 S0'); await waitForOk().catch(()=>{}); }
+  } finally {
+    clearAllPidUi();
+    setActivity('Temps set to 0', 'ok');
+    updateLastUpdated();
+  }
+}
+
+async function markHomedAfterG28() {
+  await sendCmd('G28'); 
+  await waitForOk().catch(()=>{});
+  isHomed = true;
+}
 
 /* =========================================================
    9) EVENT LISTENERS
 ========================================================= */
-// Connection
-function trace(msg) { console.debug('[TRACE]', msg); }
+
+//Connection
 connectBtn.addEventListener('click', () => { trace('Connect button'); connectPrinter(); });
+
 disconnectBtn.addEventListener('click', () => {
   trace('Disconnect button');
   disconnectPrinter('user');
 });
 
-// Leveling
+
+//Leveling
+exportMeshBtn.addEventListener('click', () => {
+  const fromInputs = collectMeshFromInputs();
+  if (fromInputs) {
+    exportMeshAsFile(fromInputs, 'current');
+    return;
+  }
+  const hist = JSON.parse(localStorage.getItem('levels') || '[]');
+  const latest = hist.at(-1);
+  if (latest && Array.isArray(latest) && latest.length === 4) {
+    exportMeshAsFile(latest, 'latest');
+  } else {
+    alert('⚠️ No mesh available to export yet.');
+  }
+});
+
+resetBtn.addEventListener('click', () => {
+if (safeConfirm('Reset all saved data?')) { localStorage.clear(); location.reload(); }
+});
+
 readMeshBtn.addEventListener('click', homeAndProbe);
 
-// Manual command & log
-sendCmdBtn.addEventListener('click', sendManual);
-manualCmd.addEventListener('input', () => { captureMode = null; });
-clearLogBtn.addEventListener('click', () => { printerLog.textContent = ''; });
-
-// Level form & export
 document.getElementById('levelForm').addEventListener('submit', (e) => {
   e.preventDefault();
   const mesh = [];
@@ -2247,23 +2258,32 @@ document.getElementById('levelForm').addEventListener('submit', (e) => {
   alert('✅ Round submitted!');
 });
 
-resetBtn.addEventListener('click', () => {
-if (safeConfirm('Reset all saved data?')) { localStorage.clear(); location.reload(); }
-});
+//Manual
+sendCmdBtn.addEventListener('click', sendManual);
 
-// Temperature & Fan
+manualCmd.addEventListener('input', () => { captureMode = null; });
+
+clearLogBtn.addEventListener('click', () => { printerLog.textContent = ''; });
+
+//Temps and fan
 hotendApply.addEventListener('click', () =>
   sendCmd(`M104 S${Math.max(0, Math.min(300, parseInt(hotendSet.value)||0))}`));
+
 hotendOff.addEventListener('click',   () => sendCmd('M104 S0'));
+
 bedApply.addEventListener('click',    () =>
   sendCmd(`M140 S${Math.max(0, Math.min(130, parseInt(bedSet.value)||0))}`));
+
 bedOff.addEventListener('click',      () => sendCmd('M140 S0'));
+
 fanSlider.addEventListener('input',   () => { fanVal.textContent = fanSlider.value; });
+
 fanApply.addEventListener('click',    () =>
   sendCmd(`M106 S${Math.max(0, Math.min(255, parseInt(fanSlider.value)||0))}`));
+
 fanOff.addEventListener('click',      () => sendCmd('M107'));
 
-// Movement
+//Movement
 homeAll.addEventListener('click', async () => {
   try {
     setActivity('Homing…', 'warn');
@@ -2280,23 +2300,46 @@ homeAll.addEventListener('click', async () => {
 });
 
 disableMotors.addEventListener('click', () => sendCmd('M84'));
+
 xMinus.addEventListener('click', () => jog('X', -1));
+
 xPlus .addEventListener('click', () => jog('X', +1));
+
 yMinus.addEventListener('click', () => jog('Y', -1));
+
 yPlus .addEventListener('click', () => jog('Y', +1));
+
 zMinus.addEventListener('click', () => jog('Z', -1));
+
 zPlus .addEventListener('click', () => jog('Z', +1));
+
 parkHead.addEventListener('click', () =>sendCmdsSequential('G90', 'G1 X0 Y0 Z10 F3000')
 );
 
-// EEPROM / Config
+//EEPROM and Diag
 readCfg.addEventListener('click', async () => {
   configBox.value = '';
   captureMode = 'config';
   stopTempPolling();
   await sendCmd('M503');
 });
+
 saveCfg.addEventListener('click', async () => { await sendCmd('M500'); });
+
+fwInfo.addEventListener('click', () => {
+  diagBox.value = '';
+  captureMode = 'diag';
+  stopTempPolling();
+  sendCmd('M115');
+});
+
+tmcDiag.addEventListener('click', () => {
+  diagBox.value = '';
+  captureMode = 'diag';
+  stopTempPolling();
+  sendCmd('M122');
+});
+
 
 // Maintenance
 preheatPLA .addEventListener('click', async () => {
@@ -2358,20 +2401,7 @@ unloadFil.addEventListener('click', async () => {
   }
 });
 
-// Diagnostics
-fwInfo.addEventListener('click', () => {
-  diagBox.value = '';
-  captureMode = 'diag';
-  stopTempPolling();
-  sendCmd('M115');
-});
-tmcDiag.addEventListener('click', () => {
-  diagBox.value = '';
-  captureMode = 'diag';
-  stopTempPolling();
-  sendCmd('M122');
-});
-
+//Sender
 gcodeFile.addEventListener('change', () => {
   const connected = (connKind === 'virtual') || !!writer;
   sendGcode.disabled = !gcodeFile.files.length || !connected;
@@ -2398,6 +2428,73 @@ cancelSend.addEventListener('click', async () => {
   hideEtaPill();
 clearAllPidUi();
 });
+
+//PID Tab
+bedPidBtn.addEventListener('click', runBedPID);
+
+hotendPidBtn.addEventListener('click', runHotendPID);
+
+//APP lifecycle
+window.addEventListener('unload', () => {
+  if (postPrintTimer) clearTimeout(postPrintTimer);
+});
+
+document.addEventListener('DOMContentLoaded', () => {
+  const aboutBtn = document.querySelector('#tabButtons button[data-tab="aboutTab"]');
+  const allTabBtns = Array.from(document.querySelectorAll('#tabButtons button'));
+  const eeOverlay = document.getElementById('eeOverlay');
+  const eeModal   = document.getElementById('eeModal');
+  const eeClose   = document.getElementById('eeClose');
+  const eeBody    = document.getElementById('eeBody');
+
+  if (!aboutBtn || !eeOverlay || !eeModal || !eeClose || !eeBody) {
+    console.warn('[EE] Modal wiring skipped (missing elements).');
+    return;
+  }
+
+  // Any other tab click resets
+  allTabBtns.forEach(btn => {
+    if (btn !== aboutBtn) btn.addEventListener('click', resetStreak);
+  });
+
+  // Close handlers
+  eeClose.addEventListener('click', closeEasterEgg);
+  eeOverlay.addEventListener('click', closeEasterEgg);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && eeModal.style.display !== 'none') closeEasterEgg();
+  });
+});
+
+//Selectors and toggles
+if (levelPrinterSelect) {
+  const saved = localStorage.getItem('levelPrinterChoice');
+  if (saved) levelPrinterSelect.value = saved;
+
+  levelPrinterSelect.addEventListener('change', () => {
+    localStorage.setItem('levelPrinterChoice', levelPrinterSelect.value);
+    updateLevelView();
+  });
+}
+
+if (debugToggle) {
+  debugToggle.checked = !!debugMode;
+  debugToggle.addEventListener('change', () => {
+    debugMode = debugToggle.checked;
+    localStorage.setItem('debugMode', JSON.stringify(debugMode));
+  });
+}
+
+if (virtualToggle) {
+  virtualMode = JSON.parse(localStorage.getItem('virtualMode') || 'false');
+  virtualToggle.checked = virtualMode;
+
+  virtualToggle.addEventListener('change', () => {
+    virtualMode = virtualToggle.checked;
+    localStorage.setItem('virtualMode', JSON.stringify(virtualMode));
+    // If user flips on while connected to real printer, we keep the current connection
+    // The "Connect" button will use virtual when not already connected.
+  });
+}
 
 /* =========================================================
    10) INIT (runs once)
