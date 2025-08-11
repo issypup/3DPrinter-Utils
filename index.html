@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>3D Printer Utils Test</title>
+<title>3D Printer Utils</title>
 <meta name="author" content="issypup">
 <meta name="date" content="2025-08-10">
 <style>
@@ -43,6 +43,7 @@
 #statusBar .pill.heating { background:#e74c3c; }  /* red, heating */
 #statusBar .pill.cooling { background:#3498db; }  /* blue, cooling */
 #statusBar .pill.offline { background:#444; color:#fff; }
+#statusBar .pill.pid { background:#f39c12; } /* orange */
 
 /* pulse effect (used for heating/cooling) */
 .pulse { animation: pillPulse 1.0s ease-in-out infinite; }
@@ -195,7 +196,7 @@
 <span id="etaPill" class="pill" style="display:none;">ETA: —</span>
 </div>
 
-<h1>3D Printer Utils Test</h1>
+<h1>3D Printer Utils</h1>
 
 <!-- Tabs -->
 <div id="tabButtons">
@@ -610,6 +611,9 @@ let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
 let meshScratch    = Array.from({ length: 4 }, () => Array(4).fill(null));
 let temps          = { hot: null, hotTarget: null, bed: null, bedTarget: null };
 
+let pidHotendActive = false;
+let pidBedActive = false;
+
 let virtualMode = false;      
 let vSimTimer = null;         
 
@@ -862,6 +866,7 @@ function stopVirtualSim() {
 async function connectVirtual() {
   if (connKind === 'virtual') { logMsg('🧪 Already in virtual mode.'); return; }
   setConnected(true);
+updateLevelView();
   setActivity('Connected (virtual)', 'ok');
   logMsg('🧪 Virtual printer connected.');
   startVirtualSim();
@@ -902,7 +907,7 @@ function initPrinterName() {
   loadPrinterName();
   printerNameEl.addEventListener('click', () => {
     const currentName = printerNameEl.textContent.trim();
-    const newName = prompt('Enter your printer name:', currentName);
+    const newName = safePrompt('Enter your printer name:', currentName);
     if (newName !== null) {
       savePrinterName(newName);
     }
@@ -1021,26 +1026,43 @@ function tempState(current, target, tolerance = 0.5) {
 }
 
 function setTempPill(pillEl, textEl, curr, target) {
-  textEl.textContent = (target != null && !Number.isNaN(target))
-    ? `${curr.toFixed(1)}°C / ${Math.round(target)}°`
-    : `${curr.toFixed(1)}°C`;
+  const hasTarget = target != null && !Number.isNaN(target);
+  const safeCurr = Number.isFinite(curr) ? curr : 0;
+  textEl.textContent = hasTarget
+    ? `${safeCurr.toFixed(1)}°C / ${Math.round(target)}°`
+    : `${safeCurr.toFixed(1)}°C`;
 
-  const state = tempState(curr, target);
-  pillEl.classList.remove('offline','idle','ready','heating','cooling','pulse');
+  // PID override check
+  const forcePid =
+    (pillEl === topHotendPill && pidHotendActive) ||
+    (pillEl === topBedPill    && pidBedActive);
+
+  const state = forcePid ? 'pid' : tempState(safeCurr, target);
+
+  pillEl.classList.remove('offline','idle','ready','heating','cooling','pid','pulse');
   pillEl.classList.add(state);
-  if (state === 'heating' || state === 'cooling') pillEl.classList.add('pulse');
+  if (state === 'heating' || state === 'cooling' || state === 'pid') {
+    pillEl.classList.add('pulse');
+  }
 }
 
+// Now updateTempPanel simply calls setTempPill for each
 function updateTempPanel() {
-  if (temps.hot != null) {
-    hotendNow.textContent = `Current: ${temps.hot.toFixed(1)}°C` +
+  if (temps.hot != null || temps.hotTarget != null) {
+    setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
+    hotendNow.textContent = `Current: ${temps.hot?.toFixed(1) ?? '—'}°C` +
       (temps.hotTarget != null ? ` / ${Math.round(temps.hotTarget)}°` : '');
-  } else hotendNow.textContent = 'Current: —';
+  } else {
+    hotendNow.textContent = 'Current: —';
+  }
 
-  if (temps.bed != null) {
-    bedNow.textContent = `Current: ${temps.bed.toFixed(1)}°C` +
+  if (temps.bed != null || temps.bedTarget != null) {
+    setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget);
+    bedNow.textContent = `Current: ${temps.bed?.toFixed(1) ?? '—'}°C` +
       (temps.bedTarget != null ? ` / ${Math.round(temps.bedTarget)}°` : '');
-  } else bedNow.textContent = 'Current: —';
+  } else {
+    bedNow.textContent = 'Current: —';
+  }
 }
 
 function updateAxisPanel(x, y, z) {
@@ -1122,6 +1144,22 @@ if (virtualToggle) {
     // If user flips on while connected to real printer, we keep the current connection
     // The "Connect" button will use virtual when not already connected.
   });
+}
+
+function safePrompt(message, def = '') {
+  if (typeof window !== 'undefined' && typeof window.prompt === 'function') {
+    return window.prompt(message, String(def));
+  }
+  console.warn('[prompt] not available; using default value.');
+  return String(def);
+}
+
+function safeConfirm(message) {
+  if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    return window.confirm(message);
+  }
+  console.warn('[confirm] not available; defaulting to false.');
+  return false;
 }
 
 /* =============================
@@ -1211,6 +1249,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Escape' && eeModal.style.display !== 'none') closeEasterEgg();
   });
 });
+
+bedPidBtn.addEventListener('click', runBedPID);
+hotendPidBtn.addEventListener('click', runHotendPID);
 
 /* =========================================================
    6) MESH UTILS (parse, store, render)
@@ -1395,7 +1436,7 @@ function exportMeshAsFile(mesh, label) {
 }
 
 function promptNumber(message, def) {
-  const raw = prompt(message, String(def));
+  const raw = safePrompt(message, String(def));
   if (raw === null) return null;
   const n = parseFloat(raw);
   return Number.isFinite(n) ? n : NaN;
@@ -1445,13 +1486,24 @@ async function connectPrinter() {
     try { if (reader) reader.releaseLock(); } catch (e) {}
     try { if (writer) writer.releaseLock(); } catch (e) {}
 
-    const tds = new TextDecoderStream();
-    textDecoder = tds;
-    port.readable.pipeTo(tds.writable).catch(function(){});
-    reader = tds.readable.getReader();
-    writer = port.writable.getWriter();
+// Robust reader setup (works even if TextDecoderStream is missing)
+let useBinaryReader = false; // optional flag if you want to branch on it later
+if (typeof TextDecoderStream !== 'undefined') {
+  const tds = new TextDecoderStream();
+  textDecoder = tds; // keep ref for symmetry
+  port.readable.pipeTo(tds.writable).catch(() => {});
+  reader = tds.readable.getReader();          // yields strings
+} else {
+  // Fallback: read raw bytes and decode manually in readLoop
+  useBinaryReader = true;
+  textDecoder = new TextDecoder();
+  reader = port.readable.getReader();         // yields Uint8Array
+}
+writer = port.writable.getWriter();
+
 
     setConnected(true);
+updateLevelView();
     hideEtaPill();
     updateTempPanel();
     startTempPolling();
@@ -1569,22 +1621,27 @@ async function readLoop() {
     while (true) {
       const { value, done } = await reader.read();
 
-      // 🔴 If the stream closed, disconnect as "lost"
+      // If the stream closed, treat as a lost connection
       if (done) {
         if (!isDisconnecting) await disconnectPrinter('lost');
         break;
       }
-
       if (value == null) continue;
 
-      rxBuffer += value;
+      // Normalize chunk to string for both reader types
+const chunk = (value instanceof Uint8Array)
+  ? textDecoder.decode(value, { stream: true })
+  : value;
+
+      rxBuffer += chunk;
       const parts = rxBuffer.split(/\r?\n/);
-      rxBuffer = parts.pop();
+      rxBuffer = parts.pop(); // keep incomplete tail
 
       for (const raw of parts) {
         const line = raw.trim();
         if (!line) continue;
 
+        // --- Temp parsing (M105-style telemetry) ---
         const tMatch = line.match(TEMP_T);
         const bMatch = line.match(TEMP_B);
 
@@ -1608,16 +1665,18 @@ async function readLoop() {
         }
         if (tMatch || bMatch) updateTempPanel();
 
-        const isTelemetry = TELEMETRY_REGEX.test(line);
-        let out = normalizeLine(line);
-
+        // --- Positions (e.g., "X:.. Y:.. Z:..") ---
         const posMatch = line.match(POS_REGEX);
         if (posMatch) {
           const x = parseFloat(posMatch[1]);
           const y = parseFloat(posMatch[2]);
           const z = parseFloat(posMatch[3]);
-          if ([x,y,z].every(Number.isFinite)) updateAxisPanel(x,y,z);
+          if ([x, y, z].every(Number.isFinite)) updateAxisPanel(x, y, z);
         }
+
+        // --- Logging (respect noisy/telemetry filters & debug mode) ---
+        const isTelemetry = TELEMETRY_REGEX.test(line);
+        const out = normalizeLine(line);
 
         if (!debugMode && (isSetNewScreenLine(out) || isNoisyLine(out))) continue;
 
@@ -1637,9 +1696,10 @@ async function readLoop() {
           logMsg(out);
         }
 
+        // --- Mesh line ingestion (G29 T variants) ---
         const justCompleted = ingestMeshLine(out);
         if (justCompleted) {
-          const meshForUi = meshScratch.map(r => r.slice()); // already flipped
+          const meshForUi = meshScratch.map(r => r.slice()); // already Y-flipped
           setActivity('Mesh parsed', 'ok');
           saveMeshLS(meshForUi);
           renderMeshInputs(meshForUi);
@@ -1648,10 +1708,38 @@ async function readLoop() {
           resetMeshScratch();
         }
 
-        if (/PID Autotune start/i.test(line))    setActivity('PID tuning…', 'warn');
-        if (/PID Autotune finished/i.test(line)) setActivity('PID tuning complete', 'ok');
-        if (/PID Autotune failed/i.test(line))   setActivity('PID tuning failed', 'bad');
+        // --- PID state hints ---
+if (/PID Autotune start/i.test(line)) {
+  setActivity('PID tuning…', 'warn');
+  // Guess target: E-1 = bed, E0 = hotend. Fall back to hotend if unknown.
+  if (/\bE-?1\b/.test(line) || /Bed/i.test(line)) {
+    pidBedActive = true;
+    setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget);
+  } else {
+    pidHotendActive = true;
+    setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
+  }
+}
 
+if (/PID Autotune finished/i.test(line)) {
+  setActivity('PID tuning complete', 'ok');
+  pidHotendActive = false;
+  pidBedActive = false;
+  // refresh pills to normal state
+  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
+  setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget);
+}
+
+if (/PID Autotune failed/i.test(line)) {
+  setActivity('PID tuning failed', 'bad');
+  pidHotendActive = false;
+  pidBedActive = false;
+  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
+  setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget);
+}
+
+
+        // --- OK resolver ---
         if (/^ok\b/i.test(line)) {
           updateLastUpdated();
           if (captureMode) { captureMode = null; startTempPolling(); }
@@ -1660,9 +1748,8 @@ async function readLoop() {
       }
     }
   } catch (err) {
-    logMsg('⚠️ Read error: ' + err.message);
-
-    // 🔴 On read error, treat as lost connection (unless we're already disconnecting)
+    logMsg('⚠️ Read error: ' + (err?.message || err));
+    // Treat any read error as a lost connection unless we're already tearing down
     if (!isDisconnecting) await disconnectPrinter('lost');
   } finally {
     reading = false;
@@ -1723,19 +1810,22 @@ async function waitForBed(target, tol = 1.0) {
 ========================================================= */
 async function runBedPID() {
   const t = promptNumber('Enter bed PID target temp (S):', 60);
-  if (t === null) return;
-  if (!Number.isFinite(t)) return alert('Invalid temperature.');
+  if (t === null || !Number.isFinite(t)) return alert('Invalid temperature.');
+  pidBedActive = true;
+  setTempPill(topBedPill, topBedText, temps.bed ?? 0, temps.bedTarget);
   setActivity(`PID bed @ ${t}°C…`, 'warn');
   await sendCmd(`M303 C5 E-1 S${t} U`);
-  logMsg('ℹ️ PID tuning can take a few minutes. After success, send M500 to save if required.');
+  logMsg('ℹ️ After success, send M500 to save if required.');
 }
+
 async function runHotendPID() {
   const t = promptNumber('Enter nozzle PID target temp (S):', 220);
-  if (t === null) return;
-  if (!Number.isFinite(t)) return alert('Invalid temperature.');
+  if (t === null || !Number.isFinite(t)) return alert('Invalid temperature.');
+  pidHotendActive = true;
+  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget);
   setActivity(`PID hotend @ ${t}°C…`, 'warn');
   await sendCmd(`M303 C5 E0 S${t} U`);
-  logMsg('ℹ️ PID tuning can take a few minutes. After success, send M500 to save if required.');
+  logMsg('ℹ️ After success, send M500 to save if required.');
 }
 
 async function readMesh(){
@@ -1920,7 +2010,7 @@ document.getElementById('exportPrinterBtn').addEventListener('click', () => {
   }
 });
 resetBtn.addEventListener('click', () => {
-  if (confirm('Reset all saved data?')) { localStorage.clear(); location.reload(); }
+if (safeConfirm('Reset all saved data?')) { localStorage.clear(); location.reload(); }
 });
 
 // Temperature & Fan
@@ -1983,9 +2073,9 @@ cooldown   .addEventListener('click', async () => {
 });
 
 loadFil.addEventListener('click', async () => {
-  const mm   = parseFloat(prompt('How many mm to LOAD?', '60'));
+  const mm   = parseFloat(safePrompt('How many mm to LOAD?', '60'));
   if (!Number.isFinite(mm) || mm <= 0) return;
-  const temp = parseFloat(prompt('Hotend temp for load (°C)?', '200'));
+  const temp = parseFloat(safePrompt('Hotend temp for load (°C)?', '200'));
   if (!Number.isFinite(temp) || temp <= 0) return;
   try {
     await sendCmd('G28');                    await waitForOk().catch(()=>{});
@@ -2006,9 +2096,9 @@ loadFil.addEventListener('click', async () => {
 });
 
 unloadFil.addEventListener('click', async () => {
-  const mm   = parseFloat(prompt('How many mm to UNLOAD?', '60'));
+  const mm   = parseFloat(safePrompt('How many mm to UNLOAD?', '60'));
   if (!Number.isFinite(mm) || mm <= 0) return;
-  const temp = parseFloat(prompt('Hotend temp for unload (°C)?', '200'));
+  const temp = parseFloat(safePrompt('Hotend temp for unload (°C)?', '200'));
   if (!Number.isFinite(temp) || temp <= 0) return;
   try {
     await sendCmd('G28');                    await waitForOk().catch(()=>{});
