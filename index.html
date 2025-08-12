@@ -197,6 +197,7 @@
 }
 #eeClose:hover { background:#e5e5e5; }
 
+#liveChart { width: 100%; height: 260px; display: block; }
 </style>
 </head>
 <body>
@@ -372,6 +373,11 @@
       </div>
     </div>
   </div>
+  <div class="box">
+  <div class="label">Live Telemetry (last 10 min)</div>
+  <canvas id="liveChart" width="900" height="260" aria-label="Live temperatures, fan %, and M73 %"></canvas>
+  <div class="muted">Left axis: °C · Right axis: % (Fan, M73)</div>
+</div>
   <div class="row box">
 <div class="col">
   <div class="label">Safety</div>
@@ -831,6 +837,123 @@ let streak = 0;
 ========================================================= */
 
 
+
+
+
+
+/* ===== Live Telemetry Chart (temps, fan %, M73 %) ===== */
+const live = {
+  el: null, ctx: null, buf: [], maxSec: 600, // 10 minutes
+  lastFan255: 0, lastProg: null, raf: 0
+};
+
+(function initLiveChart(){
+  live.el = document.getElementById('liveChart');
+  if (!live.el) return;
+  live.ctx = live.el.getContext('2d');
+
+  const resize = () => {
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = live.el.clientWidth || 900;
+    const cssH = live.el.clientHeight || 260;
+    live.el.width  = Math.round(cssW * dpr);
+    live.el.height = Math.round(cssH * dpr);
+    live.ctx.setTransform(dpr,0,0,dpr,0,0); // draw in CSS pixels
+    queueLiveDraw();
+  };
+  window.addEventListener('resize', resize);
+  resize();
+})();
+
+function recordLiveSample() {
+  if (!live.ctx) return;
+  const now = Date.now()/1000;
+  live.buf.push({
+    ts: now,
+    hot: Number.isFinite(temps.hot) ? temps.hot : null,
+    bed: Number.isFinite(temps.bed) ? temps.bed : null,
+    fanPct: Number.isFinite(live.lastFan255) ? Math.round(live.lastFan255 * 100 / 255) : null,
+    progPct: (live.lastProg != null ? live.lastProg : null)
+  });
+  // drop old
+  const cut = now - live.maxSec;
+  while (live.buf.length && live.buf[0].ts < cut) live.buf.shift();
+  queueLiveDraw();
+}
+
+function queueLiveDraw(){
+  if (live.raf) return;
+  live.raf = requestAnimationFrame(() => { live.raf = 0; drawLive(); });
+}
+
+function drawLive(){
+  const el = live.el, ctx = live.ctx;
+  if (!ctx) return;
+  const W = el.clientWidth || 900, H = el.clientHeight || 260;
+  ctx.clearRect(0,0,W,H);
+
+  // Axes and layout
+  const padL = 40, padR = 40, padT = 10, padB = 20;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  // Time window
+  const now = Date.now()/1000;
+  const t0 = now - live.maxSec, t1 = now;
+
+  // Scales
+  const tempMin = 0, tempMax = 270;   // °C
+  const pctMin  = 0, pctMax  = 100;   // %
+  const xOf = ts => padL + ((ts - t0) / (t1 - t0)) * plotW;
+  const yTemp = v => padT + (1 - (v - tempMin) / (tempMax - tempMin)) * plotH;
+  const yPct  = v => padT + (1 - (v - pctMin)  / (pctMax  - pctMin )) * plotH;
+
+  // Grid
+  ctx.globalAlpha = 0.15;
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i=0;i<=5;i++){
+    const y = padT + (i/5)*plotH;
+    ctx.moveTo(padL, y); ctx.lineTo(W - padR, y);
+  }
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // Labels
+  ctx.fillStyle = '#333';
+  ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Arial';
+  ctx.textAlign = 'left';  ctx.fillText('°C', 4, padT+12);
+  ctx.textAlign = 'right'; ctx.fillText('%', W-4, padT+12);
+
+  // Helper to draw a series
+  const drawSeries = (key, yFn, color, dash=[]) => {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.setLineDash(dash);
+    ctx.lineWidth = 2;
+    let started = false;
+    ctx.beginPath();
+    for (const s of live.buf) {
+      const v = s[key];
+      if (v == null || !isFinite(v)) continue;
+      const x = xOf(s.ts), y = yFn(v);
+      if (!started) { ctx.moveTo(x,y); started = true; }
+      else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  // Series
+  drawSeries('hot',    yTemp, '#e74c3c');        // Hotend (red)
+  drawSeries('bed',    yTemp, '#3498db', [6,4]); // Bed (blue, dashed)
+  drawSeries('fanPct', yPct,  '#7f8c8d');        // Fan % (gray)
+  drawSeries('progPct',yPct,  '#2ecc71');        // M73 % (green)
+
+  // Frame
+  ctx.strokeStyle = '#ccc';
+  ctx.strokeRect(padL, padT, plotW, plotH);
+}
 
 
 
@@ -1404,6 +1527,7 @@ function setConnected(connected) {
     stopTempPolling();
  stopNetMeter();   
     setOfflinePills();
+    if (live) { live.buf.length = 0; live.lastProg = null; queueLiveDraw(); }
   }
 
   connectBtn.disabled    = connected;
@@ -2027,6 +2151,7 @@ function startVirtualSim() {
     }
     // keep temps in sync and refresh UI
     refreshVirtualTemps();
+    recordLiveSample();
   }, 100);
 }
 
@@ -2036,11 +2161,12 @@ function stopVirtualSim() {
 
 //Send paths
 async function sendCmd(cmd, quiet = false) {
+  // Route to virtual path if active
   if (connKind === 'virtual') {
     return sendCmdVirtual(cmd, quiet);
   }
 
-  // Guardrail first (blocks M104/109 or M140/190 over limits)
+  // Heater guardrail (blocks M104/M109 or M140/M190 over limits unless unlocked)
   if (!guardHeaterFromCmd(cmd)) {
     throw new Error('Heater guardrail blocked high temperature command');
   }
@@ -2050,16 +2176,47 @@ async function sendCmd(cmd, quiet = false) {
     throw new Error('Not connected');
   }
 
-  setLastCmd(cmd);
+  const line = String(cmd).trim();
+
+  setLastCmd(line);
   setActivity('Sending…', 'warn');
 
-  const payload = new TextEncoder().encode(cmd + '\n');
+  // --- Live graph taps: fan (M106/M107) + progress (M73) -------------------
+  // Fan set
+  if (/^M106\b/i.test(line)) {
+    const m = line.match(/\bS\s*([0-9.]+)/i);
+    if (m) {
+      const s = Math.max(0, Math.min(255, parseInt(m[1], 10) || 0));
+      if (typeof live !== 'undefined') live.lastFan255 = s;
+      if (typeof queueLiveDraw === 'function') queueLiveDraw();
+    }
+  }
+  if (/^M107\b/i.test(line)) {
+    if (typeof live !== 'undefined') live.lastFan255 = 0;
+    if (typeof queueLiveDraw === 'function') queueLiveDraw();
+  }
+  // M73 progress (Prusa/Marlin)
+  if (/^M73\b/i.test(line)) {
+    const p = line.match(/\bP\s*([0-9]+)/i);
+    if (p && typeof live !== 'undefined') {
+      live.lastProg = Math.max(0, Math.min(100, parseInt(p[1], 10) || 0));
+      if (typeof queueLiveDraw === 'function') queueLiveDraw();
+    }
+    const r = line.match(/\bR\s*([0-9]+)/i); // optional ETA minutes
+    if (r) {
+      const mins = Math.max(0, parseInt(r[1], 10) || 0);
+      showEtaPill('ETA: ' + formatETA(mins * 60), 'warn');
+    }
+  }
+  // -------------------------------------------------------------------------
 
-  // ✅ stamp the send time so “ok” without a waiter can update latency
+  const payload = new TextEncoder().encode(line + '\n');
+
+  // Stamp send time so "ok" without a waiter can update latency
   lastSendTs = performance.now();
 
   await writer.write(payload);
-  if (!quiet) logMsg('>> ' + cmd);
+  if (!quiet) logMsg('>> ' + line);
 
   // TX metering
   net.txBytesTotal += payload.length;
@@ -2069,10 +2226,11 @@ async function sendCmd(cmd, quiet = false) {
   setActivity('Waiting…', 'warn');
 }
 
+
 async function sendCmdVirtual(cmd, quiet = false) {
   const line = String(cmd).trim();
 
-  // ✅ Heater guardrail (blocks M104/109 >300, M140/190 >130 unless unlocked)
+  // Heater guardrail (blocks M104/M109 or M140/M190 over limits unless unlocked)
   if (!guardHeaterFromCmd(line)) {
     throw new Error('Heater guardrail blocked high temperature command');
   }
@@ -2081,14 +2239,44 @@ async function sendCmdVirtual(cmd, quiet = false) {
   setActivity('Sending…', 'warn');
   if (!quiet) logMsg('>> ' + line);
 
-lastSendTs = performance.now();
-
-  // approximate TX size for virtual path (no real serial)
+  // Approximate TX size for virtual path (no real serial)
   const approxLen = line.length + 1; // + '\n'
   if (typeof net !== 'undefined') {
     net.txBytesTotal += approxLen;
     net.txSince      += approxLen;
   }
+
+  // Stamp send time for latency EMA in no-waiter cases
+  lastSendTs = performance.now();
+
+  // --- Live graph taps: fan (M106/M107) + progress (M73) -------------------
+  // Fan set
+  if (/^M106\b/i.test(line)) {
+    const m = line.match(/\bS\s*([0-9.]+)/i);
+    if (m) {
+      const s = Math.max(0, Math.min(255, parseInt(m[1], 10) || 0));
+      if (typeof live !== 'undefined') live.lastFan255 = s;
+      if (typeof queueLiveDraw === 'function') queueLiveDraw();
+    }
+  }
+  if (/^M107\b/i.test(line)) {
+    if (typeof live !== 'undefined') live.lastFan255 = 0;
+    if (typeof queueLiveDraw === 'function') queueLiveDraw();
+  }
+  // M73 progress
+  if (/^M73\b/i.test(line)) {
+    const p = line.match(/\bP\s*([0-9]+)/i);
+    if (p && typeof live !== 'undefined') {
+      live.lastProg = Math.max(0, Math.min(100, parseInt(p[1], 10) || 0));
+      if (typeof queueLiveDraw === 'function') queueLiveDraw();
+    }
+    const r = line.match(/\bR\s*([0-9]+)/i);
+    if (r) {
+      const mins = Math.max(0, parseInt(r[1], 10) || 0);
+      showEtaPill('ETA: ' + formatETA(mins * 60), 'warn');
+    }
+  }
+  // -------------------------------------------------------------------------
 
   const ok = () => {
     setActivity('Waiting…', 'warn');
@@ -2234,6 +2422,7 @@ lastSendTs = performance.now();
   }
 }
 
+
 //Read and parse loop
 // --- replace your readLoop() with this (adds RX metering, preserves your parsing) ---
 async function readLoop() {
@@ -2302,7 +2491,7 @@ async function readLoop() {
             setTempPill(topBedPill, topBedText, temps.bed, temps.bedTarget, 'bed');
           }
         }
-        if (tMatch || bMatch) updateTempPanel();
+        if (tMatch || bMatch) { updateTempPanel(); recordLiveSample(); }
 
         // --- Positions (e.g., "X:.. Y:.. Z:..") ---
         const posMatch = line.match(POS_REGEX);
@@ -2832,10 +3021,16 @@ bedOff.addEventListener('click',      () => sendCmd('M140 S0'));
 
 fanSlider.addEventListener('input',   () => { fanVal.textContent = fanSlider.value; });
 
-fanApply.addEventListener('click',    () =>
-  sendCmd(`M106 S${Math.max(0, Math.min(255, parseInt(fanSlider.value)||0))}`));
+fanApply.addEventListener('click', () => {
+  const val = Math.max(0, Math.min(255, parseInt(fanSlider.value)||0));
+  live.lastFan255 = val;                  // ← add this
+  sendCmd(`M106 S${val}`);
+});
 
-fanOff.addEventListener('click',      () => sendCmd('M107'));
+fanOff.addEventListener('click', () => {
+  live.lastFan255 = 0;                    // ← add this
+  sendCmd('M107');
+});
 
 //Movement
 homeAll.addEventListener('click', async () => {
