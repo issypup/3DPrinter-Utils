@@ -24,6 +24,7 @@
   .gap { border: none; background: transparent; color: #888; font-weight: bold; }
   #screwMap td { width: 110px; height: 60px; vertical-align: top; font-size: 0.85em; }
 
+
   /* Status bar (always visible) */
   #statusBar {
     position: fixed; top: 0; left: 0; right: 0; height: var(--bar-h);
@@ -194,6 +195,9 @@
   <span class="pill idle" id="topBedPill">Bed: <span id="topBed">--°C</span></span>
 </span>
 <span id="etaPill" class="pill" style="display:none;">ETA: —</span>
+<span id="netPill" class="pill" title="Live serial throughput and OK latency">
+  TX — · RX — · Lat —
+</span>
 </div>
 
 <h1>3D Printer Utils</h1>
@@ -222,6 +226,18 @@
 <label style="margin-left:8px;">
   <input type="checkbox" id="virtualToggle">
   Virtual printer
+</label>
+<label style="margin-left:8px;">
+  Baud:
+  <select id="baudSelect">
+    <option value="auto" selected>Auto-detect</option>
+    <option value="250000">250000</option>
+    <option value="115200">115200</option>
+    <option value="230400">230400</option>
+    <option value="500000">500000</option>
+    <option value="1000000">1000000</option>
+    <option value="57600">57600</option>
+  </select>
 </label>
     <button id="connectBtn">Connect</button>
     <button id="disconnectBtn" disabled>Disconnect</button>
@@ -340,7 +356,11 @@
     </div>
   </div>
   <div class="row box">
-    <div class="label">Live Temperatures</div>
+<div class="col">
+  <div class="label">Safety</div>
+  <button id="unlockTempsBtn" type="button">Unlock high hotend temps</button>
+  <div class="muted" id="unlockHint">Guardrail ON — max 250°C</div>
+</div>
     <div class="muted">Polled via M105 every 3s while connected</div>
   </div>
 </div>
@@ -528,6 +548,10 @@ const fanSlider       = document.getElementById('fanSlider');
 const fanVal          = document.getElementById('fanVal');
 const fanApply        = document.getElementById('fanApply');
 const fanOff          = document.getElementById('fanOff');
+const unlockTempsBtn = document.getElementById('unlockTempsBtn');
+const unlockHint     = document.getElementById('unlockHint');
+const MAX_HOTEND = 250;
+const MAX_BED    = 110;
 
 //Movement UI
 const jogStep         = document.getElementById('jogStep');
@@ -638,6 +662,23 @@ const vState = {
    3) STATE (all let)
 ========================================================= */
 
+let net = {
+  txBytesTotal: 0,
+  rxBytesTotal: 0,
+  txSince: 0,
+  rxSince: 0,
+  lastSample: performance.now(),
+  txRate: 0,
+  rxRate: 0,
+  latencyEMA: null,   // ms
+  timer: null
+};
+
+let lastSendTs = null; 
+
+
+let heaterUnlocked = JSON.parse(localStorage.getItem('heaterUnlocked') || 'false');
+
 //UI and State flags
 let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
 let criticalDepth = 0;
@@ -713,6 +754,250 @@ let streak = 0;
 /* =========================================================
    5) HELPERS (pure UI / formatting / state)
 ========================================================= */
+
+
+
+
+
+
+
+
+function updateUnlockUi() {
+  const btn  = document.getElementById('unlockTempsBtn');
+  const hint = document.getElementById('unlockHint');
+  if (!btn) return;
+
+  // Toggle label + aria state
+  btn.textContent = heaterUnlocked ? 'Lock high hotend temps' : 'Unlock high hotend temps';
+  btn.setAttribute('aria-pressed', heaterUnlocked ? 'true' : 'false');
+
+  // Helper text
+  if (hint) {
+    hint.textContent = heaterUnlocked
+    ? '⚠️ Guardrail OFF — be careful.'
+    : '✅ Guardrail ON — 250°C caps active.';
+  }
+}
+
+function setHeaterUnlocked(on) {
+  heaterUnlocked = !!on;
+  localStorage.setItem('heaterUnlocked', JSON.stringify(heaterUnlocked));
+  updateUnlockUi();
+
+  const msg = heaterUnlocked
+    ? '⚠️ Guardrail OFF — be careful.'
+    : '✅ Guardrail ON — 250°C caps active.';
+  const text = heaterUnlocked ? 'High hotend temps UNLOCKED' : 'High hotend temps LOCKED';
+  const cls  = heaterUnlocked ? 'warn' : '';
+
+  setActivity(text, cls);
+  logMsg(msg);
+}
+
+
+function onUnlockToggle(e){
+  e.preventDefault();
+  setHeaterUnlocked(!heaterUnlocked);
+  setActivity(heaterUnlocked ? 'High hotend temps UNLOCKED' : 'High hotend temps LOCKED',
+              heaterUnlocked ? 'warn' : '');
+  logMsg(heaterUnlocked ? '⚠️ Guardrail OFF — be careful.'
+                        : '✅ Guardrail ON — 250°C caps active.');
+}
+
+if (unlockTempsBtn) unlockTempsBtn.onclick = onUnlockToggle; // bind once
+
+
+function guardHeaterFromCmd(cmd) {
+  if (heaterUnlocked) return true;
+  // Only gate heater-set commands with S values
+  if (!/^(?:M10(?:4|9)|M1(?:40|90))\b/i.test(cmd)) return true;
+  const s = cmd.match(/\bS\s*([0-9.]+)/i);
+  if (!s) return true;
+
+  const val = parseFloat(s[1]);
+  const isHot = /^M10(?:4|9)\b/i.test(cmd);
+  const lim = isHot ? MAX_HOTEND : MAX_BED;
+
+  if (val > lim) {
+    setActivity('Heater limit blocked', 'bad');
+    logMsg(`⛔ Blocked: ${cmd} (limit ${lim}°C; click “Unlock hotend high temps” to override)`);
+    return false;
+  }
+  return true;
+}
+
+function guardHeaterSet(tool, target, sourceLabel='UI') {
+  const limit = tool === 'hotend' ? MAX_HOTEND : MAX_BED;
+  if (Number.isFinite(target) && target > limit && !heaterUnlocked) {
+    setActivity('Blocked by heater guardrail', 'bad');
+    alert(`⛔ Limit ${limit}°C. Requested ${target}°C from ${sourceLabel}. Click “Unlock high hotend temps” to allow this.`);
+    return false;
+  }
+  return true;
+}
+
+
+function startNetMeter() {
+  if (net.timer) return;
+  net.lastSample = performance.now();
+  net.timer = setInterval(sampleNet, 1000);
+}
+
+function stopNetMeter() {
+  if (net.timer) { clearInterval(net.timer); net.timer = null; }
+  net.txRate = 0; net.rxRate = 0;
+  updateNetUi();
+}
+
+function sampleNet() {
+  const now = performance.now();
+  const dt = (now - net.lastSample) / 1000;
+  if (dt <= 0) return;
+
+  const txInstant = net.txSince / dt;
+  const rxInstant = net.rxSince / dt;
+  const a = 0.30; // EMA smoothing
+
+  net.txRate = net.txRate ? (a * txInstant + (1 - a) * net.txRate) : txInstant;
+  net.rxRate = net.rxRate ? (a * rxInstant + (1 - a) * net.rxRate) : rxInstant;
+
+  net.txSince = 0;
+  net.rxSince = 0;
+  net.lastSample = now;
+
+  updateNetUi();
+}
+
+function fmtRate(v) {
+  if (!v) return '—';
+  if (v < 1024) return `${Math.round(v)} B/s`;
+  if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB/s`;
+  return `${(v / 1024 / 1024).toFixed(2)} MB/s`;
+}
+
+function updateNetUi() {
+  const el = document.getElementById('netPill');
+  if (!el) return;
+  const lat = (net.latencyEMA != null) ? `${Math.round(net.latencyEMA)} ms` : '—';
+  el.textContent = `TX ${fmtRate(net.txRate)} · RX ${fmtRate(net.rxRate)} · Lat ${lat}`;
+}
+
+function updateLatency(ms) {
+  const a = 0.20; // EMA for OK latency
+  net.latencyEMA = (net.latencyEMA == null) ? ms : (a * ms + (1 - a) * net.latencyEMA);
+  updateNetUi();
+}
+
+
+// --- Baud selection and robust open/probe helpers ---------------------------
+function baudSelection() {
+  const sel = document.getElementById('baudSelect');
+  const v = sel?.value || 'auto';
+  if (v !== 'auto') {
+    const fixed = parseInt(v, 10);
+    return { mode: 'manual', list: Number.isFinite(fixed) ? [fixed] : [115200] };
+  }
+  // Try common rates (most likely first)
+  return { mode: 'auto', list: [250000, 115200, 230400, 500000, 1000000, 57600] };
+}
+
+async function nudgeDTRRTS() {
+  // Some boards wake/reset on signal toggles
+  try {
+    await port.setSignals({ dataTerminalReady: true,  requestToSend: true });
+    await sleep(80);
+    await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+  } catch { /* not supported on every driver */}
+}
+
+async function openAtBaud(baud) {
+  // Clean any prior state
+  try { if (reader) await reader.cancel(); } catch {}
+  try { if (reader) reader.releaseLock(); } catch {}
+  try { if (writer) writer.releaseLock(); } catch {}
+  try { if (port && (port.readable || port.writable)) await port.close(); } catch {}
+
+  await port.open({ baudRate: baud });
+
+  // Pipe as strings when available for better perf
+  if (typeof TextDecoderStream !== 'undefined') {
+    const tds = new TextDecoderStream();
+    textDecoder = tds;
+    port.readable.pipeTo(tds.writable).catch(() => {});
+    reader = tds.readable.getReader();      // yields strings
+  } else {
+    textDecoder = new TextDecoder();
+    reader = port.readable.getReader();     // yields Uint8Array
+  }
+  writer = port.writable.getWriter();
+
+  await nudgeDTRRTS(); // wake it up a bit
+  return { success: true, baud };
+}
+
+// Auto-detect helper: open, poke, and look for tokens; otherwise close & fail.
+async function probeAtBaud(baud, timeoutMs = 5000) {
+  try {
+    await openAtBaud(baud);
+  } catch (e) {
+    return { success: false, error: e };
+  }
+
+  const enc = new TextEncoder();
+  const poke = async (s) => { try { await writer.write(enc.encode(s)); } catch {} };
+
+  // Send a few CRLFs then M115; some stacks only react to \r\n
+  await poke('\r\n\r\nM115\r\n');
+
+  const deadline = performance.now() + timeoutMs;
+  let buf = '';
+
+  try {
+    while (performance.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      // Normalize to string
+      const chunk = (value instanceof Uint8Array)
+        ? textDecoder.decode(value, { stream: true })
+        : (value ?? '');
+
+      buf += chunk;
+
+      // Accept any of these as "alive":
+      // - Marlin/RepRap M115 banner
+      // - a plain "start"
+      // - an "ok"
+      // - temps like "T:..." or "B:..."
+      if (/FIRMWARE_NAME:|^start\b|^ok\b|T:\s*[-+]?\d|B:\s*[-+]?\d/m.test(buf)) {
+        return { success: true, baud };
+      }
+    }
+  } catch { /* ignore transient read errors during probing */ }
+
+  // No luck: tear down cleanly
+  try { await reader.cancel(); } catch {}
+  try { reader.releaseLock(); } catch {}
+  try { writer.releaseLock(); } catch {}
+  try { await port.close(); } catch {}
+
+  return { success: false };
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 //Critical section helpers
 function beginCritical() { if (criticalDepth++ === 0) stopTempPolling(); }
@@ -977,12 +1262,20 @@ function setConnected(connected) {
     topHotendPill.classList.add('idle');
     topBedPill.classList.add('idle');
     updateTempPanel();
+    // reset live net meter on fresh connect
+    net.txBytesTotal = net.rxBytesTotal = 0;
+    net.txSince = net.rxSince = 0;
+    net.txRate = net.rxRate = 0;
+    net.latencyEMA = null;
+    updateNetUi();
     startTempPolling();
+ startNetMeter();   
     hideEtaPill();
   } else {
     connBadge.textContent = 'Disconnected';
     connBadge.className = 'pill bad';
     stopTempPolling();
+ stopNetMeter();   
     setOfflinePills();
   }
 
@@ -1112,7 +1405,6 @@ async function sendCmdsSequential(...cmds) {
   }
 }
 
-function trace(msg) { console.debug('[TRACE]', msg); }
 
 //Easter EGG
   const resetStreak = () => { streak = 0; };
@@ -1419,9 +1711,11 @@ function promptNumber(message, def) {
 ========================================================= */
 
 //Real Connection
+//Real Connection
 async function connectPrinter() {
   if (isConnecting) return;
   isConnecting = true;
+
   try {
     // Virtual path
     if (virtualMode) {
@@ -1447,43 +1741,42 @@ async function connectPrinter() {
       port = granted[0] || await navigator.serial.requestPort();
     }
 
-    if (!port.readable || !port.writable) {
-      try {
-        await port.open({ baudRate: 115200 });
-      } catch (e) {
-        if (!/already open/i.test(String(e))) throw e;
-        logMsg('Port is already open; reusing existing connection.');
+    const sel = baudSelection();
+    let connectedAt = null;
+
+    if (sel.mode === 'manual') {
+      // Open immediately at the selected baud (no handshake gating)
+      const b = sel.list[0];
+      await openAtBaud(b);
+      connectedAt = b;
+    } else {
+      // Auto-detect: probe each candidate with a longer timeout
+      for (const b of sel.list) {
+        setActivity(`Trying ${b}…`, 'warn');
+        const res = await probeAtBaud(b, 5000);
+        if (res.success) { connectedAt = res.baud; break; }
+        await sleep(180); // brief pause before the next try
       }
     }
 
-    try { if (reader) await reader.cancel(); } catch (e) {}
-    try { if (reader) reader.releaseLock(); } catch (e) {}
-    try { if (writer) writer.releaseLock(); } catch (e) {}
+    if (!connectedAt) {
+      setConnected(false);
+      setActivity('Connect error', 'bad');
+      logMsg('❌ No response at tried baud rates. Try selecting 115200 manually or another cable/port.');
+      connKind = 'none';
+      return;
+    }
 
-// Robust reader setup (works even if TextDecoderStream is missing)
-let useBinaryReader = false; // optional flag if you want to branch on it later
-if (typeof TextDecoderStream !== 'undefined') {
-  const tds = new TextDecoderStream();
-  textDecoder = tds; // keep ref for symmetry
-  port.readable.pipeTo(tds.writable).catch(() => {});
-  reader = tds.readable.getReader();          // yields strings
-} else {
-  // Fallback: read raw bytes and decode manually in readLoop
-  useBinaryReader = true;
-  textDecoder = new TextDecoder();
-  reader = port.readable.getReader();         // yields Uint8Array
-}
-writer = port.writable.getWriter();
-
-
+    // We're open with reader/writer from openAtBaud()/probeAtBaud()
     setConnected(true);
-updateLevelView();
+    sendCmd('M105', true); // prime a latency sample
+    updateLevelView();
     hideEtaPill();
     updateTempPanel();
     startTempPolling();
     updateLastUpdated();
-    setActivity('Connected', 'ok');
-    logMsg('Connected.');
+    setActivity(`Connected @ ${connectedAt}`, 'ok');
+    logMsg(`Connected at ${connectedAt} baud.`);
     if (!reading) readLoop();
 
     connKind = 'real';
@@ -1491,10 +1784,8 @@ updateLevelView();
     setConnected(false);
     setActivity('Connect error', 'bad');
     logMsg(String(err?.message || err));
-
     _rejectAllOk(new Error('Connect failed'));
     hideEtaPill();
-
     connKind = 'none';
   } finally {
     isConnecting = false;
@@ -1618,17 +1909,34 @@ function stopVirtualSim() {
 
 //Send paths
 async function sendCmd(cmd, quiet = false) {
-  // Route commands properly only if we're actually in virtual mode *now*
   if (connKind === 'virtual') {
     return sendCmdVirtual(cmd, quiet);
   }
 
-  if (!writer) { logMsg('⚠️ Not connected.'); return; }
+  // Guardrail first (blocks M104/109 or M140/190 over limits)
+  if (!guardHeaterFromCmd(cmd)) {
+    throw new Error('Heater guardrail blocked high temperature command');
+  }
+
+  if (!writer) {
+    setActivity('Not connected', 'bad');
+    throw new Error('Not connected');
+  }
+
   setLastCmd(cmd);
   setActivity('Sending…', 'warn');
 
-  await writer.write(new TextEncoder().encode(cmd + '\n'));
+  const payload = new TextEncoder().encode(cmd + '\n');
+
+  // ✅ stamp the send time so “ok” without a waiter can update latency
+  lastSendTs = performance.now();
+
+  await writer.write(payload);
   if (!quiet) logMsg('>> ' + cmd);
+
+  // TX metering
+  net.txBytesTotal += payload.length;
+  net.txSince      += payload.length;
 
   updateLastUpdated();
   setActivity('Waiting…', 'warn');
@@ -1636,16 +1944,31 @@ async function sendCmd(cmd, quiet = false) {
 
 async function sendCmdVirtual(cmd, quiet = false) {
   const line = String(cmd).trim();
+
+  // ✅ Heater guardrail (blocks M104/109 >300, M140/190 >130 unless unlocked)
+  if (!guardHeaterFromCmd(line)) {
+    throw new Error('Heater guardrail blocked high temperature command');
+  }
+
   setLastCmd(line);
   setActivity('Sending…', 'warn');
   if (!quiet) logMsg('>> ' + line);
 
+lastSendTs = performance.now();
+
+  // approximate TX size for virtual path (no real serial)
+  const approxLen = line.length + 1; // + '\n'
+  if (typeof net !== 'undefined') {
+    net.txBytesTotal += approxLen;
+    net.txSince      += approxLen;
+  }
+
   const ok = () => {
     setActivity('Waiting…', 'warn');
     setTimeout(() => {
-      // Suppress "ok" for quiet calls and specifically for M105 polling
+      // suppress visible "ok" for quiet calls and for M105 polls
       if (!quiet && !/^M105\b/i.test(line)) logMsg('ok');
-      _resolveNextOk();
+      _resolveNextOk();          // updates latency EMA if a waiter is present
       updateLastUpdated();
       setActivity('Idle');
     }, 60);
@@ -1655,8 +1978,8 @@ async function sendCmdVirtual(cmd, quiet = false) {
     const ht = Number.isFinite(vState.hotTarget) ? vState.hotTarget : 0;
     const bt = Number.isFinite(vState.bedTarget) ? vState.bedTarget : 0;
     const telem = `T:${vState.hot.toFixed(1)} / ${Math.round(ht)} B:${vState.bed.toFixed(1)} / ${Math.round(bt)} @:0 B@:0`;
-    logMsg(telem);             // will be auto-suppressed by logMsg when Debug is off
-    refreshVirtualTemps();     // update pills/panels immediately in virtual mode
+    logMsg(telem);
+    refreshVirtualTemps();
   };
 
   switch (true) {
@@ -1667,20 +1990,19 @@ async function sendCmdVirtual(cmd, quiet = false) {
       break;
     }
 
-case /^M303\b/i.test(line): {
-  const eParam = line.match(/\bE\s*(-?\d+)/i);
-  const cParam = line.match(/\bC\s*(\d+)/i);
-  const tool = eParam ? (parseInt(eParam[1], 10) === -1 ? 'bed' : 'hotend') : 'hotend';
-  const cycles = cParam ? Math.max(1, Math.min(20, parseInt(cParam[1], 10))) : 5;
+    // --- PID autotune sim ---
+    case /^M303\b/i.test(line): {
+      const eParam = line.match(/\bE\s*(-?\d+)/i);
+      const cParam = line.match(/\bC\s*(\d+)/i);
+      const tool = eParam ? (parseInt(eParam[1], 10) === -1 ? 'bed' : 'hotend') : 'hotend';
+      const cycles = cParam ? Math.max(1, Math.min(20, parseInt(cParam[1], 10))) : 5;
 
-  logMsg(`PID Autotune start (${tool}) C=${cycles}`);
-  setPidActive(tool, true);
-
-  // Simulate ~0.6s per cycle (tweak as you like)
-  setTimeout(() => logMsg('PID Autotune finished'), Math.round(cycles * 600));
-  ok();
-  break;
-}
+      logMsg(`PID Autotune start (${tool}) C=${cycles}`);
+      setPidActive(tool, true);
+      setTimeout(() => logMsg('PID Autotune finished'), Math.round(cycles * 600));
+      ok();
+      break;
+    }
 
     // --- Targets / basic controls ---
     case /^M104\b/i.test(line): {
@@ -1727,35 +2049,32 @@ case /^M303\b/i.test(line): {
       break;
     }
 
-// --- Mesh report (G29 T) ---
-case /^G29\b/i.test(line) && /\bT\b/i.test(line): {
-  const hasMock = Array.isArray(mockMesh) && mockMesh.length > 0;
-
-  if (hasMock) {
-    for (const raw of mockMesh) {
-      const l = String(raw).trim();
-      if (!l || /^ok\b/i.test(l)) continue;   // avoid double "ok"
-      logMsg(l);                               // show in log
-      processMeshLineFromAnywhere(l);          // parse + update UI
+    // --- Mesh report (G29 T) ---
+    case /^G29\b/i.test(line) && /\bT\b/i.test(line): {
+      const hasMock = Array.isArray(mockMesh) && mockMesh.length > 0;
+      if (hasMock) {
+        for (const raw of mockMesh) {
+          const l = String(raw).trim();
+          if (!l || /^ok\b/i.test(l)) continue;
+          logMsg(l);
+          processMeshLineFromAnywhere(l);
+        }
+      } else {
+        const rows = [
+          [ -0.120, -0.080, -0.035, -0.010 ],
+          [ -0.075, -0.030,  0.005,  0.020 ],
+          [ -0.040,  0.000,  0.030,  0.050 ],
+          [ -0.010,  0.020,  0.055,  0.070 ],
+        ];
+        rows.forEach((vals, y) => {
+          const l = `${y}  ${vals.map(v => (v >= 0 ? `+${v.toFixed(3)}` : v.toFixed(3))).join('  ')}`;
+          logMsg(l);
+          processMeshLineFromAnywhere(l);
+        });
+      }
+      ok();
+      break;
     }
-  } else {
-    // fallback demo grid if no mockMesh provided
-    const rows = [
-      [ -0.120, -0.080, -0.035, -0.010 ],
-      [ -0.075, -0.030,  0.005,  0.020 ],
-      [ -0.040,  0.000,  0.030,  0.050 ],
-      [ -0.010,  0.020,  0.055,  0.070 ],
-    ];
-    rows.forEach((vals, y) => {
-      const l = `${y}  ${vals.map(v => (v >= 0 ? `+${v.toFixed(3)}` : v.toFixed(3))).join('  ')}`;
-      logMsg(l);
-      processMeshLineFromAnywhere(l);
-    });
-  }
-
-  ok(); // resolve the command
-  break;
-}
 
     // --- Info / diagnostics ---
     case /^M115\b/i.test(line): {
@@ -1789,6 +2108,7 @@ case /^G29\b/i.test(line) && /\bT\b/i.test(line): {
 }
 
 //Read and parse loop
+// --- replace your readLoop() with this (adds RX metering, preserves your parsing) ---
 async function readLoop() {
   reading = true;
   try {
@@ -1801,6 +2121,19 @@ async function readLoop() {
         break;
       }
       if (value == null) continue;
+
+      // --- RX metering ---
+      if (value instanceof Uint8Array) {
+        if (typeof net !== 'undefined') {
+          net.rxBytesTotal += value.length;
+          net.rxSince      += value.length;
+        }
+      } else if (typeof value === 'string') {
+        if (typeof net !== 'undefined') {
+          net.rxBytesTotal += value.length;
+          net.rxSince      += value.length;
+        }
+      }
 
       // Normalize chunk to string for both reader types
       const chunk = (value instanceof Uint8Array)
@@ -1816,6 +2149,7 @@ async function readLoop() {
         if (!line) continue;
 
         // --- Temp parsing (M105-style telemetry) ---
+        // gated by captureMode so M115/M122 dumps don't clobber temps
         const tMatch = !captureMode && line.match(TEMP_T);
         const bMatch = !captureMode && line.match(TEMP_B);
 
@@ -1826,9 +2160,7 @@ async function readLoop() {
             temps.hot = tCur;
             temps.hotTarget = Number.isFinite(tTar) ? tTar : null;
 
-            // ambient sampling for hotend
             _pushAmbientSample('hot', temps.hot ?? 0, temps.hotTarget);
-
             setTempPill(topHotendPill, topHotendText, temps.hot, temps.hotTarget, 'hotend');
           }
         }
@@ -1839,9 +2171,7 @@ async function readLoop() {
             temps.bed = bCur;
             temps.bedTarget = Number.isFinite(bTar) ? bTar : null;
 
-            // ambient sampling for bed
             _pushAmbientSample('bed', temps.bed ?? 0, temps.bedTarget);
-
             setTempPill(topBedPill, topBedText, temps.bed, temps.bedTarget, 'bed');
           }
         }
@@ -1891,14 +2221,14 @@ async function readLoop() {
         }
 
         // ---- Probe completion latch (no timeout) ----
-if (probeLatch) {
-  if (
-    out.includes('//action:notification Settings Stored') || // exact DWIN save event
-    /Bilinear Leveling Grid:/i.test(out)                     // fallback
-  ) {
-    try { probeLatch.resolve(); } finally { probeLatch = null; }
-  }
-}
+        if (probeLatch) {
+          if (
+            out.includes('//action:notification Settings Stored') || // exact DWIN save event
+            /Bilinear Leveling Grid:/i.test(out)                     // fallback
+          ) {
+            try { probeLatch.resolve(); } finally { probeLatch = null; }
+          }
+        }
 
         // --- PID state hints (don't override if already set) ---
         if (/PID Autotune start/i.test(out)) {
@@ -1909,16 +2239,14 @@ if (probeLatch) {
             } else if (/\(hotend\)/i.test(out) || /\bE0\b/i.test(out) || /\bHOTEND\b/i.test(out)) {
               setPidActive('hotend', true);
             } else {
-              setPidActive('hotend', true); // default if unknown
+              setPidActive('hotend', true);
             }
           }
         }
-
         if (/PID Autotune finished/i.test(out)) {
           setActivity('PID tuning complete', 'ok');
           clearAllPidUi();
         }
-
         if (/PID Autotune failed/i.test(out)) {
           setActivity('PID tuning failed', 'bad');
           clearAllPidUi();
@@ -1934,7 +2262,6 @@ if (probeLatch) {
     }
   } catch (err) {
     logMsg('⚠️ Read error: ' + (err?.message || err));
-    // Treat any read error as a lost connection unless we're already tearing down
     if (!isDisconnecting) await disconnectPrinter('lost');
   } finally {
     reading = false;
@@ -1954,17 +2281,38 @@ function waitForOk() {
     if (isReal && (!port || !writer)) { wrapReject(new Error('Disconnected')); return; }
     if (cancelStream) { wrapReject(new Error('Cancelled')); return; }
 
-    pendingOk.push({ resolve: wrapResolve, reject: wrapReject });
+    pendingOk.push({ resolve: wrapResolve, reject: wrapReject, startedAt: performance.now() });
   });
 }
 
 function _resolveNextOk() {
   const waiter = pendingOk.shift();
   if (waiter) {
-    try { waiter.resolve(); }
-    finally { if (pendingOk.length === 0) endCritical(); }
+    const ms = (typeof waiter.startedAt === 'number')
+      ? (performance.now() - waiter.startedAt)
+      : null;
+
+    try { waiter.resolve(); } finally {
+      if (ms != null && typeof updateLatency === 'function') {
+        updateLatency(ms);
+      }
+      // ✅ avoid stale measurements on the next ok
+      lastSendTs = null;
+
+      if (pendingOk.length === 0) endCritical();
+    }
+  } else {
+    if (lastSendTs != null) {
+      const ms = performance.now() - lastSendTs;
+      lastSendTs = null;                 // consume this measurement
+      if (ms > 0 && isFinite(ms) && typeof updateLatency === 'function') {
+        updateLatency(ms);
+      }
+    }
   }
 }
+
+
 
 function _rejectAllOk(err) {
   const all = pendingOk.splice(0);
@@ -2070,7 +2418,7 @@ async function reprobe(){
 function sendManual(){
   const cmd = manualCmd.value.trim();
   if (!cmd) return;
-  sendCmd(cmd);
+  sendCmd(cmd).catch(err => logMsg('⚠️ ' + (err?.message || 'Send failed')));
   manualCmd.value = '';
 }
 
@@ -2264,6 +2612,25 @@ async function markHomedAfterG28() {
    9) EVENT LISTENERS
 ========================================================= */
 
+
+// --- Unlock button: remove any old listeners, bind once ---
+(function bindUnlockClean(){
+  const oldBtn = document.getElementById('unlockTempsBtn'); // correct id
+  if (!oldBtn) return;
+  const newBtn = oldBtn.cloneNode(true);          // drop any old listeners
+  oldBtn.parentNode.replaceChild(newBtn, oldBtn);
+
+  newBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    setHeaterUnlocked(!heaterUnlocked);           // ← this alone
+  });
+})();
+
+
+
+
+
 //Connection
 connectBtn.addEventListener('click', () => { trace('Connect button'); connectPrinter(); });
 
@@ -2271,7 +2638,6 @@ disconnectBtn.addEventListener('click', () => {
   trace('Disconnect button');
   disconnectPrinter('user');
 });
-
 
 //Leveling
 exportMeshBtn.addEventListener('click', () => {
@@ -2321,13 +2687,19 @@ manualCmd.addEventListener('input', () => { captureMode = null; });
 clearLogBtn.addEventListener('click', () => { printerLog.textContent = ''; });
 
 //Temps and fan
-hotendApply.addEventListener('click', () =>
-  sendCmd(`M104 S${Math.max(0, Math.min(300, parseInt(hotendSet.value)||0))}`));
+hotendApply.addEventListener('click', () => {
+  const val = Math.max(0, Math.min(3000, parseInt(hotendSet.value) || 0)); // clamp silly inputs
+  if (!guardHeaterSet('hotend', val, 'Hotend Set')) return;
+  sendCmd(`M104 S${val}`);
+});
 
 hotendOff.addEventListener('click',   () => sendCmd('M104 S0'));
 
-bedApply.addEventListener('click',    () =>
-  sendCmd(`M140 S${Math.max(0, Math.min(130, parseInt(bedSet.value)||0))}`));
+bedApply.addEventListener('click', () => {
+  const val = Math.max(0, Math.min(3000, parseInt(bedSet.value) || 0));
+  if (!guardHeaterSet('bed', val, 'Bed Set')) return;
+  sendCmd(`M140 S${val}`);
+});
 
 bedOff.addEventListener('click',      () => sendCmd('M140 S0'));
 
@@ -2414,6 +2786,7 @@ loadFil.addEventListener('click', async () => {
   const mm   = parseFloat(safePrompt('How many mm to LOAD?', '60'));
   if (!Number.isFinite(mm) || mm <= 0) return;
   const temp = parseFloat(safePrompt('Hotend temp for load (°C)?', '200'));
+if (!guardHeaterSet('hotend', temp, 'Filament Load')) return;
   if (!Number.isFinite(temp) || temp <= 0) return;
   try {
     await sendCmd('G28');                    await waitForOk().catch(()=>{});
@@ -2437,6 +2810,7 @@ unloadFil.addEventListener('click', async () => {
   const mm   = parseFloat(safePrompt('How many mm to UNLOAD?', '60'));
   if (!Number.isFinite(mm) || mm <= 0) return;
   const temp = parseFloat(safePrompt('Hotend temp for unload (°C)?', '200'));
+if (!guardHeaterSet('hotend', temp, 'Filament Unload')) return;
   if (!Number.isFinite(temp) || temp <= 0) return;
   try {
     await sendCmd('G28');                    await waitForOk().catch(()=>{});
@@ -2572,6 +2946,7 @@ if (virtualToggle) {
   setOfflinePills();
   updateLevelView();
   initPrinterName();
+  updateUnlockUi();
 })();
 </script>
 </body>
