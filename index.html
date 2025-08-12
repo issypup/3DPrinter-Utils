@@ -598,8 +598,8 @@ const screwAffects = {
 const NOISY_REGEX = /^(?:echo:busy:\s*processing|\/\/action:.*|setnewscreen(?:\s*\([^)]*\))?:?.*|invoking handler for screen.*)/i;
 const POS_REGEX   = /X:?\s*([+-]?\d*\.?\d+)\s+Y:?\s*([+-]?\d*\.?\d+)\s+Z:?\s*([+-]?\d*\.?\d+)/i;
 
-const TEMP_T = /T\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
-const TEMP_B = /B\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
+const TEMP_T = /\bT\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
+const TEMP_B = /\bB\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
 
 const TELEMETRY_REGEX =
   /(?:\bT\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|(?:\bB\d?:\s*[-+]?\d*\.?\d+(?:\s*\/\s*[-+]?\d*\.?\d+)?)|(?:\b@:\s*\d+)|(?:\bB@:\s*\d+)/i;
@@ -1813,8 +1813,8 @@ async function readLoop() {
         if (!line) continue;
 
         // --- Temp parsing (M105-style telemetry) ---
-        const tMatch = line.match(TEMP_T);
-        const bMatch = line.match(TEMP_B);
+        const tMatch = !captureMode && line.match(TEMP_T);
+        const bMatch = !captureMode && line.match(TEMP_B);
 
         if (tMatch) {
           const tCur = parseFloat(tMatch[1]);
@@ -2287,27 +2287,7 @@ exportMeshBtn.addEventListener('click', () => {
 });
 
 resetBtn.addEventListener('click', () => {
-  if (!safeConfirm('Reset saved leveling data? (connection will stay active)')) return;
-
-  // remove saved meshes only
-  localStorage.removeItem('levels');
-
-  // clear scratch + UI grid
-  resetMeshScratch();
-  renderMeshInputs(Array.from({ length: 4 }, () => Array(4).fill('')));
-  screwTable.innerHTML = '';
-
-  // clear the screw layout map cells
-  ['A1','A2','A3','B1','B2','B3','B4','C1','C2','C3','C4'].forEach(id => {
-    const cell = document.getElementById(id);
-    if (cell) { cell.className = ''; cell.textContent = ''; }
-  });
-
-  updateLastUpdated();
-  setActivity('Leveling data cleared', 'ok');
-
-  // refresh button enable/disable state (export button etc.)
-  if (typeof updateLevelView === 'function') updateLevelView();
+if (safeConfirm('Reset all saved data?')) { localStorage.clear(); location.reload(); }
 });
 
 readMeshBtn.addEventListener('click', homeAndProbe);
