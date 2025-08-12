@@ -1,0 +1,142 @@
+Connection & device support:
+
+Manual baud rate selector + auto-detect. (added needs testing)
+
+Live indicator of RX/TX throughput/latency.
+
+Soft “Are you sure?” gate before sending manual G-codes
+
+
+Safety & fail-safes:
+Big red EMERGENCY STOP button (M112 or best available for fw).
+
+Heater guardrail: block >300°C hotend / >130°C bed unless “unlock”.
+
+Safe Z-lift before risky moves incase of collision e.g. Z 100 (e.g., park, filament ops).
+
+“Pre-flight checklist” modal (bed clear? etc)
+
+
+Temperature & environment:
+
+Live graph of temps + fan speed + M73 %.
+
+Ambient autodetect (you already have plateau logic) shown as a dedicated badge.
+
+Cold extrusion lock warning (if E move while hotend <170°C).
+
+Store/compare PID curves (see #PID) side-by-side.
+
+
+Motion & axes:
+Feedrate override knob (M220) with % display.
+
+Flow override knob (M221) with % display
+
+Velocity/accel/jerk quick tuner (M201/M203/M204/M205 sliders + apply).
+
+Extrusion calibration wizard (E-steps 100mm measure).
+
+
+PID & calibration:
+PID plot: temperature vs time with overshoot/settle metrics graph.
+
+Bed PID vs hotend PID quick tips inline (contextual help).
+
+
+G-code sender & job control:
+Layer-aware preview: quick 2D G-code renderer with scrubber and live “now printing layer” highlight.
+
+G-code preflight analyzer service (time/filament estimates, temp/profile mismatches, unsafe commands).
+Spool sufficiency check: compare job estimate vs remaining filament; warn/require confirmation if short.
+
+Chunked file hashing + basic integrity check before send.
+
+Print Queue Panel — queue multiple files, rearrange, auto-start next.
+
+Alerts: browser notifications (and Web Push optional) for finish/error.
+
+Beep/bell on start, beep on finish
+
+Filament usage estimator: parse G-code, subtract from per-spool inventory; warn when a job will exceed remaining.
+
+
+Maintenance & service:
+Nozzle wipe + prime line macro. (heat to 200 with bed of 60)
+
+have one extra filament button on maintance tab which user can set the filament type and tempatures(nozzle/bed)
+
+Fan test (cycle through 0/128/255 and record RPM if available).
+
+Maintenance logbook (notes + dates).
+
+EEPROM / firmware / profiles:
+Smart M503 parser to structured fields (steps/mm, accel, etc.).
+
+Firmware flavor detector (Marlin/Klipper/RepRap clues).
+
+Test generator suite: temperature tower, retraction test, acceleration/jerk test—auto-insert height-based changes.
+
+XYZ cube assistant: after you input caliper readings, it computes step/mm or flow correction suggestions.
+
+Thermistor plausibility: reject temps that jump outside of range e.g 300 and negatice values. (warn of thermistor / heater failure)
+
+
+UI/UX & accessibility:
+Mobile-optimized header (stacked pills, bigger taps).
+
+Toast notifications for quick actions.
+
+Inline “why disabled?” tooltips on buttons.
+
+Theming support (light/dark/Custom).
+
+Per-tab “help” drawer with mini docs.
+
+Start/End G-code editors
+
+quickstart guide on first start (guided tooltips)
+
+
+Filament Tab:
+Core fields
+Spool ID (auto), Brand, Material (PLA/PETG/ABS/TPU/Nylon/…) (user inputs)
+
+Diameter (1.75 / 2.85), Density (g/cm³; default by material but editable) (user input)
+
+Color + hex, Finish (matte/silk/carbon/glow) (user input)
+
+Tare (empty spool) weight (g) (user input)
+
+Net capacity (labelled, e.g., 1000 g), Cost (total or per-kg) (user input)
+
+Lot/batch, Purchase date, Vendor link (user input)
+
+Weight & usage tracking:
+
+Auto-deduct after print: subtract estimated used grams when a job completes.
+
+G-code usage estimator: parse E-extrusion to compute volume → mass (details below).
+
+Nice UX touches
+Spool library list: search, filter by material/color/remaining, sort by “most remaining.”
+
+QR/barcode: print a label (spool ID + QR with all details)
+
+Quick actions: “Weigh now,” “Deduct 5 g purge,” “Mark as empty,”
+
+Unit sanity: disallow negative masses, diameter ≠ 0
+
+
+
+Containerized slicer service (CuraEngine/PrusaSlicer CLI) + preset management.
+
+Notification service (email/Slack/Discord/Pushover) with rules (job done, error, temp reached).
+
+Maintenance scheduler (usage counters, hours, cycles)(check belt tension, check nozzle, check bed etc..)
+
+Heater interlocks: require part cooling fan off during PID; block probing while bed > threshold.
+
+ETA v2: hybrid model (path length, extrusion volume, board RTT) with online learning.
+
+Safety heuristics engine: detect dangerous sequences (e.g., Z- move before homing) and block with reason.
