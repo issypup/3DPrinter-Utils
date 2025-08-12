@@ -229,6 +229,7 @@
   <button data-tab="moveTab">Movement & Axes</button>
   <button data-tab="eepromTab">EEPROM / Config</button>
   <button data-tab="maintTab">Maintenance</button>
+  <button data-tab="filamentTab">Filament</button>
   <button data-tab="diagTab">Diagnostics</button>
   <button data-tab="senderTab">G-code Sender</button>
   <button data-tab="aboutTab">About</button>
@@ -463,10 +464,134 @@
       <div class="label">Nozzle Prep</div>
       <button id="primeLine" disabled>Wipe + Prime Line</button>
     </div>
+      <div class="box col" style="margin-top:8px; max-width:840px">
+    <div class="label">Maintenance logbook</div>
+    <form id="maintForm" class="row" style="align-items:flex-start">
+      <input id="maintDate" type="date" />
+      <textarea id="maintNote" class="widen" rows="2" placeholder="What did you do? (e.g., Cleaned bed, lubed Z lead screw)"></textarea>
+      <button id="maintSave" type="submit">Save</button>
+      <button id="maintReset" type="button">Reset</button>
+    </form>
+
+    <div class="row" style="justify-content:space-between; margin-top:4px">
+      <div class="muted" id="maintSummary">—</div>
+      <div class="row">
+        <button id="maintExport" type="button">Export JSON</button>
+        <button id="maintClearAll" type="button">Clear all</button>
+      </div>
+    </div>
+
+    <table style="width:100%; margin-top:8px">
+      <thead>
+        <tr><th style="width:120px">Date</th><th>Note</th><th style="width:160px">Actions</th></tr>
+      </thead>
+      <tbody id="maintTable"></tbody>
+    </table>
+  </div>
   </div>
 </div>
 
-<!-- TAB 8: Diagnostics -->
+<!-- TAB 8: Filament -->
+<div id="filamentTab" class="tabContent">
+  <div class="row" style="gap:12px; align-items:flex-start">
+    <!-- Form: Add/Edit spool -->
+    <form id="spoolForm" class="box col" style="min-width:300px; max-width:420px">
+      <div class="label">Spool details</div>
+      <div class="row">
+        <input id="spBrand"  class="widen" placeholder="Brand (e.g., eSun)"/>
+        <input id="spMaterial" class="widen" list="matList" placeholder="Material (PLA/PETG/ABS/TPU/Nylon/…)" />
+        <datalist id="matList">
+          <option>PLA</option><option>PETG</option><option>ABS</option>
+          <option>TPU</option><option>Nylon</option><option>PC</option><option>PVA</option>
+        </datalist>
+      </div>
+
+      <div class="row">
+        <label>Ø
+          <select id="spDiameter">
+            <option value="1.75" selected>1.75</option>
+            <option value="2.85">2.85</option>
+          </select> mm
+        </label>
+        <label>Density
+          <input id="spDensity" type="number" step="0.01" min="0.5" max="3" value="1.24" style="width:110px"/> g/cm³
+        </label>
+      </div>
+
+      <div class="row">
+        <input id="spColorName" class="widen" placeholder="Color name (e.g., Deep Black)"/>
+        <label>Hex <input id="spColorHex" type="color" value="#000000" /></label>
+        <input id="spFinish" class="widen" placeholder="Finish (matte/silk/carbon/glow)"/>
+      </div>
+
+      <div class="row">
+        <label>Tare <input id="spTare" type="number" step="1" min="0" value="250" style="width:120px"/> g</label>
+        <label>Capacity <input id="spCapacity" type="number" step="1" min="0" value="1000" style="width:120px"/> g</label>
+      </div>
+
+      <div class="row">
+        <label>Total $ <input id="spCostTotal" type="number" step="0.01" min="0" style="width:110px"/></label>
+        <label>$/kg <input id="spCostPerKg" type="number" step="0.01" min="0" style="width:110px"/></label>
+      </div>
+
+      <div class="row">
+        <input id="spLot" class="widen" placeholder="Lot / batch"/>
+        <label>Date <input id="spDate" type="date" style="width:160px"/></label>
+      </div>
+
+      <input id="spVendor" class="widen" placeholder="Vendor link (https://…)" />
+
+      <div class="row" style="justify-content:flex-end; gap:8px; margin-top:8px">
+        <button id="spReset" type="button">Reset</button>
+        <button id="spSave"  type="submit">Save spool</button>
+      </div>
+
+      <div class="muted" id="spFormHint">Spool ID: <span id="spIdShow">— (new)</span></div>
+    </form>
+
+    <!-- Library / List -->
+    <div class="box col" style="flex:1 1 420px">
+      <div class="row" style="gap:8px; flex-wrap:wrap">
+        <input id="spSearch" class="widen" placeholder="Search brand/color/ID…"/>
+        <select id="spMatFilter">
+          <option value="">All materials</option>
+          <option>PLA</option><option>PETG</option><option>ABS</option>
+          <option>TPU</option><option>Nylon</option><option>PC</option><option>PVA</option>
+        </select>
+        <label><input id="spOnlyRemaining" type="checkbox" checked/> Only with remaining</label>
+        <select id="spSort">
+          <option value="remainingDesc" selected>Sort: Most remaining</option>
+          <option value="brandAsc">Brand A→Z</option>
+          <option value="materialAsc">Material A→Z</option>
+          <option value="createdDesc">Newest first</option>
+        </select>
+        <label style="margin-left:auto">Active:
+          <select id="spActiveSel" style="min-width:200px"></select>
+        </label>
+        <button id="spPrintLbl" type="button">Print label</button>
+      </div>
+
+      <div class="row" style="gap:8px; margin-top:6px">
+        <button id="spWeigh"  type="button">Weigh now</button>
+        <button id="spDeduct5" type="button">Deduct…</button>
+        <button id="spMarkEmpty" type="button">Mark as empty</button>
+      </div>
+
+      <table style="width:100%; margin-top:10px">
+        <thead>
+          <tr>
+            <th>ID</th><th>Brand</th><th>Mat</th><th>Color</th>
+            <th>Ø</th><th>Remain (g)</th><th>Cap (g)</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="spTable"></tbody>
+      </table>
+      <div class="muted" id="spSummary" style="margin-top:6px">—</div>
+    </div>
+  </div>
+</div>
+
+<!-- TAB 9: Diagnostics -->
 <div id="diagTab" class="tabContent">
   <div class="row box">
     <button id="fwInfo" disabled>Firmware Info (M115)</button>
@@ -475,7 +600,7 @@
   <textarea id="diagBox" class="widen" rows="14" placeholder="Diagnostics output…"></textarea>
 </div>
 
-<!-- TAB 9: G-code Sender -->
+<!-- TAB 10: G-code Sender -->
 <div id="senderTab" class="tabContent">
   <div class="row box">
     <input type="file" id="gcodeFile" accept=".gcode,.gco,.gc,.txt" />
@@ -530,7 +655,7 @@
 
 </div>
 
-<!-- TAB 10: About -->
+<!-- TAB 11: About -->
 <div id="aboutTab" class="tabContent">
   <div class="aboutCard">
     <h2>About</h2>
@@ -551,8 +676,6 @@
 </div>
 </div>
 
-
-
 <div id="footerStatus">
   <span id="lastCmd">Last Cmd: —</span>
   <span>GitHub Pages ready · LocalStorage only</span>
@@ -570,6 +693,39 @@ const BEEP_BROWSER_ON = true;   // browser chime via Web Audio
 const BEEP_PRINTER_ON = false;  // send M300 to the printer (off by default)
 const primeLine = document.getElementById('primeLine');
 
+// =============== FILAMENT: DOM refs ===============
+const spoolForm = document.getElementById('spoolForm');
+const spIdShow = document.getElementById('spIdShow');
+const spBrand = document.getElementById('spBrand');
+const spMaterial = document.getElementById('spMaterial');
+const spDiameter = document.getElementById('spDiameter');
+const spDensity = document.getElementById('spDensity');
+const spColorName = document.getElementById('spColorName');
+const spColorHex = document.getElementById('spColorHex');
+const spFinish = document.getElementById('spFinish');
+const spTare = document.getElementById('spTare');
+const spCapacity = document.getElementById('spCapacity');
+const spCostTotal = document.getElementById('spCostTotal');
+const spCostPerKg = document.getElementById('spCostPerKg');
+const spLot = document.getElementById('spLot');
+const spDate = document.getElementById('spDate');
+const spVendor = document.getElementById('spVendor');
+const spReset = document.getElementById('spReset');
+const spSave = document.getElementById('spSave');
+
+const spSearch = document.getElementById('spSearch');
+const spMatFilter = document.getElementById('spMatFilter');
+const spOnlyRemaining = document.getElementById('spOnlyRemaining');
+const spSort = document.getElementById('spSort');
+const spActiveSel = document.getElementById('spActiveSel');
+const spPrintLbl = document.getElementById('spPrintLbl');
+
+const spWeigh = document.getElementById('spWeigh');
+const spDeduct5 = document.getElementById('spDeduct5');
+const spMarkEmpty = document.getElementById('spMarkEmpty');
+
+const spTable = document.getElementById('spTable');
+const spSummary = document.getElementById('spSummary');
 
 //Toggles and core controls
 const debugToggle     = document.getElementById('debugToggle');
@@ -683,10 +839,6 @@ const HOME_SIG_DEFAULT = { x: 117, y: 117, z: 10.0, tolX: 2.0, tolY: 2.0, tolZ: 
 
 
 
-
-
-
-
 //Mesh and screws map
 const screwAffects = {
   A1: [[0,0],[0,1],[1,0],[1,1]],
@@ -701,6 +853,143 @@ const screwAffects = {
   C3: [[2,2],[2,3],[3,2],[3,3]],
   C4: [[3,3]]
 };
+
+
+// ===== Maintenance Logbook =====
+const LS_MAINT = 'maintLog';
+let maint = [];               // [{id, dateISO, note, createdTs}]
+let maintEditingId = null;
+
+// DOM refs (Maintenance)
+const maintForm     = document.getElementById('maintForm');
+const maintDate     = document.getElementById('maintDate');
+const maintNote     = document.getElementById('maintNote');
+const maintSaveBtn  = document.getElementById('maintSave');
+const maintResetBtn = document.getElementById('maintReset');
+const maintTable    = document.getElementById('maintTable');
+const maintSummary  = document.getElementById('maintSummary');
+const maintExport   = document.getElementById('maintExport');
+const maintClearAll = document.getElementById('maintClearAll');
+
+function loadMaint() {
+  try { maint = JSON.parse(localStorage.getItem(LS_MAINT) || '[]'); }
+  catch { maint = []; }
+}
+function saveMaint() {
+  localStorage.setItem(LS_MAINT, JSON.stringify(maint));
+}
+function genMaintId() {
+  return 'M' + Date.now().toString(36) + Math.random().toString(36).slice(2,5).toUpperCase();
+}
+function clearMaintForm() {
+  maintEditingId = null;
+  maintDate.value = new Date().toISOString().slice(0,10); // today
+  maintNote.value = '';
+  maintSaveBtn.textContent = 'Save';
+}
+function renderMaint() {
+  // newest first
+  const rows = [...maint].sort((a,b) => (b.dateISO||'').localeCompare(a.dateISO) || b.createdTs - a.createdTs)
+    .map(m => {
+      const d = m.dateISO || '—';
+      const n = (m.note || '').replace(/</g,'&lt;');
+      return `<tr>
+        <td>${d}</td>
+        <td style="text-align:left">${n}</td>
+        <td>
+          <button type="button" data-edit="${m.id}">Edit</button>
+          <button type="button" data-del="${m.id}">Delete</button>
+        </td>
+      </tr>`;
+    }).join('');
+  maintTable.innerHTML = rows || `<tr><td colspan="3" class="muted">No maintenance recorded yet.</td></tr>`;
+  maintSummary.textContent = `${maint.length} entr${maint.length===1?'y':'ies'}`;
+}
+
+function upsertMaintFromForm() {
+  const dateISO = maintDate.value || new Date().toISOString().slice(0,10);
+  const note = maintNote.value.trim();
+  if (!note) { alert('Please enter a note.'); return; }
+
+  if (maintEditingId) {
+    const i = maint.findIndex(m => m.id === maintEditingId);
+    if (i !== -1) {
+      maint[i].dateISO = dateISO;
+      maint[i].note = note;
+    }
+  } else {
+    maint.push({
+      id: genMaintId(),
+      dateISO,
+      note,
+      createdTs: Date.now()
+    });
+  }
+  saveMaint();
+  clearMaintForm();
+  renderMaint();
+}
+
+function editMaint(id) {
+  const m = maint.find(x => x.id === id);
+  if (!m) return;
+  maintEditingId = id;
+  maintDate.value = m.dateISO || new Date().toISOString().slice(0,10);
+  maintNote.value = m.note || '';
+  maintSaveBtn.textContent = 'Update';
+}
+
+function deleteMaint(id) {
+  const i = maint.findIndex(x => x.id === id);
+  if (i === -1) return;
+  if (!confirm('Delete this entry?')) return;
+  maint.splice(i, 1);
+  saveMaint();
+  renderMaint();
+}
+
+// Event wiring
+maintForm?.addEventListener('submit', (e) => { e.preventDefault(); upsertMaintFromForm(); });
+maintResetBtn?.addEventListener('click', clearMaintForm);
+
+maintTable?.addEventListener('click', (e) => {
+  const t = e.target;
+  if (t.matches('button[data-edit]')) editMaint(t.getAttribute('data-edit'));
+  if (t.matches('button[data-del]'))  deleteMaint(t.getAttribute('data-del'));
+});
+
+maintExport?.addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(maint, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'maintenance-log.json'; a.click();
+  URL.revokeObjectURL(url);
+});
+
+maintClearAll?.addEventListener('click', () => {
+  if (!maint.length) return;
+  if (!confirm('Clear ALL maintenance entries?')) return;
+  maint = [];
+  saveMaint();
+  renderMaint();
+});
+
+// Initialize logbook once on load
+(function maintInit(){
+  if (!maintForm) return; // in case markup not present
+  loadMaint();
+  clearMaintForm();
+  renderMaint();
+})();
+
+
+//Filament
+const DEFAULT_DENSITY = {
+  'PLA': 1.24, 'PETG': 1.27, 'ABS': 1.04, 'TPU': 1.21, 'Nylon': 1.15,
+  'PC': 1.20, 'PVA': 1.23
+};
+const LS_SPOOLS = 'spools';
+const LS_ACTIVE = 'activeSpoolId';
 
 //Regex
 const NOISY_REGEX = /^(?:echo:busy:\s*processing|\/\/action:.*|setnewscreen(?:\s*\([^)]*\))?:?.*|invoking handler for screen.*)/i;
@@ -771,12 +1060,11 @@ let lastSendTs = null;
 
 let heaterUnlocked = JSON.parse(localStorage.getItem('heaterUnlocked') || 'false');
 
-
-
-
-
-
-
+//Filament
+let spools = [];
+let activeSpoolId = null;
+let editingId = null;
+let _pendingFilament = null;
 
 //UI and State flags
 let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
@@ -855,11 +1143,534 @@ let streak = 0;
 ========================================================= */
 
 
+function genSpoolId() {
+  const t = Date.now().toString(36).slice(-5);
+  const r = Math.floor(Math.random() * 0xffff).toString(36).padStart(3, '0');
+  return `S-${t}${r}`.toUpperCase();
+}
+
+function saveSpools() {
+  localStorage.setItem(LS_SPOOLS, JSON.stringify(spools));
+}
 
 
+function loadSpools() {
+  try {
+    spools = JSON.parse(localStorage.getItem(LS_SPOOLS) || '[]');
+  } catch {
+    spools = [];
+  }
+}
+
+function saveActive(id) {
+  activeSpoolId = id || null;
+  localStorage.setItem(LS_ACTIVE, activeSpoolId || '');
+}
+
+function materialDensityGuess(mat) {
+  const k = String(mat || '').trim().toUpperCase();
+  // Common aliases
+  if (k === 'PA' || k.startsWith('PA')) return DEFAULT_DENSITY.NYLON; // PA/PA12/PA6
+  return DEFAULT_DENSITY[k] ?? null;
+}
 
 
+function findSpool(id) {
+  return spools.find(s => s.id === id) || null;
+}
 
+function formatG(x) {
+  return Number.isFinite(x) ? Math.round(x) : '—';
+}
+
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function fillDensityByMaterial() {
+  if (!window.spMaterial || !window.spDensity) return;
+  const d = materialDensityGuess(spMaterial.value);
+  if (d != null) {
+    spDensity.value = d.toFixed(2);
+    spDensity.dataset.auto = '1';
+  } else {
+    spDensity.value = '';
+    delete spDensity.dataset.auto;
+  }
+}
+
+// On init (where you wire your form):
+spMaterial.addEventListener('change', fillDensityByMaterial);
+
+// After you populate the form (writeForm/clearForm), call this so the field matches:
+fillDensityByMaterial();
+
+function qrUrlForSpool(s) {
+  const payload = encodeURIComponent(JSON.stringify({
+    id: s.id,
+    brand: s.brand,
+    mat: s.material,
+    dia: s.diameter,
+    dens: s.density,
+    color: s.colorHex,
+    cap: s.capacityG,
+    rem: s.remainingG
+  }));
+  return `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${payload}`;
+}
+
+function openPrintLabel(s) {
+  const w = window.open('', '_blank', 'width=360,height=520');
+  if (!w) return;
+
+  const html = `
+    <html><head><title>Spool ${s.id}</title></head>
+    <body style="font-family:sans-serif;padding:12px">
+      <h3 style="margin:0 0 8px">Spool Label</h3>
+      <div><strong>ID:</strong> ${s.id}</div>
+      <div><strong>Brand:</strong> ${s.brand || '—'}</div>
+      <div><strong>Material:</strong> ${s.material} — Ø ${s.diameter} mm</div>
+      <div><strong>Color:</strong> ${s.colorName || ''} 
+        <span style="display:inline-block;width:12px;height:12px;background:${s.colorHex};
+          border:1px solid #999;vertical-align:middle"></span>
+      </div>
+      <div><strong>Remaining:</strong> ${formatG(s.remainingG)} g / ${formatG(s.capacityG)} g</div>
+      <img src="${qrUrlForSpool(s)}" alt="QR" style="margin-top:10px"/>
+      <script>setTimeout(()=>window.print(), 200);<\/script>
+    </body></html>`;
+
+  w.document.write(html);
+  w.document.close();
+}
+
+function loadActive() {
+  try {
+    const v = localStorage.getItem(LS_ACTIVE);
+    activeSpoolId = v && v !== '' ? v : null;
+    if (activeSpoolId && !findSpool(activeSpoolId)) {
+      activeSpoolId = null;
+      localStorage.setItem(LS_ACTIVE, ''); // clear ghost
+    }
+  } catch {
+    activeSpoolId = null;
+  }
+}
+function estimateGramsFromGcodeText(text, diameterMM, densityGperCM3) {
+  const dia  = Math.max(0.5, parseFloat(diameterMM) || 1.75);
+  const dens = Math.max(0.1, parseFloat(densityGperCM3) || 1.20);
+  const A    = Math.PI * Math.pow(dia / 2, 2); // mm^2
+
+  let absoluteE = true; // default: M82 unless G-code says otherwise
+  let lastE = 0;
+  let usedMM = 0;
+
+  const lines = text.split(/\r?\n/);
+  for (let raw of lines) {
+    let line = raw.replace(/;.*$/, '').trim();
+    if (!line) continue;
+
+    if (/^M82\b/i.test(line)) { absoluteE = true;  continue; }
+    if (/^M83\b/i.test(line)) { absoluteE = false; continue; }
+
+    const g92 = line.match(/^G92\s+.*?E\s*([-+]?\d*\.?\d+)/i);
+    if (g92) { lastE = parseFloat(g92[1]) || 0; continue; }
+
+    if (/^G0?1\b/i.test(line)) {
+      const m = line.match(/\bE\s*([-+]?\d*\.?\d+)/i);
+      if (!m) continue;
+      const eNow = parseFloat(m[1]);
+      if (!Number.isFinite(eNow)) continue;
+
+      let dE;
+      if (absoluteE) {
+        dE = eNow - lastE;
+        lastE = eNow;
+      } else {
+        dE = eNow;
+      }
+      if (dE > 0) usedMM += dE; // ignore retractions
+    }
+  }
+  const volMM3 = usedMM * A;      // mm^3
+  const volCM3 = volMM3 / 1000.0; // cm^3
+  return volCM3 * dens;           // grams
+}
+
+function clearForm(newId = true) {
+  editingId = null;
+  spIdShow.textContent = newId ? genSpoolId() : '—';
+  spBrand.value = '';
+  spMaterial.value = '';
+  spDiameter.value = '1.75';
+  spDensity.value = '1.24';
+  spColorName.value = '';
+  spColorHex.value = '#000000';
+  spFinish.value = '';
+  spTare.value = '250';
+  spCapacity.value = '1000';
+  spCostTotal.value = '';
+  spCostPerKg.value = '';
+  spLot.value = '';
+  spDate.value = ''; // or set to today if you prefer: new Date().toISOString().slice(0,10)
+  spVendor.value = '';
+
+  // keep dependent fields fresh
+  fillDensityByMaterial?.();
+  autofillLot(true);      // <= generate a fresh lot every new spool
+}
+
+function fillForm(s) {
+  editingId = s.id;
+  spIdShow.textContent = s.id;
+  spBrand.value     = s.brand || '';
+  spMaterial.value  = s.material || '';
+  spDiameter.value  = String(s.diameter || '1.75');
+  spDensity.value   = String(s.density ?? 1.24);
+  spColorName.value = s.colorName || '';
+  spColorHex.value  = s.colorHex || '#000000';
+  spFinish.value    = s.finish || '';
+  spTare.value      = String(s.tareG ?? 0);
+  spCapacity.value  = String(s.capacityG ?? 0);
+  spCostTotal.value = s.costTotal ?? '';
+  spCostPerKg.value = s.costPerKg ?? '';
+  spLot.value       = s.lot || '';
+  spDate.value      = s.purchaseDate || '';
+  spVendor.value    = s.vendorUrl || '';
+
+  // respect saved density/lot; otherwise auto-fill
+  if (!s.density) fillDensityByMaterial?.();
+  if (!s.lot) { autofillLot(true); } else { delete spLot.dataset.auto; }
+}
+
+function upsertFromForm(e) {
+  if (e) e.preventDefault();
+  const id = editingId || spIdShow.textContent || genSpoolId();
+
+  const diameter = parseFloat(spDiameter.value);
+  const density  = parseFloat(spDensity.value);
+  const tare     = Math.max(0, parseFloat(spTare.value) || 0);
+  const capacity = Math.max(0, parseFloat(spCapacity.value) || 0);
+
+  if (!(diameter > 0)) return alert('Diameter must be > 0.');
+  if (!(density  > 0)) return alert('Density must be > 0.');
+  if (!(capacity >= 0)) return alert('Capacity must be ≥ 0.');
+
+  // cost sanity
+  let costTotal = spCostTotal.value ? parseFloat(spCostTotal.value) : null;
+  let costPerKg = spCostPerKg.value ? parseFloat(spCostPerKg.value) : null;
+  if (costTotal == null && costPerKg != null && capacity > 0) {
+    costTotal = costPerKg * (capacity / 1000);
+  } else if (costPerKg == null && costTotal != null && capacity > 0) {
+    costPerKg = costTotal / (capacity / 1000);
+  }
+
+  const existing = findSpool(id);
+  const base = {
+    id,
+    brand: spBrand.value.trim(),
+    material: spMaterial.value.trim() || 'PLA',
+    diameter,
+    density,
+    colorName: spColorName.value.trim(),
+    colorHex: spColorHex.value || '#000000',
+    finish: spFinish.value.trim(),
+    tareG: tare,
+    capacityG: capacity,
+    costTotal:  (costTotal  != null) ? +costTotal.toFixed(2)  : null,
+    costPerKg:  (costPerKg  != null) ? +costPerKg.toFixed(2)  : null,
+    lot: spLot.value.trim(),
+    purchaseDate: spDate.value || '',
+    vendorUrl: spVendor.value.trim()
+  };
+
+  if (existing) {
+    Object.assign(existing, base);
+    existing.remainingG = clamp(existing.remainingG ?? capacity, 0, capacity);
+    existing.updatedAt  = Date.now();
+  } else {
+    spools.push({
+      ...base,
+      remainingG: capacity,
+      createdAt:  Date.now(),
+      updatedAt:  Date.now(),
+      lastUsedAt: null
+    });
+  }
+  saveSpools();
+  renderSpoolList();
+  renderActiveSel();
+  clearForm(true);
+  setActivity('Spool saved', 'ok');
+}
+
+function clearGhostActive() {
+  try {
+    const v = localStorage.getItem(LS_ACTIVE); // 'activeSpoolId'
+    const isGhost = v && !spools.some(s => s.id === v);
+    if (isGhost) {
+      localStorage.setItem(LS_ACTIVE, '');  // clear saved ghost
+      activeSpoolId = null;                 // clear in memory
+    }
+  } catch {
+    activeSpoolId = null;
+  }
+}
+
+function renderActiveSel() {
+  if (activeSpoolId && !findSpool(activeSpoolId)) {
+    saveActive(''); // clear ghost before building
+  }
+  const idKeep = activeSpoolId;
+  spActiveSel.innerHTML =
+    '<option value="">— none —</option>' +
+    spools.map(s => `<option value="${s.id}" ${s.id === idKeep ? 'selected' : ''}>
+        ${s.id} · ${s.brand || ''} ${s.material} ${s.colorName || ''}
+      </option>`).join('');
+}
+
+
+function renderSpoolList() {
+  const q      = spSearch.value.trim().toLowerCase();
+  const mat    = spMatFilter.value.trim();
+  const onlyRem= spOnlyRemaining.checked;
+
+  let rows = spools.slice();
+  if (q) {
+    rows = rows.filter(s => (s.id + s.brand + s.colorName).toLowerCase().includes(q));
+  }
+  if (mat) rows = rows.filter(s => s.material === mat);
+  if (onlyRem) rows = rows.filter(s => (s.remainingG || 0) > 0);
+
+  const sort = spSort.value;
+  rows.sort((a, b) => {
+    if (sort === 'remainingDesc') return (b.remainingG || 0) - (a.remainingG || 0);
+    if (sort === 'brandAsc')     return (a.brand || '').localeCompare(b.brand || '');
+    if (sort === 'materialAsc')  return (a.material || '').localeCompare(b.material || '');
+    if (sort === 'createdDesc')  return (b.createdAt || 0) - (a.createdAt || 0);
+    return 0;
+  });
+
+  spTable.innerHTML = rows.map(s => `
+    <tr>
+      <td>${s.id}</td>
+      <td>${s.brand || '—'}</td>
+      <td>${s.material}</td>
+      <td>
+        <span style="display:inline-block;width:10px;height:10px;background:${s.colorHex};border:1px solid #999;vertical-align:middle"></span>
+        ${s.colorName || ''}
+      </td>
+      <td>${s.diameter}</td>
+      <td>${formatG(s.remainingG)}</td>
+      <td>${formatG(s.capacityG)}</td>
+      <td>
+        <button data-act="edit" data-id="${s.id}">Edit</button>
+        <button data-act="setActive" data-id="${s.id}">Set active</button>
+        <button data-act="label" data-id="${s.id}">Label</button>
+        <button data-act="del" data-id="${s.id}">Delete</button>
+      </td>
+    </tr>
+  `).join('');
+
+  const total   = spools.length;
+  const withRem = spools.filter(s => (s.remainingG || 0) > 0).length;
+  spSummary.textContent = `${rows.length}/${total} shown · ${withRem} have remaining`;
+}
+
+
+function setActiveSpool(id) {
+  saveActive(id || '');
+  spActiveSel.value = activeSpoolId || '';
+  setActivity(
+    activeSpoolId ? `Active spool: ${activeSpoolId}` : 'No active spool',
+    activeSpoolId ? 'ok' : ''
+  );
+}
+
+// --- Lot / Batch auto-generator ---
+function _slug3(s) {
+  // first 3 letters/numbers of brand, fallback to 'XXX'
+  const t = String(s || '').replace(/[^a-z0-9]/gi, '').toUpperCase();
+  return (t.slice(0, 3) || 'XXX').padEnd(3, 'X');
+}
+function _matCode(s) {
+  const k = String(s || '').trim().toUpperCase();
+  if (k.startsWith('PA')) return 'NYL'; // PA, PA6, PA12 -> Nylon
+  return (k || 'MAT').slice(0, 3);
+}
+function _dateYYMMDD(dateStr) {
+  const d = dateStr ? new Date(dateStr) : new Date();
+  const y = String(d.getFullYear()).slice(-2);
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}${m}${dd}`;
+}
+function genLotBatch() {
+  const brand = _slug3(spBrand.value);
+  const mat   = _matCode(spMaterial.value);
+  const ymd   = _dateYYMMDD(spDate.value);
+  const seq   = Math.random().toString(36).slice(2, 5).toUpperCase();
+  return `${brand}-${mat}${ymd}-${seq}`;
+}
+/**
+ * Fill lot only if:
+ *  - force = true, or
+ *  - field is empty, or
+ *  - it was previously auto-filled (tracked via data-auto="1")
+ */
+function autofillLot(force = false) {
+  if (!spLot) return;
+  if (force || !spLot.value || spLot.dataset.auto === '1') {
+    spLot.value = genLotBatch();
+    spLot.dataset.auto = '1';
+  }
+}
+
+// Keep lot in sync while user is building a new spool
+spBrand?.addEventListener('input',  () => autofillLot(false));
+spMaterial?.addEventListener('change', () => autofillLot(false));
+spDate?.addEventListener('change', () => autofillLot(false));
+
+// Optional: a quick way to "lock" custom lot once user types anything
+spLot?.addEventListener('input', () => { delete spLot.dataset.auto; });
+
+function ensureMeshTable() {
+  if (!meshInput) return;
+  if (meshInput.children.length) return; // already built
+
+  const rows = 4, cols = 4;
+  meshInput.innerHTML = '';
+  for (let r = 0; r < rows; r++) {
+    const tr = document.createElement('tr');
+    for (let c = 0; c < cols; c++) {
+      const td = document.createElement('td');
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.step = '0.001';
+      inp.style.width = '90px';
+      inp.id = `m_${r}_${c}`;
+      td.appendChild(inp);
+      tr.appendChild(td);
+    }
+    meshInput.appendChild(tr);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', ensureMeshTable);
+
+function deleteSpool(id) {
+  const s = findSpool(id);
+  if (!s) return;
+  if (!safeConfirm(`Delete spool ${id}?`)) return;
+  spools = spools.filter(x => x.id !== id);
+  if (activeSpoolId === id) saveActive('');
+  saveSpools();
+  renderSpoolList();
+  renderActiveSel();
+}
+
+function adjustRemaining(id, deltaG) {
+  const s = findSpool(id);
+  if (!s) return;
+  const cap = s.capacityG || 0;
+  s.remainingG = clamp((s.remainingG || 0) + deltaG, 0, cap);
+  s.updatedAt  = Date.now();
+  saveSpools();
+  renderSpoolList();
+  renderActiveSel();
+}
+
+// =============== FILAMENT: event wiring ===============
+spMaterial?.addEventListener('change', fillDensityByMaterial);
+spReset?.addEventListener('click', () => clearForm(true));
+spoolForm?.addEventListener('submit', upsertFromForm);
+
+spTable?.addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const id  = btn.getAttribute('data-id');
+  const s   = findSpool(id);
+  const act = btn.getAttribute('data-act');
+
+  if (act === 'edit'      && s) fillForm(s);
+  if (act === 'setActive' && s) setActiveSpool(id);
+  if (act === 'label'     && s) openPrintLabel(s);
+  if (act === 'del')           deleteSpool(id);
+});
+
+[spSearch, spMatFilter, spOnlyRemaining, spSort]
+  .forEach(el => el?.addEventListener('input', renderSpoolList));
+
+spActiveSel?.addEventListener('change', () => setActiveSpool(spActiveSel.value || ''));
+
+spPrintLbl?.addEventListener('click', () => {
+  const s = findSpool(activeSpoolId || '');
+  if (!s) return alert('Select an active spool first.');
+  openPrintLabel(s);
+});
+
+spWeigh?.addEventListener('click', () => {
+  const s = findSpool(activeSpoolId || '');
+  if (!s) return alert('Select an active spool first.');
+  const gross = parseFloat(safePrompt('Current gross weight (g) — spool+filament on scale:', '850') || '');
+  if (!Number.isFinite(gross) || gross <= 0) return;
+  const net = gross - (s.tareG || 0);
+  if (net < 0) return alert('Gross must be ≥ tare weight.');
+  s.remainingG = clamp(Math.round(net), 0, s.capacityG || 0);
+  s.updatedAt  = Date.now();
+  saveSpools();
+  renderSpoolList();
+  renderActiveSel();
+});
+
+spDeduct5?.addEventListener('click', () => {
+  const s = findSpool(activeSpoolId || '');
+  if (!s) return alert('Select an active spool first.');
+
+  const def = localStorage.getItem('spDeductDefault') || '5';
+  const input = safePrompt('Deduct amount (grams):', def);
+  const amt = parseFloat(input || '');
+  if (!Number.isFinite(amt) || amt <= 0) return;
+
+  localStorage.setItem('spDeductDefault', String(amt));
+  adjustRemaining(s.id, -Math.abs(amt)); // deduct
+});
+
+spMarkEmpty?.addEventListener('click', () => {
+  const s = findSpool(activeSpoolId || '');
+  if (!s) return alert('Select an active spool first.');
+  s.remainingG = 0;
+  s.updatedAt  = Date.now();
+  saveSpools();
+  renderSpoolList();
+});
+
+// =============== FILAMENT: init ===============
+(function filamentInit() {
+  try {
+    loadSpools();
+    loadActive?.();          // if you have it
+    clearGhostActive();      // <= add this line
+    renderSpoolList();
+    renderActiveSel();
+    clearForm(true);
+  } catch (e) {
+    console.error('filamentInit failed:', e);
+  }
+})();
+
+function updatePricePerKg() {
+  const totalPrice = parseFloat(spCostTotal.value) || 0;
+  const capacityGrams = parseFloat(spCapacity.value) || 0;
+  if (capacityGrams > 0) {
+    const perKg = totalPrice / (capacityGrams / 1000);
+    spCostPerKg.value = perKg.toFixed(2);
+  } else {
+    spCostPerKg.value = '';
+  }
+}
+
+spCostTotal.addEventListener('input', updatePricePerKg);
+spCapacity.addEventListener('input', updatePricePerKg);
 
 
 
