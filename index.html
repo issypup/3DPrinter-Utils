@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-<title>3D Printer Utils</title>
+<title>3D Printer Utils TEST</title>
 <meta name="author" content="issypup">
 <meta name="date" content="2025-08-10">
 <style>
@@ -54,7 +54,7 @@
 }
 
 /* keep hotend/bed pills nicely spaced */
-#temps { display: inline-flex; gap: 8px; }
+#temps { display: inline-flex; gap: 24px; }
 
   #statusBar .ok    { background: #2a7; }
   #statusBar .warn  { background: #f39c12; }
@@ -196,7 +196,7 @@
 <span id="etaPill" class="pill" style="display:none;">ETA: —</span>
 </div>
 
-<h1>3D Printer Utils</h1>
+<h1>3D Printer Utils TEST</h1>
 
 <!-- Tabs -->
 <div id="tabButtons">
@@ -597,6 +597,9 @@ const screwAffects = {
 //Regex
 const NOISY_REGEX = /^(?:echo:busy:\s*processing|\/\/action:.*|setnewscreen(?:\s*\([^)]*\))?:?.*|invoking handler for screen.*)/i;
 const POS_REGEX   = /X:?\s*([+-]?\d*\.?\d+)\s+Y:?\s*([+-]?\d*\.?\d+)\s+Z:?\s*([+-]?\d*\.?\d+)/i;
+
+//const TEMP_T = /T\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
+//const TEMP_B = /B\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
 
 const TEMP_T = /\bT\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
 const TEMP_B = /\bB\d?:\s*([-+]?\d*\.?\d+)(?:\s*\/\s*([-+]?\d*\.?\d+))?/i;
