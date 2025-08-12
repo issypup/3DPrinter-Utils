@@ -1,16 +1,6 @@
-Connection & device support:
-
-Manual baud rate selector + auto-detect. (added needs testing)
-
-Live indicator of RX/TX throughput/latency. (added needs testing)
-
-Soft “Are you sure?” gate before sending manual G-codes
-
-
 Safety & fail-safes:
-Big red EMERGENCY STOP button (M112 or best available for fw).
 
-Heater guardrail: block >300°C hotend / >130°C bed unless “unlock”.
+Big red EMERGENCY STOP button (M112 or best available for fw).
 
 Safe Z-lift before risky moves incase of collision e.g. Z 100 (e.g., park, filament ops).
 
