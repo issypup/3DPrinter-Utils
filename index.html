@@ -24,7 +24,6 @@
   .gap { border: none; background: transparent; color: #888; font-weight: bold; }
   #screwMap td { width: 110px; height: 60px; vertical-align: top; font-size: 0.85em; }
 
-
   /* Status bar (always visible) */
   #statusBar {
     position: fixed; top: 0; left: 0; right: 0; height: var(--bar-h);
@@ -134,6 +133,24 @@
   .widen { width: 220px; }
   .progress { height: 10px; background:#ddd; border-radius:999px; overflow:hidden; width:280px; }
   .progress > div { height:100%; background:#2a7; width:0%; }
+
+#preOverlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 10000;
+}
+#preModal   {
+  position: fixed; inset: 0; display: none; place-items: center; z-index: 10001;
+}
+#preCard    {
+  width: min(720px, 92vw); max-height: 80vh; background:#fff; border:1px solid #ddd;
+  border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,0.25);
+  display:grid; grid-template-rows:auto 1fr;
+}
+#preHeader  { display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:12px 14px; border-bottom:1px solid #eee; }
+#preBody    { padding:14px 16px; overflow:auto; line-height:1.35; }
+#preClose   { background:#eee; border:1px solid #ccc; padding:6px 10px; border-radius:8px; cursor:pointer; }
+#preClose:hover { background:#e5e5e5; }
+
 
   /* EE Modal */
 #eeOverlay {
@@ -459,6 +476,48 @@
     <span id="etaStatus" class="muted" style="margin-left:10px"></span>
   </div>
   <p class="muted">Sends the file line-by-line over serial. Comments/blank lines are skipped. This is best for short jobs, calibration, or macros.</p>
+  <!-- Preflight Modal -->
+<div id="preOverlay" aria-hidden="true" style="display:none"></div>
+<div id="preModal" role="dialog" aria-modal="true" aria-labelledby="preTitle" style="display:none">
+  <div id="preCard">
+    <div id="preHeader">
+      <h3 id="preTitle">Pre-flight checks</h3>
+      <button id="preClose" type="button" aria-label="Close">Close</button>
+    </div>
+    <div id="preBody">
+      <div class="muted" style="margin-bottom:8px">
+        File: <strong id="preFileName">—</strong> ·
+        Guardrail: <strong id="preGuardrail">—</strong> ·
+        Temps (hot/bed): <strong id="preTemps">—</strong> ·
+        Mode: <strong id="preMode">—</strong> ·
+        Homed: <strong id="preHomed">—</strong>
+      </div>
+
+      <fieldset style="border:none; padding:0; margin:0 0 8px 0;">
+        <legend class="label" style="margin-bottom:6px">Confirm all:</legend>
+        <label><input type="checkbox" class="preChk" id="chkBedClear"> Bed is clear (no clips, tools, hands, pets 🐱)</label><br>
+        <label><input type="checkbox" class="preChk" id="chkObstructions"> Gantry path clear (cables, spool, camera arms)</label><br>
+        <label><input type="checkbox" class="preChk" id="chkFilament"> Correct filament loaded & nozzle clean</label><br>
+        <label><input type="checkbox" class="preChk" id="chkAdhesion"> Adhesion ready (sheet, glue, texture)</label><br>
+        <label><input type="checkbox" class="preChk" id="chkZSafe"> Z head parked safely (≥10 mm)</label>
+      </fieldset>
+
+      <div class="row" style="margin:8px 0 12px">
+        <button id="preHome" type="button">Home Now (G28)</button>
+        <button id="prePark" type="button">Park Head (X0 Y0 Z10)</button>
+        <label style="margin-left:auto">
+          <input type="checkbox" id="preSkip"> Don’t ask again (this session)
+        </label>
+      </div>
+
+      <div class="row" style="justify-content:flex-end; gap:8px">
+        <button id="preCancel" type="button">Cancel</button>
+        <button id="preStart"  type="button" disabled>Start Print</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 </div>
 
 <!-- TAB 10: About -->
@@ -481,6 +540,7 @@
   </div>
 </div>
 </div>
+
 
 
 <div id="footerStatus">
@@ -662,6 +722,15 @@ const vState = {
    3) STATE (all let)
 ========================================================= */
 
+
+
+
+
+
+
+
+let _preflightFile = null;
+
 let net = {
   txBytesTotal: 0,
   rxBytesTotal: 0,
@@ -676,8 +745,14 @@ let net = {
 
 let lastSendTs = null; 
 
-
 let heaterUnlocked = JSON.parse(localStorage.getItem('heaterUnlocked') || 'false');
+
+
+
+
+
+
+
 
 //UI and State flags
 let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
@@ -760,6 +835,58 @@ let streak = 0;
 
 
 
+function openPreflight(file) {
+  _preflightFile = file;
+
+  // dynamic bits
+  document.getElementById('preFileName').textContent = file?.name || '(unnamed)';
+  document.getElementById('preGuardrail').textContent = heaterUnlocked ? 'OFF' : 'ON';
+  const ht = (temps.hot ?? NaN), bt = (temps.bed ?? NaN);
+  const hT = (temps.hotTarget ?? NaN), bT = (temps.bedTarget ?? NaN);
+  const fmt = (v) => Number.isFinite(v) ? (''+ (v % 1 ? v.toFixed(1) : Math.round(v))) : '—';
+  document.getElementById('preTemps').textContent = `${fmt(ht)} / ${fmt(hT)} · ${fmt(bt)} / ${fmt(bT)}`;
+  document.getElementById('preMode').textContent = (connKind === 'virtual') ? 'Virtual' : 'Serial';
+  document.getElementById('preHomed').textContent = isHomed ? 'Yes' : 'No';
+
+  // reset checks & button
+  document.querySelectorAll('.preChk').forEach(c => c.checked = false);
+  document.getElementById('preStart').disabled = true;
+  document.getElementById('preSkip').checked = false;
+
+  // wire buttons
+  document.getElementById('preStart').onclick = async () => {
+    if (document.getElementById('preSkip').checked) sessionStorage.setItem('skipPreflight','1');
+    closePreflight();
+    await streamGcode(_preflightFile);
+  };
+  document.getElementById('preCancel').onclick = closePreflight;
+  document.getElementById('preClose').onclick  = closePreflight;
+
+  document.getElementById('preHome').onclick = async () => {
+    try {
+      await sendCmd('G28'); await waitForOk().catch(()=>{});
+      isHomed = true;
+      document.getElementById('preHomed').textContent = 'Yes';
+    } catch {}
+  };
+  document.getElementById('prePark').onclick = async () => {
+    try { await sendCmdsSequential('G90', 'G1 X0 Y0 Z10 F3000'); } catch {}
+  };
+
+  // show
+  document.getElementById('preOverlay').style.display = 'block';
+  document.getElementById('preModal').style.display   = 'grid';
+
+  // esc to close
+  const esc = (e) => { if (e.key === 'Escape') closePreflight(); };
+  document.addEventListener('keydown', esc, { once:true });
+}
+
+function closePreflight() {
+  document.getElementById('preModal').style.display   = 'none';
+  document.getElementById('preOverlay').style.display = 'none';
+  _preflightFile = null;
+}
 
 
 function updateUnlockUi() {
@@ -2836,8 +2963,18 @@ gcodeFile.addEventListener('change', () => {
   sendGcode.disabled = !gcodeFile.files.length || !connected;
 });
 
-sendGcode.addEventListener('click',  () => {
-  if (gcodeFile.files[0]) streamGcode(gcodeFile.files[0]);
+sendGcode.addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopImmediatePropagation();
+
+  const file = gcodeFile?.files?.[0];
+  if (!file) { gcodeFile.click(); return; }
+
+  if (sessionStorage.getItem('skipPreflight') === '1') {
+    streamGcode(file);
+    return;
+  }
+  openPreflight(file);
 });
 
 cancelSend.addEventListener('click', async () => {
@@ -2902,6 +3039,18 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Escape' && eeModal.style.display !== 'none') closeEasterEgg();
   });
 });
+
+
+const preBody  = document.getElementById('preBody');
+const preStart = document.getElementById('preStart');
+if (preBody && preStart) {
+  preBody.addEventListener('change', (e) => {
+    if (!(e.target instanceof HTMLInputElement) || !e.target.classList.contains('preChk')) return;
+    const all = Array.from(preBody.querySelectorAll('.preChk')).every(c => c.checked);
+    preStart.disabled = !all;
+  });
+}
+
 
 //Selectors and toggles
 if (levelPrinterSelect) {
