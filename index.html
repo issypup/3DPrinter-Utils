@@ -459,6 +459,10 @@
       <button id="loadFil"  disabled>Load (200°C)</button>
       <button id="unloadFil" disabled>Unload (200°C)</button>
     </div>
+        <div class="col">
+      <div class="label">Nozzle Prep</div>
+      <button id="primeLine" disabled>Wipe + Prime Line</button>
+    </div>
   </div>
 </div>
 
@@ -560,6 +564,12 @@
 /* =========================================================
    1) DOM REFERENCES (all const)
 ========================================================= */
+
+
+const BEEP_BROWSER_ON = true;   // browser chime via Web Audio
+const BEEP_PRINTER_ON = false;  // send M300 to the printer (off by default)
+const primeLine = document.getElementById('primeLine');
+
 
 //Toggles and core controls
 const debugToggle     = document.getElementById('debugToggle');
@@ -669,6 +679,14 @@ const unloadFil       = document.getElementById('unloadFil');
    2) CONSTANTS (maps, regex, fixed values)
 ========================================================= */
 
+const HOME_SIG_DEFAULT = { x: 117, y: 117, z: 10.0, tolX: 2.0, tolY: 2.0, tolZ: 4.0 };
+
+
+
+
+
+
+
 //Mesh and screws map
 const screwAffects = {
   A1: [[0,0],[0,1],[1,0],[1,1]],
@@ -731,9 +749,9 @@ const vState = {
 
 
 
+let lastHomeHintAt = 0;  // when we last saw a "homing-ish" line
 
-
-
+let _audioCtx = null;
 
 let _preflightFile = null;
 
@@ -840,6 +858,263 @@ let streak = 0;
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+function getHomeSig() {
+  try { return JSON.parse(localStorage.getItem('homeSig')) || HOME_SIG_DEFAULT; }
+  catch { return HOME_SIG_DEFAULT; }
+}
+function setHomeSig(sig) {
+  localStorage.setItem('homeSig', JSON.stringify(sig));
+}
+
+// Call on every incoming log line to update the “hint” window
+function maybeMarkHomingHint(line) {
+  if (/\b(Homing|Home\s+all|Taring probe|Preheating)\b/i.test(line)) {
+    lastHomeHintAt = performance.now();
+  }
+}
+
+// Call when you parse a position to decide if we’re homed
+function maybeMarkHomedFromPos(x, y, z) {
+  const now = performance.now();
+
+  // If we saw a homing-ish line very recently, trust this as homed
+  if (now - lastHomeHintAt < 4000) {
+    isHomed = true;
+    return;
+  }
+
+  // Otherwise, compare to a known "home signature" with tolerance
+  const sig = getHomeSig();
+  const near =
+    Math.abs(x - sig.x) <= sig.tolX &&
+    Math.abs(y - sig.y) <= sig.tolY &&
+    Math.abs(z - sig.z) <= sig.tolZ;
+
+  if (near) isHomed = true;
+}
+
+// (optional) learn & persist your printer’s home signature after a known-good G28
+function learnHomeSignature(x, y, z) {
+  setHomeSig({ x, y, z, tolX: 2.0, tolY: 2.0, tolZ: 4.0 });
+}
+
+// === Nozzle Wipe + Prime Line (staged warmup, safe home, purge, cool, exit) ===
+async function runPrimeLine() {
+  cancelStream = false; // ← clear leftover cancel flag from a previous send
+  const HOT_FINAL = 200;
+  const BED_FINAL = 60;
+
+  try {
+    setActivity('Nozzle prep…', 'warn');
+
+    // Restore mesh & motion defaults
+    await sendCmdsSequential(
+      'M420 S1',
+      'M201 X500.00 Y500.00 Z100.00 E5000.00',
+      'M203 X500.00 Y500.00 Z10.00 E50.00',
+      'M204 P500.00 R1000.00 T500.00',
+      'M205 X8.00 Y8.00 Z0.40 E5.00',
+      'M220 S100',
+      'M221 S100'
+    );
+
+    // Staged warmup to avoid droop before homing (per your script)
+    await sendCmd('M190 S50');            await waitForOk(); // bed to 50 (wait)
+    await sendCmd('M140 S65');            await waitForOk(); // bed target 65 (no wait)
+    await sendCmd('M104 S120');           await waitForOk(); // nozzle 120 (no wait)
+    await sendCmd('M190 S65');            await waitForOk(); // bed to 65 (wait)
+    await sendCmd('M109 S145');           await waitForOk(); // nozzle to 145 (wait)
+    await sendCmd('M105');                await waitForOk();
+
+    // Home while warm (Z sensor happy at ~145)
+    await sendCmd('G28');                 await waitForOk();
+
+    // Set final print temps (don’t wait yet), park, then wait to temps
+    await sendCmd(`M104 S${HOT_FINAL}`);  await waitForOk();
+    await sendCmd(`M140 S${BED_FINAL}`);  await waitForOk();
+    await sendCmd('M105');                await waitForOk();
+    await sendCmdsSequential('G90', 'G0 Z20', 'G0 X0 Y0');
+    await sendCmd(`M190 S${BED_FINAL}`);  await waitForOk();
+    await sendCmd(`M109 S${HOT_FINAL}`);  await waitForOk();
+    await sendCmd('M105');                await waitForOk();
+
+    // Purge / prime lines
+    await sendCmdsSequential(
+      'G92 E0',
+      'M83',
+      'G1 Z2.0 F3000',
+      'G1 X10.1 Y20 Z0.28 F5000.0',
+      'G1 X10.1 Y200.0 Z0.28 F1500.0 E15',
+      'G1 X10.4 Y200.0 Z0.28 F5000.0',
+      'G1 X10.4 Y20 Z0.28 F1500.0 E30',
+      'G92 E0',
+      'G1 Z2.0 F3000',
+      'M82'
+    );
+
+    // Drain queue, Z hop +10, cool down, then close print screen
+    await sendCmd('M400');                await waitForOk().catch(()=>{});
+    await sendCmd('G91');                 await waitForOk().catch(()=>{});
+    await sendCmd('G1 Z10 F600');         await waitForOk().catch(()=>{});
+    await sendCmd('G90');                 await waitForOk().catch(()=>{});
+    await sendCmd('M104 S0');             await waitForOk().catch(()=>{});
+    await sendCmd('M140 S0');             await waitForOk().catch(()=>{});
+    exitPrintScreen(0, { tellHost: false }); 
+
+    isHomed = true;
+    setActivity('Wipe + prime complete (cooled)', 'ok');
+    logMsg('✅ Homed at 65/145; primed at 200/60; Z+10; heaters OFF; closed print screen.');
+    updateLastUpdated();
+  } catch (e) {
+    setActivity('Prep failed', 'bad');
+    logMsg('⚠️ Wipe/prime error: ' + (e?.message || e));
+  }
+}
+
+// === Nozzle Wipe + Prime Line (staged warmup, safe home, purge, cool, exit) ===
+async function runPrimeLine() {
+  const HOT_FINAL = 200;
+  const BED_FINAL = 60;
+
+  try {
+    setActivity('Nozzle prep…', 'warn');
+
+    // Restore mesh & motion defaults
+    await sendCmdsSequential(
+      'M420 S1',
+      'M201 X500.00 Y500.00 Z100.00 E5000.00',
+      'M203 X500.00 Y500.00 Z10.00 E50.00',
+      'M204 P500.00 R1000.00 T500.00',
+      'M205 X8.00 Y8.00 Z0.40 E5.00',
+      'M220 S100',
+      'M221 S100'
+    );
+
+    // Staged warmup to avoid droop before homing (per your script)
+    await sendCmd('M190 S50');            await waitForOk(); // bed to 50 (wait)
+    await sendCmd('M140 S65');            await waitForOk(); // bed target 65 (no wait)
+    await sendCmd('M104 S120');           await waitForOk(); // nozzle 120 (no wait)
+    await sendCmd('M190 S65');            await waitForOk(); // bed to 65 (wait)
+    await sendCmd('M109 S145');           await waitForOk(); // nozzle to 145 (wait)
+    await sendCmd('M105');                await waitForOk();
+
+    // Home while warm (Z sensor happy at ~145)
+    await sendCmd('G28');                 await waitForOk();
+
+    // Set final print temps (don’t wait yet), park, then wait to temps
+    await sendCmd(`M104 S${HOT_FINAL}`);  await waitForOk();
+    await sendCmd(`M140 S${BED_FINAL}`);  await waitForOk();
+    await sendCmd('M105');                await waitForOk();
+    await sendCmdsSequential('G90', 'G0 Z20', 'G0 X0 Y0');
+    await sendCmd(`M190 S${BED_FINAL}`);  await waitForOk();
+    await sendCmd(`M109 S${HOT_FINAL}`);  await waitForOk();
+    await sendCmd('M105');                await waitForOk();
+
+    // Purge / prime lines
+    await sendCmdsSequential(
+      'G92 E0',
+      'M83',
+      'G1 Z2.0 F3000',
+      'G1 X10.1 Y20 Z0.28 F5000.0',
+      'G1 X10.1 Y200.0 Z0.28 F1500.0 E15',
+      'G1 X10.4 Y200.0 Z0.28 F5000.0',
+      'G1 X10.4 Y20 Z0.28 F1500.0 E30',
+      'G92 E0',
+      'G1 Z2.0 F3000',
+      'M82'
+    );
+
+    // Drain queue, Z hop +10, cool down, then close print screen
+    await sendCmd('M400');                await waitForOk().catch(()=>{});
+    await sendCmd('G91');                 await waitForOk().catch(()=>{});
+    await sendCmd('G1 Z10 F600');         await waitForOk().catch(()=>{});
+    await sendCmd('G90');                 await waitForOk().catch(()=>{});
+    await sendCmd('M104 S0');             await waitForOk().catch(()=>{});
+    await sendCmd('M140 S0');             await waitForOk().catch(()=>{});
+    exitPrintScreen(0, { tellHost: false }); 
+
+    isHomed = true;
+    setActivity('Wipe + prime complete (cooled)', 'ok');
+    logMsg('✅ Homed at 65/145; primed at 200/60; Z+10; heaters OFF; closed print screen.');
+    updateLastUpdated();
+  } catch (e) {
+    setActivity('Prep failed', 'bad');
+    logMsg('⚠️ Wipe/prime error: ' + (e?.message || e));
+  }
+}
+
+
+function _ensureAudioCtx() {
+  if (!_audioCtx) {
+    try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch {}
+  }
+  if (_audioCtx && _audioCtx.state === 'suspended') _audioCtx.resume();
+  return _audioCtx;
+}
+
+function _tone(freq=880, ms=120, vol=0.22, when=0) {
+  const ctx = _ensureAudioCtx(); if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'square';
+  osc.frequency.value = freq;
+
+  const t0 = ctx.currentTime + when;
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.linearRampToValueAtTime(vol, t0 + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + ms/1000);
+
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + ms/1000 + 0.02);
+}
+
+function beep(kind='start') {
+  try {
+    if (!BEEP_BROWSER_ON) return;
+    if (kind === 'start') { _tone(880,120,0.24,0); _tone(1100,120,0.24,0.15); }
+    else if (kind === 'done') { _tone(784,120,0.24,0); _tone(988,120,0.24,0.16); _tone(1319,160,0.26,0.34); }
+    else if (kind === 'cancel') { _tone(220,260,0.28,0); }
+    else if (kind === 'error') { _tone(200,160,0.28,0); _tone(150,220,0.28,0.22); }
+    if (navigator.vibrate) {
+      if (kind === 'start') navigator.vibrate([25]);
+      else if (kind === 'done') navigator.vibrate([20,40,20]);
+      else if (kind === 'cancel' || kind === 'error') navigator.vibrate([60]);
+    }
+  } catch {}
+}
+
+async function printerBeep(kind='start') {
+  if (!BEEP_PRINTER_ON) return;
+  // only try if connected
+  if (!(connKind === 'virtual' || writer)) return;
+
+  // simple patterns (freq S, duration P)
+  const seq = (kind === 'start') ? [[880,120],[1100,120]]
+            : (kind === 'done')  ? [[784,120],[988,120],[1319,160]]
+            : (kind === 'cancel')? [[220,260]]
+            :                      [];
+  try {
+    for (const [s,p] of seq) {
+      await sendCmd(`M300 S${Math.round(s)} P${Math.round(p)}`);
+      await waitForOk().catch(()=>{});
+      await sleep(10);
+    }
+  } catch {}
+}
 
 /* ===== Live Telemetry Chart (temps, fan %, M73 %) ===== */
 const live = {
@@ -955,9 +1230,6 @@ function drawLive(){
   ctx.strokeRect(padL, padT, plotW, plotH);
 }
 
-
-
-
 function openPreflight(file) {
   _preflightFile = file;
 
@@ -1011,7 +1283,6 @@ function closePreflight() {
   _preflightFile = null;
 }
 
-
 function updateUnlockUi() {
   const btn  = document.getElementById('unlockTempsBtn');
   const hint = document.getElementById('unlockHint');
@@ -1056,7 +1327,6 @@ function onUnlockToggle(e){
 
 if (unlockTempsBtn) unlockTempsBtn.onclick = onUnlockToggle; // bind once
 
-
 function guardHeaterFromCmd(cmd) {
   if (heaterUnlocked) return true;
   // Only gate heater-set commands with S values
@@ -1085,7 +1355,6 @@ function guardHeaterSet(tool, target, sourceLabel='UI') {
   }
   return true;
 }
-
 
 function startNetMeter() {
   if (net.timer) return;
@@ -1558,6 +1827,7 @@ function setConnected(connected) {
   preheatPLA.disabled = preheatPETG.disabled =
   preheatABS.disabled = cooldown.disabled =
   loadFil.disabled = unloadFil.disabled = !connected;
+primeLine.disabled = !connected;
 
   fwInfo.disabled = tmcDiag.disabled = !connected;
 
@@ -1622,20 +1892,25 @@ function safeConfirm(message) {
 }
 
 //Firmware screen exit
-function exitPrintScreen(delayMs = 0) {
-  if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
-
-  const fire = () => {
-    logMsg('⌛ Closing print screen in firmware…');
-    // Let sendCmd route to real/virtual; keep it quiet
-    sendCmd('//action:cancel', true);
+function exitPrintScreen(delayMs = 0, { tellHost = false } = {}) {
+  const run = async () => {
+    try {
+      logMsg('⌛ Tidying up LCD/host state…');
+      const cmds = [
+        'M400',                   // let moves/ISRs drain
+        ...(tellHost ? ['M118 A1 action:cancel'] : []), // host-action for OctoPrint/etc.
+        'M524',                   // abort SD print (harmless if none)
+        'M117 Ready'              // friendly status on many LCDs
+      ];
+      await sendCmdsSequential(...cmds);
+    } catch (e) {
+      // non-fatal
+      console.warn('exitPrintScreen failed:', e);
+    }
   };
 
-  if (delayMs > 0) {
-    postPrintTimer = setTimeout(() => { fire(); postPrintTimer = null; }, delayMs);
-  } else {
-    fire();
-  }
+  if (delayMs > 0) setTimeout(() => { run(); }, delayMs);
+  else run();
 }
 
 //Misc
@@ -2020,6 +2295,7 @@ async function connectPrinter() {
 
     // We're open with reader/writer from openAtBaud()/probeAtBaud()
     setConnected(true);
+    cancelStream = false; // ← clear leftover cancel flag from a previous send
     sendCmd('M105', true); // prime a latency sample
     updateLevelView();
     hideEtaPill();
@@ -2052,27 +2328,31 @@ async function disconnectPrinter(reason = 'user') {
     // Fail any pending waits / streams immediately
     _rejectAllOk(new Error(lost ? 'Connection lost' : 'Disconnected'));
     if (probeLatch) {
-  try { probeLatch.reject(new Error(lost ? 'lost' : 'disconnected')); }
-  finally { probeLatch = null; }
-}
+      try { probeLatch.reject(new Error(lost ? 'lost' : 'disconnected')); }
+      finally { probeLatch = null; }
+    }
+
+    // Put sender into a cancelled/abort state during teardown
     cancelStream = true;
 
     // Reset sender UI + ETA
     if (sendProgress) sendProgress.style.width = '0%';
     if (sendStatus)   sendStatus.textContent = 'Idle';
     hideEtaPill();
-  clearAllPidUi();
+    clearAllPidUi();
+
+    // Virtual path
     if (connKind === 'virtual' || virtualMode) {
-      await disconnectVirtual();
+      await disconnectVirtual();  // handles setConnected(false)
       connKind = 'none';
       stopTempPolling();
       setActivity(lost ? 'Connection lost (virtual)' : 'Disconnected', lost ? 'bad' : 'ok');
       if (lost) logMsg('❌ Connection lost (virtual).'); else logMsg('🔌 Virtual printer disconnected.');
-      return;
+      return; // finally{} will still run
     }
 
     // Real serial path
-    setConnected(false);
+    setConnected(false); // also stops temp polling + net meter + sets offline pills
     setActivity(lost ? 'Connection lost…' : 'Disconnecting…', lost ? 'bad' : 'warn');
     stopTempPolling();
 
@@ -2095,9 +2375,12 @@ async function disconnectPrinter(reason = 'user') {
     setActivity('Disconnect error', 'bad');
     connKind = 'none';
   } finally {
+    // IMPORTANT: don’t let a previous cancel poison future one-shot macros
+    cancelStream = false;      // ← reset the sticky flag
     isDisconnecting = false;
   }
 }
+
 
 //Virtual Connection
 async function connectVirtual() {
@@ -2424,14 +2707,13 @@ async function sendCmdVirtual(cmd, quiet = false) {
 
 
 //Read and parse loop
-// --- replace your readLoop() with this (adds RX metering, preserves your parsing) ---
 async function readLoop() {
   reading = true;
   try {
     while (true) {
       const { value, done } = await reader.read();
 
-      // If the stream closed, treat as a lost connection
+      // stream closed -> treat as lost connection
       if (done) {
         if (!isDisconnecting) await disconnectPrinter('lost');
         break;
@@ -2440,18 +2722,14 @@ async function readLoop() {
 
       // --- RX metering ---
       if (value instanceof Uint8Array) {
-        if (typeof net !== 'undefined') {
-          net.rxBytesTotal += value.length;
-          net.rxSince      += value.length;
-        }
+        net.rxBytesTotal += value.length;
+        net.rxSince      += value.length;
       } else if (typeof value === 'string') {
-        if (typeof net !== 'undefined') {
-          net.rxBytesTotal += value.length;
-          net.rxSince      += value.length;
-        }
+        net.rxBytesTotal += value.length;
+        net.rxSince      += value.length;
       }
 
-      // Normalize chunk to string for both reader types
+      // normalize to string
       const chunk = (value instanceof Uint8Array)
         ? textDecoder.decode(value, { stream: true })
         : value;
@@ -2464,8 +2742,7 @@ async function readLoop() {
         const line = raw.trim();
         if (!line) continue;
 
-        // --- Temp parsing (M105-style telemetry) ---
-        // gated by captureMode so M115/M122 dumps don't clobber temps
+        // --- temps (M105-style) ---
         const tMatch = !captureMode && line.match(TEMP_T);
         const bMatch = !captureMode && line.match(TEMP_B);
 
@@ -2475,7 +2752,6 @@ async function readLoop() {
           if (Number.isFinite(tCur)) {
             temps.hot = tCur;
             temps.hotTarget = Number.isFinite(tTar) ? tTar : null;
-
             _pushAmbientSample('hot', temps.hot ?? 0, temps.hotTarget);
             setTempPill(topHotendPill, topHotendText, temps.hot, temps.hotTarget, 'hotend');
           }
@@ -2486,29 +2762,35 @@ async function readLoop() {
           if (Number.isFinite(bCur)) {
             temps.bed = bCur;
             temps.bedTarget = Number.isFinite(bTar) ? bTar : null;
-
             _pushAmbientSample('bed', temps.bed ?? 0, temps.bedTarget);
             setTempPill(topBedPill, topBedText, temps.bed, temps.bedTarget, 'bed');
           }
         }
-        if (tMatch || bMatch) { updateTempPanel(); recordLiveSample(); }
+        if (tMatch || bMatch) updateTempPanel();
 
-        // --- Positions (e.g., "X:.. Y:.. Z:..") ---
+        // --- positions (e.g., "X:.. Y:.. Z:..") ---
         const posMatch = line.match(POS_REGEX);
         if (posMatch) {
           const x = parseFloat(posMatch[1]);
           const y = parseFloat(posMatch[2]);
           const z = parseFloat(posMatch[3]);
-          if ([x, y, z].every(Number.isFinite)) updateAxisPanel(x, y, z);
+          if ([x, y, z].every(Number.isFinite)) {
+            updateAxisPanel(x, y, z);
+            // NEW: infer homed if it looks like the post-home coordinates
+            maybeMarkHomedFromPos(x, y, z);
+          }
         }
 
-        // --- Logging (respect noisy/telemetry filters & debug mode) ---
+        // --- logging (respect noisy/telemetry filters & debug) ---
         const isTelemetry = TELEMETRY_REGEX.test(line);
         const out = normalizeLine(line);
 
-        if (!debugMode && (isSetNewScreenLine(out) || isNoisyLine(out))) continue;
+        // track “homing-ish” hints for printer-panel homes
+        maybeMarkHomingHint(out);
 
-        if (debugMode) {
+        if (!debugMode && (isSetNewScreenLine(out) || isNoisyLine(out))) {
+          // skip
+        } else if (debugMode) {
           if (tMatch || bMatch) {
             const hotStr = temps.hot != null
               ? `${temps.hot.toFixed(1)}${temps.hotTarget != null ? ' / ' + Math.round(temps.hotTarget) : ''}`
@@ -2520,13 +2802,13 @@ async function readLoop() {
           } else {
             logMsg(out);
           }
-        } else if (!isTelemetry) {
-          logMsg(out);
+        } else {
+          if (!isTelemetry) logMsg(out);
         }
 
-        // --- Mesh line ingestion (G29 T variants) ---
-        const justCompleted = ingestMeshLine(out);
-        if (justCompleted) {
+        // --- mesh ingestion (G29 T variants) ---
+        const meshCompleted = ingestMeshLine(out);
+        if (meshCompleted) {
           const meshForUi = meshScratch.map(r => r.slice()); // already Y-flipped
           setActivity('Mesh parsed', 'ok');
           saveMeshLS(meshForUi);
@@ -2536,24 +2818,22 @@ async function readLoop() {
           resetMeshScratch();
         }
 
-        // ---- Probe completion latch (no timeout) ----
+        // --- probe completion latch ---
         if (probeLatch) {
           if (
-            out.includes('//action:notification Settings Stored') || // exact DWIN save event
-            /Bilinear Leveling Grid:/i.test(out)                     // fallback
+            out.includes('//action:notification Settings Stored') ||  // DWIN save event
+            /Bilinear Leveling Grid:/i.test(out)                      // fallback
           ) {
             try { probeLatch.resolve(); } finally { probeLatch = null; }
           }
         }
 
-        // --- PID state hints (don't override if already set) ---
+        // --- PID hints ---
         if (/PID Autotune start/i.test(out)) {
           setActivity('PID tuning…', 'warn');
           if (!pidTarget) {
             if (/\(bed\)/i.test(out) || /\bE-?1\b/i.test(out) || /\bBED\b/i.test(out)) {
               setPidActive('bed', true);
-            } else if (/\(hotend\)/i.test(out) || /\bE0\b/i.test(out) || /\bHOTEND\b/i.test(out)) {
-              setPidActive('hotend', true);
             } else {
               setPidActive('hotend', true);
             }
@@ -2568,7 +2848,7 @@ async function readLoop() {
           clearAllPidUi();
         }
 
-        // --- OK resolver ---
+        // --- ok resolver ---
         if (/^ok\b/i.test(out)) {
           updateLastUpdated();
           if (captureMode) { captureMode = null; startTempPolling(); }
@@ -2583,6 +2863,7 @@ async function readLoop() {
     reading = false;
   }
 }
+
 
 
 //Wait plumbing
@@ -2786,6 +3067,8 @@ async function streamGcode(file) {
   if (sendStatus)   sendStatus.textContent   = 'Homing…';
 
   try {
+    beep('start');
+printerBeep('start');
     const text  = await file.text();
     const lines = text
       .split(/\r?\n/)
@@ -2873,14 +3156,18 @@ async function streamGcode(file) {
     if (cancelStream) {
       sendStatus.textContent = 'Cancelled';
       showEtaPill('ETA: —', 'bad');
-      exitPrintScreen(0);
+      beep('cancel');
+printerBeep('cancel');
+      exitPrintScreen(0, { tellHost: false }); 
       hideEtaPill();
       clearAllPidUi();
     } else {
       sendProgress.style.width = '100%';
       sendStatus.textContent = 'Done';
       showEtaPill('Complete', 'ok');
-      exitPrintScreen(0);
+      beep('done');
+printerBeep('done');
+      exitPrintScreen(0, { tellHost: false }); 
     }
 
     setTimeout(hideEtaPill, 2500);
@@ -2888,6 +3175,8 @@ async function streamGcode(file) {
     cancelSend.disabled = true;
     sendStatus.textContent = 'Error during send';
     showEtaPill('Error', 'bad');
+    beep('error');
+printerBeep('cancel');
     logMsg('❌ Send error: ' + (err?.message || err));
     setTimeout(hideEtaPill, 2500);
   }
@@ -2919,15 +3208,20 @@ async function coolToIdle(opts = {}) {
 }
 
 async function markHomedAfterG28() {
-  await sendCmd('G28'); 
+  await sendCmd('G28');
   await waitForOk().catch(()=>{});
   isHomed = true;
+
+  // Ask for current pos and learn the signature
+  await sendCmd('M114', true);
+  await waitForOk().catch(()=>{});
 }
 
 /* =========================================================
    9) EVENT LISTENERS
 ========================================================= */
 
+primeLine.addEventListener('click', runPrimeLine);
 
 // --- Unlock button: remove any old listeners, bind once ---
 (function bindUnlockClean(){
@@ -3174,8 +3468,8 @@ sendGcode.addEventListener('click', (e) => {
 
 cancelSend.addEventListener('click', async () => {
   if (sendStatus) sendStatus.textContent = 'Cancelling…';
-  cancelSend.disabled = true;              // ✅ prevent double taps
-  showEtaPill('Cancelling…', 'warn');      // ✅ mirror status up top
+  cancelSend.disabled = true;
+  showEtaPill('Cancelling…', 'warn');
 
   cancelStream = true;
   _rejectAllOk(new Error('Cancelled'));
@@ -3184,11 +3478,13 @@ cancelSend.addEventListener('click', async () => {
   await sendCmd('M140 S0'); await waitForOk().catch(() => {});
   await sendCmd('G90');     await waitForOk().catch(() => {});
   await sendCmd('G1 X0 Y0 Z10 F3000'); await waitForOk().catch(() => {});
-
-  exitPrintScreen(0);
+  exitPrintScreen(0, { tellHost: false }); 
   hideEtaPill();
-clearAllPidUi();
+  clearAllPidUi();
+
+  cancelStream = false; // ← reset so future macros work
 });
+
 
 //PID Tab
 bedPidBtn.addEventListener('click', runBedPID);
