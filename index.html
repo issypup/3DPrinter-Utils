@@ -194,6 +194,9 @@
   <span class="pill idle" id="topBedPill">Bed: <span id="topBed">--°C</span></span>
 </span>
 <span id="etaPill" class="pill" style="display:none;">ETA: —</span>
+<span id="netPill" class="pill" title="Live serial throughput and OK latency">
+  TX — · RX — · Lat —
+</span>
 </div>
 
 <h1>3D Printer Utils</h1>
@@ -222,6 +225,18 @@
 <label style="margin-left:8px;">
   <input type="checkbox" id="virtualToggle">
   Virtual printer
+</label>
+<label style="margin-left:8px;">
+  Baud:
+  <select id="baudSelect">
+    <option value="auto" selected>Auto-detect</option>
+    <option value="250000">250000</option>
+    <option value="115200">115200</option>
+    <option value="230400">230400</option>
+    <option value="500000">500000</option>
+    <option value="1000000">1000000</option>
+    <option value="57600">57600</option>
+  </select>
 </label>
     <button id="connectBtn">Connect</button>
     <button id="disconnectBtn" disabled>Disconnect</button>
@@ -638,6 +653,18 @@ const vState = {
    3) STATE (all let)
 ========================================================= */
 
+let net = {
+  txBytesTotal: 0,
+  rxBytesTotal: 0,
+  txSince: 0,
+  rxSince: 0,
+  lastSample: performance.now(),
+  txRate: 0,
+  rxRate: 0,
+  latencyEMA: null,   // ms
+  timer: null
+};
+
 //UI and State flags
 let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
 let criticalDepth = 0;
@@ -713,6 +740,146 @@ let streak = 0;
 /* =========================================================
    5) HELPERS (pure UI / formatting / state)
 ========================================================= */
+
+
+
+
+
+
+
+function startNetMeter() {
+  if (net.timer) return;
+  net.lastSample = performance.now();
+  net.timer = setInterval(sampleNet, 1000);
+}
+
+function stopNetMeter() {
+  if (net.timer) { clearInterval(net.timer); net.timer = null; }
+  net.txRate = 0; net.rxRate = 0;
+  updateNetUi();
+}
+
+function sampleNet() {
+  const now = performance.now();
+  const dt = (now - net.lastSample) / 1000;
+  if (dt <= 0) return;
+
+  const txInstant = net.txSince / dt;
+  const rxInstant = net.rxSince / dt;
+  const a = 0.30; // EMA smoothing
+
+  net.txRate = net.txRate ? (a * txInstant + (1 - a) * net.txRate) : txInstant;
+  net.rxRate = net.rxRate ? (a * rxInstant + (1 - a) * net.rxRate) : rxInstant;
+
+  net.txSince = 0;
+  net.rxSince = 0;
+  net.lastSample = now;
+
+  updateNetUi();
+}
+
+function fmtRate(v) {
+  if (!v) return '—';
+  if (v < 1024) return `${Math.round(v)} B/s`;
+  if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB/s`;
+  return `${(v / 1024 / 1024).toFixed(2)} MB/s`;
+}
+
+function updateNetUi() {
+  const el = document.getElementById('netPill');
+  if (!el) return;
+  const lat = (net.latencyEMA != null) ? `${Math.round(net.latencyEMA)} ms` : '—';
+  el.textContent = `TX ${fmtRate(net.txRate)} · RX ${fmtRate(net.rxRate)} · Lat ${lat}`;
+}
+
+function updateLatency(ms) {
+  const a = 0.20; // EMA for OK latency
+  net.latencyEMA = (net.latencyEMA == null) ? ms : (a * ms + (1 - a) * net.latencyEMA);
+  updateNetUi();
+}
+
+function baudCandidates() {
+  // If user picked a fixed baud, try only that
+  const sel = document.getElementById('baudSelect');
+  const v = sel?.value || 'auto';
+  if (v !== 'auto') {
+    const fixed = parseInt(v, 10);
+    return Number.isFinite(fixed) ? [fixed] : [115200];
+  }
+  // Common Marlin/RepRap/Creality rates – try fastest first
+  return [250000, 115200, 230400, 500000, 1000000, 57600];
+}
+
+async function tryOpenWithBaud(baud, timeoutMs = 1500) {
+  // Clean up any previous partial state
+  try { if (reader) await reader.cancel(); } catch {}
+  try { if (reader) reader.releaseLock(); } catch {}
+  try { if (writer) writer.releaseLock(); } catch {}
+  try { if (port && port.readable && port.writable) await port.close(); } catch {}
+
+  // Open at this baud
+  try {
+    await port.open({ baudRate: baud });
+  } catch (e) {
+    return { success: false, error: e };
+  }
+
+  // Set up reader/writer & decoder (supports both string/bytes)
+  try {
+    if (typeof TextDecoderStream !== 'undefined') {
+      const tds = new TextDecoderStream();
+      textDecoder = tds;
+      port.readable.pipeTo(tds.writable).catch(() => {});
+      reader = tds.readable.getReader();     // yields strings
+    } else {
+      textDecoder = new TextDecoder();
+      reader = port.readable.getReader();    // yields Uint8Array
+    }
+    writer = port.writable.getWriter();
+  } catch (e) {
+    try { await port.close(); } catch {}
+    return { success: false, error: e };
+  }
+
+  // Probe: send a couple of newline “pokes” then M115
+  const enc = new TextEncoder();
+  const poke = async (s) => { try { await writer.write(enc.encode(s)); } catch {} };
+  await poke('\n\nM115\n');
+
+  // Wait for something recognisable (ok/FIRMWARE_NAME/temperature line)
+  const deadline = performance.now() + timeoutMs;
+  let buf = '';
+  try {
+    while (performance.now() < deadline) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = (value instanceof Uint8Array)
+        ? textDecoder.decode(value, { stream: true })
+        : (value ?? '');
+      buf += chunk;
+
+      // Fast path: if we see these tokens, assume success
+      if (/FIRMWARE_NAME:|^ok\b|T:\s*[-+]?\d|B:\s*[-+]?\d/m.test(buf)) {
+        return { success: true, baud };
+      }
+    }
+  } catch (_) {
+    // swallow read errors during probe
+  }
+
+  // No joy: tear down this attempt
+  try { await reader.cancel(); } catch {}
+  try { reader.releaseLock(); } catch {}
+  try { writer.releaseLock(); } catch {}
+  try { await port.close(); } catch {}
+
+  return { success: false };
+}
+
+
+
+
+
 
 //Critical section helpers
 function beginCritical() { if (criticalDepth++ === 0) stopTempPolling(); }
@@ -978,11 +1145,13 @@ function setConnected(connected) {
     topBedPill.classList.add('idle');
     updateTempPanel();
     startTempPolling();
+ startNetMeter();   
     hideEtaPill();
   } else {
     connBadge.textContent = 'Disconnected';
     connBadge.className = 'pill bad';
     stopTempPolling();
+ stopNetMeter();   
     setOfflinePills();
   }
 
@@ -1112,7 +1281,6 @@ async function sendCmdsSequential(...cmds) {
   }
 }
 
-function trace(msg) { console.debug('[TRACE]', msg); }
 
 //Easter EGG
   const resetStreak = () => { streak = 0; };
@@ -1422,6 +1590,7 @@ function promptNumber(message, def) {
 async function connectPrinter() {
   if (isConnecting) return;
   isConnecting = true;
+
   try {
     // Virtual path
     if (virtualMode) {
@@ -1447,43 +1616,31 @@ async function connectPrinter() {
       port = granted[0] || await navigator.serial.requestPort();
     }
 
-    if (!port.readable || !port.writable) {
-      try {
-        await port.open({ baudRate: 115200 });
-      } catch (e) {
-        if (!/already open/i.test(String(e))) throw e;
-        logMsg('Port is already open; reusing existing connection.');
-      }
+    // Try selected/manual baud or auto-detect list
+    let connectedAt = null;
+    for (const b of baudCandidates()) {
+      setActivity(`Trying ${b}…`, 'warn');
+      const res = await tryOpenWithBaud(b, 1500);
+      if (res.success) { connectedAt = res.baud; break; }
     }
 
-    try { if (reader) await reader.cancel(); } catch (e) {}
-    try { if (reader) reader.releaseLock(); } catch (e) {}
-    try { if (writer) writer.releaseLock(); } catch (e) {}
+    if (!connectedAt) {
+      setConnected(false);
+      setActivity('Connect error', 'bad');
+      logMsg('❌ No response at tried baud rates. Try a manual baud or different cable/port.');
+      connKind = 'none';
+      return;
+    }
 
-// Robust reader setup (works even if TextDecoderStream is missing)
-let useBinaryReader = false; // optional flag if you want to branch on it later
-if (typeof TextDecoderStream !== 'undefined') {
-  const tds = new TextDecoderStream();
-  textDecoder = tds; // keep ref for symmetry
-  port.readable.pipeTo(tds.writable).catch(() => {});
-  reader = tds.readable.getReader();          // yields strings
-} else {
-  // Fallback: read raw bytes and decode manually in readLoop
-  useBinaryReader = true;
-  textDecoder = new TextDecoder();
-  reader = port.readable.getReader();         // yields Uint8Array
-}
-writer = port.writable.getWriter();
-
-
+    // Reader/writer/textDecoder are already set by tryOpenWithBaud()
     setConnected(true);
-updateLevelView();
+    updateLevelView();
     hideEtaPill();
     updateTempPanel();
     startTempPolling();
     updateLastUpdated();
-    setActivity('Connected', 'ok');
-    logMsg('Connected.');
+    setActivity(`Connected @ ${connectedAt}`, 'ok');
+    logMsg(`Connected at ${connectedAt} baud.`);
     if (!reading) readLoop();
 
     connKind = 'real';
@@ -1491,10 +1648,8 @@ updateLevelView();
     setConnected(false);
     setActivity('Connect error', 'bad');
     logMsg(String(err?.message || err));
-
     _rejectAllOk(new Error('Connect failed'));
     hideEtaPill();
-
     connKind = 'none';
   } finally {
     isConnecting = false;
@@ -1618,32 +1773,44 @@ function stopVirtualSim() {
 
 //Send paths
 async function sendCmd(cmd, quiet = false) {
-  // Route commands properly only if we're actually in virtual mode *now*
   if (connKind === 'virtual') {
     return sendCmdVirtual(cmd, quiet);
   }
-
   if (!writer) { logMsg('⚠️ Not connected.'); return; }
+
   setLastCmd(cmd);
   setActivity('Sending…', 'warn');
 
-  await writer.write(new TextEncoder().encode(cmd + '\n'));
+  const payload = new TextEncoder().encode(cmd + '\n');
+  await writer.write(payload);
   if (!quiet) logMsg('>> ' + cmd);
+
+  // ⬇️ TX metering
+  net.txBytesTotal += payload.length;
+  net.txSince      += payload.length;
 
   updateLastUpdated();
   setActivity('Waiting…', 'warn');
 }
 
+// --- replace your sendCmdVirtual() with this ---
 async function sendCmdVirtual(cmd, quiet = false) {
   const line = String(cmd).trim();
   setLastCmd(line);
   setActivity('Sending…', 'warn');
   if (!quiet) logMsg('>> ' + line);
 
+  // approximate TX size for virtual path (no real serial)
+  const approxLen = line.length + 1; // + '\n'
+  if (typeof net !== 'undefined') {
+    net.txBytesTotal += approxLen;
+    net.txSince      += approxLen;
+  }
+
   const ok = () => {
     setActivity('Waiting…', 'warn');
     setTimeout(() => {
-      // Suppress "ok" for quiet calls and specifically for M105 polling
+      // suppress visible "ok" for quiet calls and for M105 polls
       if (!quiet && !/^M105\b/i.test(line)) logMsg('ok');
       _resolveNextOk();
       updateLastUpdated();
@@ -1655,8 +1822,8 @@ async function sendCmdVirtual(cmd, quiet = false) {
     const ht = Number.isFinite(vState.hotTarget) ? vState.hotTarget : 0;
     const bt = Number.isFinite(vState.bedTarget) ? vState.bedTarget : 0;
     const telem = `T:${vState.hot.toFixed(1)} / ${Math.round(ht)} B:${vState.bed.toFixed(1)} / ${Math.round(bt)} @:0 B@:0`;
-    logMsg(telem);             // will be auto-suppressed by logMsg when Debug is off
-    refreshVirtualTemps();     // update pills/panels immediately in virtual mode
+    logMsg(telem);
+    refreshVirtualTemps();
   };
 
   switch (true) {
@@ -1667,20 +1834,19 @@ async function sendCmdVirtual(cmd, quiet = false) {
       break;
     }
 
-case /^M303\b/i.test(line): {
-  const eParam = line.match(/\bE\s*(-?\d+)/i);
-  const cParam = line.match(/\bC\s*(\d+)/i);
-  const tool = eParam ? (parseInt(eParam[1], 10) === -1 ? 'bed' : 'hotend') : 'hotend';
-  const cycles = cParam ? Math.max(1, Math.min(20, parseInt(cParam[1], 10))) : 5;
+    // --- PID autotune sim ---
+    case /^M303\b/i.test(line): {
+      const eParam = line.match(/\bE\s*(-?\d+)/i);
+      const cParam = line.match(/\bC\s*(\d+)/i);
+      const tool = eParam ? (parseInt(eParam[1], 10) === -1 ? 'bed' : 'hotend') : 'hotend';
+      const cycles = cParam ? Math.max(1, Math.min(20, parseInt(cParam[1], 10))) : 5;
 
-  logMsg(`PID Autotune start (${tool}) C=${cycles}`);
-  setPidActive(tool, true);
-
-  // Simulate ~0.6s per cycle (tweak as you like)
-  setTimeout(() => logMsg('PID Autotune finished'), Math.round(cycles * 600));
-  ok();
-  break;
-}
+      logMsg(`PID Autotune start (${tool}) C=${cycles}`);
+      setPidActive(tool, true);
+      setTimeout(() => logMsg('PID Autotune finished'), Math.round(cycles * 600));
+      ok();
+      break;
+    }
 
     // --- Targets / basic controls ---
     case /^M104\b/i.test(line): {
@@ -1727,35 +1893,32 @@ case /^M303\b/i.test(line): {
       break;
     }
 
-// --- Mesh report (G29 T) ---
-case /^G29\b/i.test(line) && /\bT\b/i.test(line): {
-  const hasMock = Array.isArray(mockMesh) && mockMesh.length > 0;
-
-  if (hasMock) {
-    for (const raw of mockMesh) {
-      const l = String(raw).trim();
-      if (!l || /^ok\b/i.test(l)) continue;   // avoid double "ok"
-      logMsg(l);                               // show in log
-      processMeshLineFromAnywhere(l);          // parse + update UI
+    // --- Mesh report (G29 T) ---
+    case /^G29\b/i.test(line) && /\bT\b/i.test(line): {
+      const hasMock = Array.isArray(mockMesh) && mockMesh.length > 0;
+      if (hasMock) {
+        for (const raw of mockMesh) {
+          const l = String(raw).trim();
+          if (!l || /^ok\b/i.test(l)) continue;
+          logMsg(l);
+          processMeshLineFromAnywhere(l);
+        }
+      } else {
+        const rows = [
+          [ -0.120, -0.080, -0.035, -0.010 ],
+          [ -0.075, -0.030,  0.005,  0.020 ],
+          [ -0.040,  0.000,  0.030,  0.050 ],
+          [ -0.010,  0.020,  0.055,  0.070 ],
+        ];
+        rows.forEach((vals, y) => {
+          const l = `${y}  ${vals.map(v => (v >= 0 ? `+${v.toFixed(3)}` : v.toFixed(3))).join('  ')}`;
+          logMsg(l);
+          processMeshLineFromAnywhere(l);
+        });
+      }
+      ok();
+      break;
     }
-  } else {
-    // fallback demo grid if no mockMesh provided
-    const rows = [
-      [ -0.120, -0.080, -0.035, -0.010 ],
-      [ -0.075, -0.030,  0.005,  0.020 ],
-      [ -0.040,  0.000,  0.030,  0.050 ],
-      [ -0.010,  0.020,  0.055,  0.070 ],
-    ];
-    rows.forEach((vals, y) => {
-      const l = `${y}  ${vals.map(v => (v >= 0 ? `+${v.toFixed(3)}` : v.toFixed(3))).join('  ')}`;
-      logMsg(l);
-      processMeshLineFromAnywhere(l);
-    });
-  }
-
-  ok(); // resolve the command
-  break;
-}
 
     // --- Info / diagnostics ---
     case /^M115\b/i.test(line): {
@@ -1789,6 +1952,7 @@ case /^G29\b/i.test(line) && /\bT\b/i.test(line): {
 }
 
 //Read and parse loop
+// --- replace your readLoop() with this (adds RX metering, preserves your parsing) ---
 async function readLoop() {
   reading = true;
   try {
@@ -1801,6 +1965,19 @@ async function readLoop() {
         break;
       }
       if (value == null) continue;
+
+      // --- RX metering ---
+      if (value instanceof Uint8Array) {
+        if (typeof net !== 'undefined') {
+          net.rxBytesTotal += value.length;
+          net.rxSince      += value.length;
+        }
+      } else if (typeof value === 'string') {
+        if (typeof net !== 'undefined') {
+          net.rxBytesTotal += value.length;
+          net.rxSince      += value.length;
+        }
+      }
 
       // Normalize chunk to string for both reader types
       const chunk = (value instanceof Uint8Array)
@@ -1816,6 +1993,7 @@ async function readLoop() {
         if (!line) continue;
 
         // --- Temp parsing (M105-style telemetry) ---
+        // gated by captureMode so M115/M122 dumps don't clobber temps
         const tMatch = !captureMode && line.match(TEMP_T);
         const bMatch = !captureMode && line.match(TEMP_B);
 
@@ -1826,9 +2004,7 @@ async function readLoop() {
             temps.hot = tCur;
             temps.hotTarget = Number.isFinite(tTar) ? tTar : null;
 
-            // ambient sampling for hotend
             _pushAmbientSample('hot', temps.hot ?? 0, temps.hotTarget);
-
             setTempPill(topHotendPill, topHotendText, temps.hot, temps.hotTarget, 'hotend');
           }
         }
@@ -1839,9 +2015,7 @@ async function readLoop() {
             temps.bed = bCur;
             temps.bedTarget = Number.isFinite(bTar) ? bTar : null;
 
-            // ambient sampling for bed
             _pushAmbientSample('bed', temps.bed ?? 0, temps.bedTarget);
-
             setTempPill(topBedPill, topBedText, temps.bed, temps.bedTarget, 'bed');
           }
         }
@@ -1891,14 +2065,14 @@ async function readLoop() {
         }
 
         // ---- Probe completion latch (no timeout) ----
-if (probeLatch) {
-  if (
-    out.includes('//action:notification Settings Stored') || // exact DWIN save event
-    /Bilinear Leveling Grid:/i.test(out)                     // fallback
-  ) {
-    try { probeLatch.resolve(); } finally { probeLatch = null; }
-  }
-}
+        if (probeLatch) {
+          if (
+            out.includes('//action:notification Settings Stored') || // exact DWIN save event
+            /Bilinear Leveling Grid:/i.test(out)                     // fallback
+          ) {
+            try { probeLatch.resolve(); } finally { probeLatch = null; }
+          }
+        }
 
         // --- PID state hints (don't override if already set) ---
         if (/PID Autotune start/i.test(out)) {
@@ -1909,16 +2083,14 @@ if (probeLatch) {
             } else if (/\(hotend\)/i.test(out) || /\bE0\b/i.test(out) || /\bHOTEND\b/i.test(out)) {
               setPidActive('hotend', true);
             } else {
-              setPidActive('hotend', true); // default if unknown
+              setPidActive('hotend', true);
             }
           }
         }
-
         if (/PID Autotune finished/i.test(out)) {
           setActivity('PID tuning complete', 'ok');
           clearAllPidUi();
         }
-
         if (/PID Autotune failed/i.test(out)) {
           setActivity('PID tuning failed', 'bad');
           clearAllPidUi();
@@ -1934,7 +2106,6 @@ if (probeLatch) {
     }
   } catch (err) {
     logMsg('⚠️ Read error: ' + (err?.message || err));
-    // Treat any read error as a lost connection unless we're already tearing down
     if (!isDisconnecting) await disconnectPrinter('lost');
   } finally {
     reading = false;
@@ -1954,15 +2125,28 @@ function waitForOk() {
     if (isReal && (!port || !writer)) { wrapReject(new Error('Disconnected')); return; }
     if (cancelStream) { wrapReject(new Error('Cancelled')); return; }
 
-    pendingOk.push({ resolve: wrapResolve, reject: wrapReject });
+    pendingOk.push({ resolve: wrapResolve, reject: wrapReject, startedAt: performance.now() });
   });
 }
 
 function _resolveNextOk() {
   const waiter = pendingOk.shift();
   if (waiter) {
-    try { waiter.resolve(); }
-    finally { if (pendingOk.length === 0) endCritical(); }
+    // compute round-trip latency (send -> ok)
+    const ms = (typeof waiter.startedAt === 'number')
+      ? (performance.now() - waiter.startedAt)
+      : null;
+
+    try {
+      waiter.resolve();
+    } finally {
+      if (ms != null && typeof updateLatency === 'function') {
+        updateLatency(ms);           // update EMA shown in the net pill
+      }
+      if (pendingOk.length === 0) {
+        endCritical();
+      }
+    }
   }
 }
 
