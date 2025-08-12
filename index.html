@@ -355,7 +355,11 @@
     </div>
   </div>
   <div class="row box">
-    <div class="label">Live Temperatures</div>
+<div class="col">
+  <div class="label">Safety</div>
+  <button id="unlockTempsBtn" type="button">Unlock high hotend temps</button>
+  <div class="muted" id="unlockHint">Guardrail ON — max 250°C</div>
+</div>
     <div class="muted">Polled via M105 every 3s while connected</div>
   </div>
 </div>
@@ -543,6 +547,10 @@ const fanSlider       = document.getElementById('fanSlider');
 const fanVal          = document.getElementById('fanVal');
 const fanApply        = document.getElementById('fanApply');
 const fanOff          = document.getElementById('fanOff');
+const unlockTempsBtn = document.getElementById('unlockTempsBtn');
+const unlockHint     = document.getElementById('unlockHint');
+const MAX_HOTEND = 250;
+const MAX_BED    = 110;
 
 //Movement UI
 const jogStep         = document.getElementById('jogStep');
@@ -665,6 +673,11 @@ let net = {
   timer: null
 };
 
+let lastSendTs = null; 
+
+
+let heaterUnlocked = JSON.parse(localStorage.getItem('heaterUnlocked') || 'false');
+
 //UI and State flags
 let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
 let criticalDepth = 0;
@@ -747,6 +760,82 @@ let streak = 0;
 
 
 
+
+function updateUnlockUi() {
+  const btn  = document.getElementById('unlockTempsBtn');
+  const hint = document.getElementById('unlockHint');
+  if (!btn) return;
+
+  // Toggle label + aria state
+  btn.textContent = heaterUnlocked ? 'Lock high hotend temps' : 'Unlock high hotend temps';
+  btn.setAttribute('aria-pressed', heaterUnlocked ? 'true' : 'false');
+
+  // Helper text
+  if (hint) {
+    hint.textContent = heaterUnlocked
+    ? '⚠️ Guardrail OFF — be careful.'
+    : '✅ Guardrail ON — 250°C caps active.';
+  }
+}
+
+function setHeaterUnlocked(on) {
+  heaterUnlocked = !!on;
+  localStorage.setItem('heaterUnlocked', JSON.stringify(heaterUnlocked));
+  updateUnlockUi();
+
+  const msg = heaterUnlocked
+    ? '⚠️ Guardrail OFF — be careful.'
+    : '✅ Guardrail ON — 250°C caps active.';
+  const text = heaterUnlocked ? 'High hotend temps UNLOCKED' : 'High hotend temps LOCKED';
+  const cls  = heaterUnlocked ? 'warn' : '';
+
+  setActivity(text, cls);
+  logMsg(msg);
+}
+
+
+function onUnlockToggle(e){
+  e.preventDefault();
+  setHeaterUnlocked(!heaterUnlocked);
+  setActivity(heaterUnlocked ? 'High hotend temps UNLOCKED' : 'High hotend temps LOCKED',
+              heaterUnlocked ? 'warn' : '');
+  logMsg(heaterUnlocked ? '⚠️ Guardrail OFF — be careful.'
+                        : '✅ Guardrail ON — 250°C caps active.');
+}
+
+if (unlockTempsBtn) unlockTempsBtn.onclick = onUnlockToggle; // bind once
+
+
+function guardHeaterFromCmd(cmd) {
+  if (heaterUnlocked) return true;
+  // Only gate heater-set commands with S values
+  if (!/^(?:M10(?:4|9)|M1(?:40|90))\b/i.test(cmd)) return true;
+  const s = cmd.match(/\bS\s*([0-9.]+)/i);
+  if (!s) return true;
+
+  const val = parseFloat(s[1]);
+  const isHot = /^M10(?:4|9)\b/i.test(cmd);
+  const lim = isHot ? MAX_HOTEND : MAX_BED;
+
+  if (val > lim) {
+    setActivity('Heater limit blocked', 'bad');
+    logMsg(`⛔ Blocked: ${cmd} (limit ${lim}°C; click “Unlock hotend high temps” to override)`);
+    return false;
+  }
+  return true;
+}
+
+function guardHeaterSet(tool, target, sourceLabel='UI') {
+  const limit = tool === 'hotend' ? MAX_HOTEND : MAX_BED;
+  if (Number.isFinite(target) && target > limit && !heaterUnlocked) {
+    setActivity('Blocked by heater guardrail', 'bad');
+    alert(`⛔ Limit ${limit}°C. Requested ${target}°C from ${sourceLabel}. Click “Unlock high hotend temps” to allow this.`);
+    return false;
+  }
+  return true;
+}
+
+
 function startNetMeter() {
   if (net.timer) return;
   net.lastSample = performance.now();
@@ -798,76 +887,94 @@ function updateLatency(ms) {
   updateNetUi();
 }
 
-function baudCandidates() {
-  // If user picked a fixed baud, try only that
+
+// --- Baud selection and robust open/probe helpers ---------------------------
+function baudSelection() {
   const sel = document.getElementById('baudSelect');
   const v = sel?.value || 'auto';
   if (v !== 'auto') {
     const fixed = parseInt(v, 10);
-    return Number.isFinite(fixed) ? [fixed] : [115200];
+    return { mode: 'manual', list: Number.isFinite(fixed) ? [fixed] : [115200] };
   }
-  // Common Marlin/RepRap/Creality rates – try fastest first
-  return [250000, 115200, 230400, 500000, 1000000, 57600];
+  // Try common rates (most likely first)
+  return { mode: 'auto', list: [250000, 115200, 230400, 500000, 1000000, 57600] };
 }
 
-async function tryOpenWithBaud(baud, timeoutMs = 1500) {
-  // Clean up any previous partial state
+async function nudgeDTRRTS() {
+  // Some boards wake/reset on signal toggles
+  try {
+    await port.setSignals({ dataTerminalReady: true,  requestToSend: true });
+    await sleep(80);
+    await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+  } catch { /* not supported on every driver */}
+}
+
+async function openAtBaud(baud) {
+  // Clean any prior state
   try { if (reader) await reader.cancel(); } catch {}
   try { if (reader) reader.releaseLock(); } catch {}
   try { if (writer) writer.releaseLock(); } catch {}
-  try { if (port && port.readable && port.writable) await port.close(); } catch {}
+  try { if (port && (port.readable || port.writable)) await port.close(); } catch {}
 
-  // Open at this baud
+  await port.open({ baudRate: baud });
+
+  // Pipe as strings when available for better perf
+  if (typeof TextDecoderStream !== 'undefined') {
+    const tds = new TextDecoderStream();
+    textDecoder = tds;
+    port.readable.pipeTo(tds.writable).catch(() => {});
+    reader = tds.readable.getReader();      // yields strings
+  } else {
+    textDecoder = new TextDecoder();
+    reader = port.readable.getReader();     // yields Uint8Array
+  }
+  writer = port.writable.getWriter();
+
+  await nudgeDTRRTS(); // wake it up a bit
+  return { success: true, baud };
+}
+
+// Auto-detect helper: open, poke, and look for tokens; otherwise close & fail.
+async function probeAtBaud(baud, timeoutMs = 5000) {
   try {
-    await port.open({ baudRate: baud });
+    await openAtBaud(baud);
   } catch (e) {
     return { success: false, error: e };
   }
 
-  // Set up reader/writer & decoder (supports both string/bytes)
-  try {
-    if (typeof TextDecoderStream !== 'undefined') {
-      const tds = new TextDecoderStream();
-      textDecoder = tds;
-      port.readable.pipeTo(tds.writable).catch(() => {});
-      reader = tds.readable.getReader();     // yields strings
-    } else {
-      textDecoder = new TextDecoder();
-      reader = port.readable.getReader();    // yields Uint8Array
-    }
-    writer = port.writable.getWriter();
-  } catch (e) {
-    try { await port.close(); } catch {}
-    return { success: false, error: e };
-  }
-
-  // Probe: send a couple of newline “pokes” then M115
   const enc = new TextEncoder();
   const poke = async (s) => { try { await writer.write(enc.encode(s)); } catch {} };
-  await poke('\n\nM115\n');
 
-  // Wait for something recognisable (ok/FIRMWARE_NAME/temperature line)
+  // Send a few CRLFs then M115; some stacks only react to \r\n
+  await poke('\r\n\r\nM115\r\n');
+
   const deadline = performance.now() + timeoutMs;
   let buf = '';
+
   try {
     while (performance.now() < deadline) {
       const { value, done } = await reader.read();
       if (done) break;
+
+      // Normalize to string
       const chunk = (value instanceof Uint8Array)
         ? textDecoder.decode(value, { stream: true })
         : (value ?? '');
+
       buf += chunk;
 
-      // Fast path: if we see these tokens, assume success
-      if (/FIRMWARE_NAME:|^ok\b|T:\s*[-+]?\d|B:\s*[-+]?\d/m.test(buf)) {
+      // Accept any of these as "alive":
+      // - Marlin/RepRap M115 banner
+      // - a plain "start"
+      // - an "ok"
+      // - temps like "T:..." or "B:..."
+      if (/FIRMWARE_NAME:|^start\b|^ok\b|T:\s*[-+]?\d|B:\s*[-+]?\d/m.test(buf)) {
         return { success: true, baud };
       }
     }
-  } catch (_) {
-    // swallow read errors during probe
-  }
+  } catch { /* ignore transient read errors during probing */ }
 
-  // No joy: tear down this attempt
+  // No luck: tear down cleanly
   try { await reader.cancel(); } catch {}
   try { reader.releaseLock(); } catch {}
   try { writer.releaseLock(); } catch {}
@@ -875,6 +982,16 @@ async function tryOpenWithBaud(baud, timeoutMs = 1500) {
 
   return { success: false };
 }
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -1144,6 +1261,12 @@ function setConnected(connected) {
     topHotendPill.classList.add('idle');
     topBedPill.classList.add('idle');
     updateTempPanel();
+    // reset live net meter on fresh connect
+    net.txBytesTotal = net.rxBytesTotal = 0;
+    net.txSince = net.rxSince = 0;
+    net.txRate = net.rxRate = 0;
+    net.latencyEMA = null;
+    updateNetUi();
     startTempPolling();
  startNetMeter();   
     hideEtaPill();
@@ -1587,6 +1710,7 @@ function promptNumber(message, def) {
 ========================================================= */
 
 //Real Connection
+//Real Connection
 async function connectPrinter() {
   if (isConnecting) return;
   isConnecting = true;
@@ -1616,24 +1740,35 @@ async function connectPrinter() {
       port = granted[0] || await navigator.serial.requestPort();
     }
 
-    // Try selected/manual baud or auto-detect list
+    const sel = baudSelection();
     let connectedAt = null;
-    for (const b of baudCandidates()) {
-      setActivity(`Trying ${b}…`, 'warn');
-      const res = await tryOpenWithBaud(b, 1500);
-      if (res.success) { connectedAt = res.baud; break; }
+
+    if (sel.mode === 'manual') {
+      // Open immediately at the selected baud (no handshake gating)
+      const b = sel.list[0];
+      await openAtBaud(b);
+      connectedAt = b;
+    } else {
+      // Auto-detect: probe each candidate with a longer timeout
+      for (const b of sel.list) {
+        setActivity(`Trying ${b}…`, 'warn');
+        const res = await probeAtBaud(b, 5000);
+        if (res.success) { connectedAt = res.baud; break; }
+        await sleep(180); // brief pause before the next try
+      }
     }
 
     if (!connectedAt) {
       setConnected(false);
       setActivity('Connect error', 'bad');
-      logMsg('❌ No response at tried baud rates. Try a manual baud or different cable/port.');
+      logMsg('❌ No response at tried baud rates. Try selecting 115200 manually or another cable/port.');
       connKind = 'none';
       return;
     }
 
-    // Reader/writer/textDecoder are already set by tryOpenWithBaud()
+    // We're open with reader/writer from openAtBaud()/probeAtBaud()
     setConnected(true);
+    sendCmd('M105', true); // prime a latency sample
     updateLevelView();
     hideEtaPill();
     updateTempPanel();
@@ -1776,16 +1911,29 @@ async function sendCmd(cmd, quiet = false) {
   if (connKind === 'virtual') {
     return sendCmdVirtual(cmd, quiet);
   }
-  if (!writer) { logMsg('⚠️ Not connected.'); return; }
+
+  // Guardrail first (blocks M104/109 or M140/190 over limits)
+  if (!guardHeaterFromCmd(cmd)) {
+    throw new Error('Heater guardrail blocked high temperature command');
+  }
+
+  if (!writer) {
+    setActivity('Not connected', 'bad');
+    throw new Error('Not connected');
+  }
 
   setLastCmd(cmd);
   setActivity('Sending…', 'warn');
 
   const payload = new TextEncoder().encode(cmd + '\n');
+
+  // ✅ stamp the send time so “ok” without a waiter can update latency
+  lastSendTs = performance.now();
+
   await writer.write(payload);
   if (!quiet) logMsg('>> ' + cmd);
 
-  // ⬇️ TX metering
+  // TX metering
   net.txBytesTotal += payload.length;
   net.txSince      += payload.length;
 
@@ -1793,12 +1941,19 @@ async function sendCmd(cmd, quiet = false) {
   setActivity('Waiting…', 'warn');
 }
 
-// --- replace your sendCmdVirtual() with this ---
 async function sendCmdVirtual(cmd, quiet = false) {
   const line = String(cmd).trim();
+
+  // ✅ Heater guardrail (blocks M104/109 >300, M140/190 >130 unless unlocked)
+  if (!guardHeaterFromCmd(line)) {
+    throw new Error('Heater guardrail blocked high temperature command');
+  }
+
   setLastCmd(line);
   setActivity('Sending…', 'warn');
   if (!quiet) logMsg('>> ' + line);
+
+lastSendTs = performance.now();
 
   // approximate TX size for virtual path (no real serial)
   const approxLen = line.length + 1; // + '\n'
@@ -1812,7 +1967,7 @@ async function sendCmdVirtual(cmd, quiet = false) {
     setTimeout(() => {
       // suppress visible "ok" for quiet calls and for M105 polls
       if (!quiet && !/^M105\b/i.test(line)) logMsg('ok');
-      _resolveNextOk();
+      _resolveNextOk();          // updates latency EMA if a waiter is present
       updateLastUpdated();
       setActivity('Idle');
     }, 60);
@@ -2132,23 +2287,31 @@ function waitForOk() {
 function _resolveNextOk() {
   const waiter = pendingOk.shift();
   if (waiter) {
-    // compute round-trip latency (send -> ok)
     const ms = (typeof waiter.startedAt === 'number')
       ? (performance.now() - waiter.startedAt)
       : null;
 
-    try {
-      waiter.resolve();
-    } finally {
+    try { waiter.resolve(); } finally {
       if (ms != null && typeof updateLatency === 'function') {
-        updateLatency(ms);           // update EMA shown in the net pill
+        updateLatency(ms);
       }
-      if (pendingOk.length === 0) {
-        endCritical();
+      // ✅ avoid stale measurements on the next ok
+      lastSendTs = null;
+
+      if (pendingOk.length === 0) endCritical();
+    }
+  } else {
+    if (lastSendTs != null) {
+      const ms = performance.now() - lastSendTs;
+      lastSendTs = null;                 // consume this measurement
+      if (ms > 0 && isFinite(ms) && typeof updateLatency === 'function') {
+        updateLatency(ms);
       }
     }
   }
 }
+
+
 
 function _rejectAllOk(err) {
   const all = pendingOk.splice(0);
@@ -2254,7 +2417,7 @@ async function reprobe(){
 function sendManual(){
   const cmd = manualCmd.value.trim();
   if (!cmd) return;
-  sendCmd(cmd);
+  sendCmd(cmd).catch(err => logMsg('⚠️ ' + (err?.message || 'Send failed')));
   manualCmd.value = '';
 }
 
@@ -2448,6 +2611,25 @@ async function markHomedAfterG28() {
    9) EVENT LISTENERS
 ========================================================= */
 
+
+// --- Unlock button: remove any old listeners, bind once ---
+(function bindUnlockClean(){
+  const oldBtn = document.getElementById('unlockTempsBtn'); // correct id
+  if (!oldBtn) return;
+  const newBtn = oldBtn.cloneNode(true);          // drop any old listeners
+  oldBtn.parentNode.replaceChild(newBtn, oldBtn);
+
+  newBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    setHeaterUnlocked(!heaterUnlocked);           // ← this alone
+  });
+})();
+
+
+
+
+
 //Connection
 connectBtn.addEventListener('click', () => { trace('Connect button'); connectPrinter(); });
 
@@ -2455,7 +2637,6 @@ disconnectBtn.addEventListener('click', () => {
   trace('Disconnect button');
   disconnectPrinter('user');
 });
-
 
 //Leveling
 exportMeshBtn.addEventListener('click', () => {
@@ -2505,13 +2686,19 @@ manualCmd.addEventListener('input', () => { captureMode = null; });
 clearLogBtn.addEventListener('click', () => { printerLog.textContent = ''; });
 
 //Temps and fan
-hotendApply.addEventListener('click', () =>
-  sendCmd(`M104 S${Math.max(0, Math.min(300, parseInt(hotendSet.value)||0))}`));
+hotendApply.addEventListener('click', () => {
+  const val = Math.max(0, Math.min(3000, parseInt(hotendSet.value) || 0)); // clamp silly inputs
+  if (!guardHeaterSet('hotend', val, 'Hotend Set')) return;
+  sendCmd(`M104 S${val}`);
+});
 
 hotendOff.addEventListener('click',   () => sendCmd('M104 S0'));
 
-bedApply.addEventListener('click',    () =>
-  sendCmd(`M140 S${Math.max(0, Math.min(130, parseInt(bedSet.value)||0))}`));
+bedApply.addEventListener('click', () => {
+  const val = Math.max(0, Math.min(3000, parseInt(bedSet.value) || 0));
+  if (!guardHeaterSet('bed', val, 'Bed Set')) return;
+  sendCmd(`M140 S${val}`);
+});
 
 bedOff.addEventListener('click',      () => sendCmd('M140 S0'));
 
@@ -2598,6 +2785,7 @@ loadFil.addEventListener('click', async () => {
   const mm   = parseFloat(safePrompt('How many mm to LOAD?', '60'));
   if (!Number.isFinite(mm) || mm <= 0) return;
   const temp = parseFloat(safePrompt('Hotend temp for load (°C)?', '200'));
+if (!guardHeaterSet('hotend', temp, 'Filament Load')) return;
   if (!Number.isFinite(temp) || temp <= 0) return;
   try {
     await sendCmd('G28');                    await waitForOk().catch(()=>{});
@@ -2621,6 +2809,7 @@ unloadFil.addEventListener('click', async () => {
   const mm   = parseFloat(safePrompt('How many mm to UNLOAD?', '60'));
   if (!Number.isFinite(mm) || mm <= 0) return;
   const temp = parseFloat(safePrompt('Hotend temp for unload (°C)?', '200'));
+if (!guardHeaterSet('hotend', temp, 'Filament Unload')) return;
   if (!Number.isFinite(temp) || temp <= 0) return;
   try {
     await sendCmd('G28');                    await waitForOk().catch(()=>{});
@@ -2756,6 +2945,7 @@ if (virtualToggle) {
   setOfflinePills();
   updateLevelView();
   initPrinterName();
+  updateUnlockUi();
 })();
 </script>
 </body>
