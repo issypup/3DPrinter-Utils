@@ -2,7 +2,7 @@ Connection & device support:
 
 Manual baud rate selector + auto-detect. (added needs testing)
 
-Live indicator of RX/TX throughput/latency.
+Live indicator of RX/TX throughput/latency. (added needs testing)
 
 Soft “Are you sure?” gate before sending manual G-codes
 
@@ -138,5 +138,6 @@ Maintenance scheduler (usage counters, hours, cycles)(check belt tension, check 
 Heater interlocks: require part cooling fan off during PID; block probing while bed > threshold.
 
 ETA v2: hybrid model (path length, extrusion volume, board RTT) with online learning.
+
 
 Safety heuristics engine: detect dangerous sequences (e.g., Z- move before homing) and block with reason.
