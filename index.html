@@ -7,6 +7,30 @@
 <meta name="author" content="issypup">
 <meta name="date" content="2025-08-10">
 <style>
+/* === G-code Preview === */
+.gp-wrap {
+  display: grid; gap: 8px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 10px; box-shadow: var(--shadow);
+}
+.gp-bar { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
+.gp-bar label { display:flex; align-items:center; gap:6px; font-size: 14px; color: var(--text); }
+.gp-bar input[type="range"] { width: 280px; }
+.gp-canvas {
+  position: relative; height: 360px; border: 1px dashed var(--border);
+  border-radius: 8px; background: color-mix(in oklab, var(--panel) 90%, var(--text) 10%);
+  overflow: hidden;
+}
+#gcodeCanvas { width: 100%; height: 100%; display: block; }
+.gp-legend { font-size:12px; color: var(--muted); display:flex; gap:12px; }
+.gp-chip { display:inline-flex; align-items:center; gap:6px; }
+.gp-dot { width:10px; height:10px; border-radius:999px; display:inline-block; }
+.gp-dot.prev { background: color-mix(in oklab, var(--text) 20%, transparent); }
+.gp-dot.curr { background: var(--accent); }
+.gp-dot.travel { background: color-mix(in oklab, var(--text) 35%, transparent); }
+
+
+
   :root { --bar-h: 42px; }
   body {
     font-family: sans-serif;
@@ -198,6 +222,234 @@
 #eeClose:hover { background:#e5e5e5; }
 
 #liveChart { width: 100%; height: 260px; display: block; }
+
+
+/* ===== HELP DRAWER ===== */
+.help-drawer {
+  position: fixed; right: 0; top: var(--bar-h, 42px);
+  width: min(420px, 88vw); height: calc(100vh - var(--bar-h, 42px));
+  background: var(--panel); color: var(--text);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  display: none; flex-direction: column; z-index: 9998;
+}
+.help-drawer.open { display: flex; }
+
+.help-head {
+  display:flex; align-items:center; gap:8px; padding:10px 12px;
+  border-bottom:1px solid var(--border);
+}
+.help-head h3 { margin:0; font-size:16px; flex:1; }
+.help-actions { display:flex; gap:8px; }
+.help-actions input[type="search"] { width: 180px; }
+
+.help-body {
+  overflow: auto; padding: 12px 14px; line-height: 1.45;
+}
+.help-body h4 { margin: 1em 0 .4em; }
+.help-body p { margin: .5em 0; }
+.help-body code, .help-body kbd {
+  background: color-mix(in oklab, var(--panel) 85%, var(--text) 15%);
+  border: 1px solid var(--border); padding: .1em .35em; border-radius: 6px;
+}
+.help-body pre {
+  background: color-mix(in oklab, var(--panel) 85%, var(--text) 15%);
+  border: 1px solid var(--border); padding: 8px; border-radius: 8px;
+  overflow: auto;
+}
+.help-resize {
+  position: absolute; left: -6px; top: 0; bottom: 0; width: 8px; cursor: ew-resize;
+}
+.help-toggle-btn {
+  display:inline-flex; align-items:center; gap:6px;
+  padding:4px 8px; border:1px solid var(--border);
+  background: var(--panel); border-radius: 8px; cursor: pointer;
+}
+/* ============ Docked Help layout ============ */
+
+/* Two-column grid that holds the whole app area (tabs + tabContent) and the Help aside */
+.app-layout {
+  display: grid;
+  grid-template-columns: 1fr minmax(300px, 420px);
+  gap: 12px;
+  align-items: start;
+  margin-top: 8px; /* tiny breathing room under the tab bar */
+}
+
+/* Make the drawer live "in flow" when docked */
+.app-layout .help-drawer {
+  position: sticky;      /* stays visible while you scroll */
+  top: calc(var(--bar-h, 42px) + 8px);
+  height: calc(100vh - var(--bar-h, 42px) - 24px);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  display: none;         /* hidden until Help is toggled */
+}
+
+/* Visible when toggled */
+.app-layout .help-drawer.open { display: flex; }
+
+/* The main content column */
+#appMain { min-width: 0; } /* allow content to shrink and not overflow */
+
+/* Responsiveness: on small screens, fall back to the original overlay behavior */
+@media (max-width: 1000px) {
+  .app-layout {
+    grid-template-columns: 1fr; /* single column */
+  }
+  .app-layout .help-drawer {
+    position: fixed;
+    right: 0; top: var(--bar-h, 42px);
+    width: min(420px, 88vw);
+    height: calc(100vh - var(--bar-h, 42px));
+    display: none; /* still controlled by .open */
+  }
+  .app-layout .help-drawer.open { display: flex; }
+}
+
+/* Position vars the JS will update */
+:root {
+  --help-top: calc(var(--bar-h, 42px) + 8px);
+}
+.help-drawer {
+  position: fixed;
+  right: 0;
+  top: var(--help-top);
+  height: calc(100vh - var(--help-top) - 16px);
+  width: min(420px, 88vw);
+}
+
+#helpCard {
+  width: min(760px, 92vw); max-height: 82vh;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+  display: grid; grid-template-rows: auto 1fr;
+}
+#helpHead {
+  display:flex; align-items:center; gap:8px;
+  padding:12px 14px; border-bottom:1px solid var(--border); cursor: move; /* draggable handle */
+}
+#helpHead h3 { margin:0; font-size:16px; flex:1; }
+#helpActions { display:flex; gap:8px; align-items:center; }
+#helpBodyWrap { overflow:auto; padding: 12px 14px; }
+
+/* Reuse existing help content styles */
+#helpBodyWrap .help-body h4 { margin: 1em 0 .4em; }
+#helpBodyWrap .help-body p  { margin: .5em 0; }
+#helpBodyWrap .help-body code, 
+#helpBodyWrap .help-body kbd {
+  background: color-mix(in oklab, var(--panel) 85%, var(--text) 15%);
+  border: 1px solid var(--border); padding: .1em .35em; border-radius: 6px;
+}
+#helpBodyWrap .help-body pre {
+  background: color-mix(in oklab, var(--panel) 85%, var(--text) 15%);
+  border: 1px solid var(--border); padding: 8px; border-radius: 8px; overflow:auto;
+}
+
+/* ==== HELP MODAL (fixed) ==== */
+#helpOverlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.45);
+  display: none; z-index: 10000;
+}
+#helpModal {
+  position: fixed; inset: 0; display: none; place-items: center; z-index: 10001;
+}
+#helpHead {
+  display:flex; align-items:center; gap:8px;
+  padding:12px 14px; border-bottom:1px solid var(--border); cursor: move; /* draggable handle */
+}
+#helpHead h3 { margin:0; font-size:16px; flex:1; }
+#helpActions { display:flex; gap:8px; align-items:center; }
+#helpBodyWrap { overflow:auto; padding: 12px 14px; }
+
+/* show */
+#helpOverlay.open, #helpModal.open { display: grid; }
+
+/* Force a clean, white Help modal regardless of theme */
+#helpCard {
+  background: #fff !important;
+  color: #111 !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.25);
+}
+#helpHead { background: transparent; }
+#helpBodyWrap { background: transparent; }
+
+/* Make sure overlay is clickable and above everything */
+#helpOverlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.45);
+  z-index: 10000;
+}
+#helpModal { position: fixed; inset: 0; display: none; place-items: center; z-index: 10001; }
+#helpOverlay.open, #helpModal.open { display: grid; }
+
+#helpOverlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.45);
+  display: none;
+  z-index: 10000;
+}
+#helpModal {
+  position: fixed; inset: 0;
+  display: none;           /* toggled via .open */
+  place-items: center;
+  z-index: 10001;
+}
+#helpOverlay.open, #helpModal.open { display: grid; }
+
+#helpCard {
+  width: min(780px, 92vw);
+  max-height: 82vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: #fff !important;     /* force white card */
+  color: #111 !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.25);
+}
+#helpHead {
+  display:flex; align-items:center; gap:8px;
+  padding:12px 14px; border-bottom:1px solid #e5e7eb;
+  cursor: move; /* draggable handle */
+}
+#helpHead h3 { margin:0; font-size:16px; flex:1; }
+#helpActions { display:flex; gap:8px; align-items:center; }
+#helpActions input[type="search"] { width: 220px; }
+#helpBodyWrap { overflow:auto; padding: 12px 14px; }
+
+/* Reuse your help body typography */
+#helpBodyWrap .help-body h4 { margin: 1em 0 .4em; }
+#helpBodyWrap .help-body p  { margin: .5em 0; }
+#helpBodyWrap .help-body code, 
+#helpBodyWrap .help-body kbd {
+  background: #f4f6f8;
+  border: 1px solid #e5e7eb; padding: .1em .35em; border-radius: 6px;
+}
+#helpBodyWrap .help-body pre {
+  background: #f4f6f8;
+  border: 1px solid #e5e7eb; padding: 8px; border-radius: 8px; overflow:auto;
+}
+
+#helpOverlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;z-index:10000;}
+#helpModal{position:fixed;inset:0;display:none;place-items:center;z-index:10001;}
+#helpOverlay.open,#helpModal.open{display:grid;}
+#helpCard{
+  width:min(780px,92vw);max-height:82vh;display:grid;grid-template-rows:auto 1fr;
+  background:#fff;color:#111;border:1px solid #e5e7eb;border-radius:12px;
+  box-shadow:0 12px 32px rgba(0,0,0,.25);
+}
+#helpHead{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid #e5e7eb;}
+#helpHead h3{margin:0;font-size:16px;flex:1;}
+#helpActions{display:flex;gap:8px;align-items:center;}
+#helpActions input[type="search"]{width:220px;}
+#helpBodyWrap{overflow:auto;padding:12px 14px;}
+/* Doc typography */
+#helpBody code,#helpBody kbd{background:#f4f6f8;border:1px solid #e5e7eb;padding:.1em .35em;border-radius:6px;}
+#helpBody pre{background:#f4f6f8;border:1px solid #e5e7eb;padding:8px;border-radius:8px;overflow:auto;}
+
 </style>
 </head>
 <body>
@@ -644,6 +896,39 @@
     <span id="etaStatus" class="muted" style="margin-left:10px"></span>
   </div>
   <p class="muted">Sends the file line-by-line over serial. Comments/blank lines are skipped. This is best for short jobs, calibration, or macros.</p>
+
+
+<div class="gp-wrap" id="gcodePreview">
+  <div class="gp-bar">
+    <label>File
+      <input type="file" id="gcodeFile" accept=".gcode,.gco,.nc,.txt">
+    </label>
+    <label>Layer
+      <input type="range" id="layerScrub" min="0" max="0" value="0" step="1">
+      <span id="layerInfo">—</span>
+    </label>
+    <label>
+      <input type="checkbox" id="showTravel" checked>
+      Show travel
+    </label>
+    <button id="zoomFit">Fit</button>
+    <button id="zoom1">1:1</button>
+    <button id="resetPan">Center</button>
+  </div>
+
+  <div class="gp-canvas">
+    <canvas id="gcodeCanvas"></canvas>
+  </div>
+
+  <div class="gp-legend">
+    <span class="gp-chip"><span class="gp-dot prev"></span> Previous layers</span>
+    <span class="gp-chip"><span class="gp-dot curr"></span> Current layer</span>
+    <span class="gp-chip"><span class="gp-dot travel"></span> Travel moves</span>
+  </div>
+</div>
+
+
+
   <!-- Preflight Modal -->
 <div id="preOverlay" aria-hidden="true" style="display:none"></div>
 <div id="preModal" role="dialog" aria-modal="true" aria-labelledby="preTitle" style="display:none">
@@ -1987,6 +2272,342 @@ const vState = {
    5) HELPERS (pure UI / formatting / state)
 ========================================================= */
 
+/* ================= G-code Previewer ================= */
+(function(){
+  const els = {
+    file: document.getElementById('gcodeFile'),
+    canvas: document.getElementById('gcodeCanvas'),
+    scrub: document.getElementById('layerScrub'),
+    info: document.getElementById('layerInfo'),
+    travel: document.getElementById('showTravel'),
+    zoomFit: document.getElementById('zoomFit'),
+    zoom1: document.getElementById('zoom1'),
+    resetPan: document.getElementById('resetPan'),
+    wrap: document.getElementById('gcodePreview')
+  };
+  const ctx = els.canvas.getContext('2d', { alpha: false });
+
+  // ----- Model -----
+  let layers = [];            // [{z, lines:[{x1,y1,x2,y2, extruding, lineNo}]}]
+  let zList = [];             // sorted z values
+  let bbox = {minX:0, minY:0, maxX:1, maxY:1};
+  let scale = 1, offsetX = 0, offsetY = 0; // world->screen
+  let pan = {x:0, y:0}, zoom = 1;
+
+  // ----- Utilities -----
+  const EPS_Z = 0.0009;
+  function nearlyEqual(a,b,eps){ return Math.abs(a-b) <= eps; }
+  function clamp(n,min,max){ return Math.max(min, Math.min(max, n)); }
+
+  // Color tokens from CSS
+  function token(name, fallback){
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+  }
+
+  // ----- Parser -----
+  function parseGCode(text){
+    layers = []; zList = [];
+    bbox = {minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity};
+
+    let x=0, y=0, z=0, e=0, f=0;
+    let absPos = true;   // G90/G91
+    let absE = true;     // M82/M83
+    let lastE = 0;
+
+    let currentLayer = null;
+    let layerByIndex = {}; // capture ;LAYER: comments
+
+    const lines = text.split(/\r?\n/);
+    for (let i=0; i<lines.length; i++){
+      let raw = lines[i];
+      // strip comments (; ... or ( ... ) ) basic
+      let line = raw.replace(/\(.*?\)/g,'').split(';')[0].trim();
+      if (!line) {
+        // Capture Cura-like layer markers for better accuracy
+        const layerMatch = raw.match(/;\s*LAYER\s*:\s*(\d+)/i) || raw.match(/;\s*layer\s*(\d+)/i);
+        if (layerMatch) layerByIndex[Number(layerMatch[1])] = z;
+        continue;
+      }
+
+      const cmd = line.split(/\s+/)[0].toUpperCase();
+
+      if (cmd === 'G90') { absPos = true; continue; }
+      if (cmd === 'G91') { absPos = false; continue; }
+      if (cmd === 'M82') { absE = true;  continue; }
+      if (cmd === 'M83') { absE = false; continue; }
+
+      if (cmd === 'G92') {
+        // Set position: parse axes present
+        const p = parseParams(line);
+        if (p.X!=null) x = p.X;
+        if (p.Y!=null) y = p.Y;
+        if (p.Z!=null) z = p.Z;
+        if (p.E!=null) { e = p.E; lastE = e; }
+        continue;
+      }
+
+      if (cmd === 'G0' || cmd === 'G1') {
+        const p = parseParams(line);
+        let nx = (p.X!=null) ? (absPos ? p.X : x + p.X) : x;
+        let ny = (p.Y!=null) ? (absPos ? p.Y : y + p.Y) : y;
+        let nz = (p.Z!=null) ? (absPos ? p.Z : z + p.Z) : z;
+        let ne = (p.E!=null) ? (absE ? p.E : e + p.E) : e;
+        if (p.F!=null) f = p.F;
+
+        // new layer if Z changed noticeably
+        if (!currentLayer || !nearlyEqual(nz, currentLayer.z, EPS_Z)) {
+          currentLayer = getOrCreateLayer(nz);
+        }
+
+        const extruding = (ne > lastE + 1e-9);
+        if ((nx!==x || ny!==y || nz!==z) && (extruding || p.X!=null || p.Y!=null)) {
+          // store only XY segments (2D top view). Ignore pure Z hops.
+          if (!nearlyEqual(nz, currentLayer.z, EPS_Z)) {
+            currentLayer = getOrCreateLayer(nz);
+          }
+          if (nx!==x || ny!==y) {
+            currentLayer.lines.push({ x1:x, y1:y, x2:nx, y2:ny, extruding, lineNo: i+1 });
+            // expand bbox
+            bbox.minX = Math.min(bbox.minX, x, nx);
+            bbox.minY = Math.min(bbox.minY, y, ny);
+            bbox.maxX = Math.max(bbox.maxX, x, nx);
+            bbox.maxY = Math.max(bbox.maxY, y, ny);
+          }
+        }
+        x = nx; y = ny; z = nz; lastE = e = ne;
+        continue;
+      }
+
+      // ignore other codes for 2D preview
+    }
+
+    // sort layers by z
+    layers.sort((a,b)=>a.z-b.z);
+    zList = layers.map(l=>l.z);
+
+    // If any ;LAYER markers existed, we could remap (optional, kept simple here)
+
+    // guard bbox
+    if (!isFinite(bbox.minX)) bbox = {minX:0, minY:0, maxX:1, maxY:1};
+    return { layers, bbox };
+  }
+
+  function parseParams(line){
+    const p = {};
+    line.replace(/[A-Za-z][-+]?\d*\.?\d+(e[-+]?\d+)?/gi, tok=>{
+      const letter = tok[0].toUpperCase();
+      const num = parseFloat(tok.slice(1));
+      p[letter] = num;
+    });
+    return p;
+  }
+
+  function getOrCreateLayer(z){
+    // merge z into existing within EPS_Z
+    for (const L of layers) if (nearlyEqual(L.z, z, EPS_Z)) return L;
+    const L = { z, lines: [] };
+    layers.push(L);
+    return L;
+  }
+
+  // ----- View / Transform -----
+  function resizeCanvas(){
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const r = els.canvas.getBoundingClientRect();
+    els.canvas.width = Math.floor(r.width * dpr);
+    els.canvas.height = Math.floor(r.height * dpr);
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.scale(dpr, dpr);
+    fitView();
+  }
+
+  function fitView(){
+    const pad = 10;
+    const w = els.canvas.clientWidth - pad*2;
+    const h = els.canvas.clientHeight - pad*2;
+    const bw = Math.max(1e-6, bbox.maxX - bbox.minX);
+    const bh = Math.max(1e-6, bbox.maxY - bbox.minY);
+    const sx = w / bw;
+    const sy = h / bh;
+    scale = Math.min(sx, sy);
+    offsetX = -bbox.minX + (w/scale - bw)/2;
+    offsetY = -bbox.minY + (h/scale - bh)/2;
+    zoom = 1; pan = {x:0, y:0};
+    render();
+  }
+
+  function worldToScreen(x,y){
+    // Flip Y so +Y is up visually (optional). Here we keep slicer coords (origin lower-left).
+    const sx = (x + offsetX + pan.x) * scale * zoom + 10;
+    const sy = (y + offsetY + pan.y) * scale * zoom + 10;
+    return [sx, els.canvas.clientHeight - sy]; // invert for canvas pixels
+  }
+
+  // ----- Render -----
+  let currentLayerIdx = 0;
+  function render(){
+    const bg = token('--panel','#fff');
+    const grid = token('--border','#ccd');
+    const text = token('--text','#111');
+    const prevCol = `rgba(128,128,128,0.35)`;
+    const currCol = token('--accent','#4f46e5');
+    const travelCol = `rgba(120,120,120,0.55)`;
+
+    ctx.clearRect(0,0,els.canvas.clientWidth,els.canvas.clientHeight);
+
+    // Very light grid
+    ctx.save();
+    ctx.globalAlpha = 0.6;
+    ctx.strokeStyle = grid;
+    ctx.lineWidth = 1;
+    // simple frame
+    ctx.strokeRect(0.5,0.5,els.canvas.clientWidth-1,els.canvas.clientHeight-1);
+    ctx.restore();
+
+    if (!layers.length) return;
+
+    // Draw previous layers faint
+    for (let i=0; i<currentLayerIdx; i++){
+      drawLayer(layers[i], prevCol, travelCol, els.travel.checked, 1);
+    }
+    // Draw current layer full
+    drawLayer(layers[currentLayerIdx], currCol, travelCol, els.travel.checked, 2);
+    // HUD text
+    ctx.fillStyle = text;
+    ctx.font = '12px system-ui, sans-serif';
+    const z = layers[currentLayerIdx]?.z ?? 0;
+    ctx.fillText(`Layer ${currentLayerIdx+1}/${layers.length}  •  Z=${z.toFixed(3)} mm`, 12, 18);
+  }
+
+  function drawLayer(L, extrudeColor, travelColor, showTravel, widthBase){
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const seg of L.lines){
+      const [x1,y1] = worldToScreen(seg.x1, seg.y1);
+      const [x2,y2] = worldToScreen(seg.x2, seg.y2);
+      const isTravel = !seg.extruding;
+      if (isTravel && !showTravel) continue;
+      ctx.beginPath();
+      ctx.moveTo(x1,y1);
+      ctx.lineTo(x2,y2);
+      if (isTravel){
+        ctx.strokeStyle = travelColor;
+        ctx.setLineDash([6,6]);
+        ctx.lineWidth = widthBase;
+      } else {
+        ctx.strokeStyle = extrudeColor;
+        ctx.setLineDash([]);
+        ctx.lineWidth = widthBase + 0.5;
+      }
+      ctx.stroke();
+    }
+  }
+
+  // ----- Scrubber / Controls -----
+  function syncScrubber(){
+    els.scrub.max = Math.max(0, layers.length-1);
+    currentLayerIdx = clamp(currentLayerIdx, 0, layers.length-1);
+    els.scrub.value = currentLayerIdx;
+    const z = layers[currentLayerIdx]?.z ?? 0;
+    els.info.textContent = layers.length
+      ? `#${currentLayerIdx+1}/${layers.length} (Z=${z.toFixed(3)}mm)`
+      : '—';
+  }
+
+  els.scrub.addEventListener('input', () => {
+    currentLayerIdx = Number(els.scrub.value|0);
+    syncScrubber(); render();
+  });
+
+  els.travel.addEventListener('change', render);
+  els.zoomFit.addEventListener('click', fitView);
+  els.zoom1.addEventListener('click', ()=>{ zoom = 1; render(); });
+  els.resetPan.addEventListener('click', ()=>{ pan = {x:0,y:0}; render(); });
+
+  // Pan & Zoom (mouse)
+  let panning = false, last = {x:0,y:0};
+  els.canvas.addEventListener('pointerdown', e=>{
+    panning = true; last = {x:e.clientX, y:e.clientY}; els.canvas.setPointerCapture(e.pointerId);
+  });
+  els.canvas.addEventListener('pointermove', e=>{
+    if (!panning) return;
+    const dx = (e.clientX - last.x) / (scale * zoom);
+    const dy = (e.clientY - last.y) / (scale * zoom);
+    pan.x += dx;
+    pan.y -= dy; // invert due to screen Y invert
+    last = {x:e.clientX, y:e.clientY};
+    render();
+  });
+  window.addEventListener('pointerup', ()=>{ panning = false; });
+  els.canvas.addEventListener('wheel', e=>{
+    e.preventDefault();
+    const factor = Math.exp((e.deltaY>0?-1:1)*0.08);
+    zoom = clamp(zoom*factor, 0.1, 20);
+    render();
+  }, { passive:false });
+
+  // ----- Loading -----
+  els.file.addEventListener('change', async (e)=>{
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    loadFromText(text);
+  });
+
+  function loadFromText(text){
+    parseGCode(text);
+    resizeCanvas(); // sets fitView via render
+    currentLayerIdx = 0;
+    syncScrubber(); render();
+  }
+
+  // Resize handling
+  const ro = new ResizeObserver(()=>resizeCanvas());
+  ro.observe(els.canvas);
+
+  // ----- Live highlight API -----
+  function updateCurrentZ(z){
+    if (!layers.length) return;
+    // find nearest layer by Z
+    let idx = 0, best = Infinity;
+    for (let i=0;i<layers.length;i++){
+      const d = Math.abs(layers[i].z - z);
+      if (d < best) { best = d; idx = i; }
+    }
+    if (idx !== currentLayerIdx){
+      currentLayerIdx = idx;
+      syncScrubber(); render();
+    }
+  }
+
+  function updateByGcodeLine(lineNo){
+    if (!layers.length) return;
+    // find the highest layer that has any segment with lineNo <= given
+    let idx = currentLayerIdx;
+    for (let i=0;i<layers.length;i++){
+      const has = layers[i].lines.some(s => s.lineNo <= lineNo && s.extruding);
+      if (has) idx = i;
+    }
+    if (idx !== currentLayerIdx){
+      currentLayerIdx = idx;
+      syncScrubber(); render();
+    }
+  }
+
+  // Expose a small API for your sender
+  window.GCodePreview = {
+    loadFromText,
+    updateCurrentZ,
+    updateByGcodeLine,
+    fitView,
+    setLayer: (i)=>{ currentLayerIdx = clamp(i,0,layers.length-1); syncScrubber(); render(); },
+    get meta(){ return { layers: layers.length, zList:[...layers.map(l=>l.z)], bbox }; }
+  };
+
+  // If you already have the file string available elsewhere, you can do:
+  // GCodePreview.loadFromText(gcodeString);
+
+})();
 
 function genSpoolId() {
   const t = Date.now().toString(36).slice(-5);
@@ -2082,6 +2703,7 @@ function openPrintLabel(s) {
       <div><strong>Remaining:</strong> ${formatG(s.remainingG)} g / ${formatG(s.capacityG)} g</div>
       <img src="${qrUrlForSpool(s)}" alt="QR" style="margin-top:10px"/>
       <script>setTimeout(()=>window.print(), 200);<\/script>
+
     </body></html>`;
 
   w.document.write(html);
@@ -5339,6 +5961,362 @@ if (virtualToggle) {
     localStorage.setItem('virtualMode', JSON.stringify(virtualMode));
   });
 }
+
+(function(){
+  // Build modal once
+  let overlay=document.getElementById('helpOverlay');
+  if(!overlay){overlay=document.createElement('div');overlay.id='helpOverlay';document.body.appendChild(overlay);}
+  let modal=document.getElementById('helpModal');
+  if(!modal){
+    modal=document.createElement('div');modal.id='helpModal';modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');
+    modal.innerHTML=`
+      <div id="helpCard">
+        <div id="helpHead">
+          <h3 id="helpTitle">Help</h3>
+          <div id="helpActions">
+            <input id="helpSearch" type="search" placeholder="Search in help…">
+            <button id="helpClose" type="button" aria-label="Close">Close</button>
+          </div>
+        </div>
+        <div id="helpBodyWrap"><div id="helpBody" class="help-body"></div></div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+
+  const titleEl  = document.getElementById('helpTitle');
+  const searchEl = document.getElementById('helpSearch');
+  const closeBtn = document.getElementById('helpClose');
+  const bodyEl   = document.getElementById('helpBody');
+
+  // Mini Help engine
+  const registry=new Map();
+  const state={open:false, activeTab:'default', q:''};
+
+  function register(id,{title,html}){ registry.set(id,{title,html,rawHtml:html}); }
+  function setActiveTab(id){ state.activeTab = registry.has(id)?id:'default'; if(state.open) render(); }
+  function highlight(html,q){ if(!q) return html;
+    const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    return html.replace(new RegExp(`(${esc(q)})`,'gi'),'<mark>$1</mark>');
+  }
+  function render(){
+    const page=registry.get(state.activeTab)||registry.get('default')||{title:'Help',html:'<p>No help yet.</p>'};
+    titleEl.textContent=page.title;
+    bodyEl.innerHTML = state.q?highlight(page.rawHtml||page.html,state.q):page.html;
+  }
+
+  function open(){ state.open=true; overlay.classList.add('open'); modal.classList.add('open'); try{searchEl.focus();}catch{}; render(); }
+  function close(){ state.open=false; overlay.classList.remove('open'); modal.classList.remove('open'); }
+  function toggle(){ state.open?close():open(); }
+
+  window.Help={register,setActiveTab,open,close,toggle,setHTML:(id,title,html)=>{register(id,{title,html}); if(state.activeTab===id&&state.open) render();}};
+
+  // Close wiring (capture so nothing blocks it)
+  overlay.addEventListener('click',e=>{e.stopImmediatePropagation();close();},{capture:true});
+  closeBtn.addEventListener('click',e=>{e.preventDefault();e.stopImmediatePropagation();close();},{capture:true});
+  document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&modal.classList.contains('open')){e.stopImmediatePropagation();close();}}, {capture:true});
+  searchEl.addEventListener('input',()=>{ state.q=searchEl.value.trim(); render(); });
+
+  // Keep Help button from switching tabs
+  (function isolateHelpButton(){
+    const bar=document.getElementById('tabButtons');
+    const help=document.getElementById('helpToggleBtn');
+    if(!bar||!help) return;
+    bar.addEventListener('click',(e)=>{ if(e.target===help||help.contains(e.target)){ e.stopImmediatePropagation(); e.preventDefault(); toggle(); }}, true);
+    help.addEventListener('click',(e)=>{ e.stopPropagation(); e.preventDefault(); toggle(); });
+  })();
+
+  // Auto-sync to your active tab
+  (function wireTabs(){
+    const bar=document.getElementById('tabButtons');
+    if(!bar) return;
+    const tabs=[...bar.querySelectorAll('button[data-tab]')];
+    function current(){ const btn=tabs.find(b=>b.classList.contains('active'))||tabs[0]; return btn?.dataset.tab||'connectTab'; }
+    setActiveTab(current());
+    tabs.forEach(b=>b.addEventListener('click',()=>requestAnimationFrame(()=>setActiveTab(current()))));
+    new MutationObserver(()=>setActiveTab(current())).observe(bar,{attributes:true,subtree:true,attributeFilter:['class']});
+  })();
+
+  // Default + tab pages
+  register('default',{title:'Help',html:'<p>Select a tab to see contextual help. Toggle with <kbd>F1</kbd> or <kbd>?</kbd>.</p>'});
+// 1) Connection & Log
+Help.register('connectTab', {
+  title: 'Connection & Log',
+  html: `
+    <p>Connect to your printer (USB/Serial or Web Serial) and monitor live firmware output.</p>
+
+    <h4>Workflow</h4>
+    <ol>
+      <li>Select <strong>Port</strong> → pick your device (often “USB-Serial”, “CH340”, “Silicon Labs”).</li>
+      <li>Pick <strong>Baud</strong> (115200 or 250000 are most common).</li>
+      <li>Click <strong>Connect</strong>. You should see a banner line (e.g., Marlin/Klipper) in the log.</li>
+      <li>Use the <strong>Manual G-code</strong> box to send quick commands (e.g., <code>M115</code>, <code>M503</code>).</li>
+    </ol>
+
+    <h4>Useful Commands</h4>
+    <ul>
+      <li><code>M115</code> — firmware info; <code>M503</code> — dump settings; <code>M112</code> — emergency stop.</li>
+      <li><code>G28</code> — home axes; <code>M105</code> — read temps (polled periodically by the UI).</li>
+    </ul>
+
+    <h4>Tips</h4>
+    <ul>
+      <li>If connect fails: try a different cable/port, or close other apps that hold the port (e.g., PrusaSlicer/OctoPrint).</li>
+      <li>Toggle <strong>Echo/Debug</strong> in the UI to see more parsing detail.</li>
+      <li>“Virtual printer” mode lets you test the UI without hardware.</li>
+    </ul>
+  `
+});
+
+// 2) Leveling
+Help.register('levelTab', {
+  title: 'Leveling',
+  html: `
+    <p>Probe a mesh, evaluate flatness, and optionally get screw-turn guidance.</p>
+
+    <h4>Before You Start</h4>
+    <ul>
+      <li>Heat the bed/nozzle to normal print temps (flatness changes with heat).</li>
+      <li>Make sure the nozzle is clean; remove filament blobs.</li>
+    </ul>
+
+    <h4>Procedure</h4>
+    <ol>
+      <li><strong>Home</strong> (<code>G28</code>).</li>
+      <li><strong>Probe mesh</strong> (e.g., <code>G29 T</code> in Marlin) via the UI’s button.</li>
+      <li>Inspect the heatmap: aim for range ≤ <code>0.02–0.05 mm</code> for best first-layers.</li>
+      <li>Use the <strong>screw hints</strong> panel (if your bed has manual screws). Turn little-by-little, then re-probe.</li>
+    </ol>
+
+    <h4>Common Tweaks</h4>
+    <ul>
+      <li><code>M851 Z</code> — set Z-offset; <code>M500</code> — save.</li>
+      <li>On printers with mesh leveling stored in EEPROM: <code>M420 S1</code> enables saved mesh after homing.</li>
+    </ul>
+
+    <h4>Troubleshooting</h4>
+    <ul>
+      <li>Probe crashes or misses points → check Z-min/probe wiring and homing direction.</li>
+      <li>Mesh looks “tilted” → ensure X/Y gantry is square and belts are tensioned.</li>
+    </ul>
+  `
+});
+
+// 3) PID Tuning
+Help.register('pidTab', {
+  title: 'PID Tuning',
+  html: `
+    <p>Autotune heaters to reduce overshoot and oscillation.</p>
+
+    <h4>Quick Start</h4>
+    <ol>
+      <li>Hotend autotune: <code>M303 E0 S200 C8</code> (adjust temp for your material).</li>
+      <li>Bed autotune: <code>M303 E-1 S60 C8</code>.</li>
+      <li>Apply results with <code>M301</code> (hotend) / <code>M304</code> (bed), then <code>M500</code> to save.</li>
+    </ol>
+
+    <h4>Targets</h4>
+    <ul>
+      <li>PLA ~200 °C, PETG ~235 °C, ABS ~245 °C (choose your typical print temp).</li>
+      <li>Bed: PLA ~60 °C, PETG ~80 °C, ABS ~100 °C.</li>
+    </ul>
+
+    <h4>Tips</h4>
+    <ul>
+      <li>Run fans as you would during printing to get accurate results.</li>
+      <li>Verify by plotting a small print: overshoot ±3–5 °C or less is fine.</li>
+    </ul>
+  `
+});
+
+// 4) Temperature & Fan
+Help.register('tempTab', {
+  title: 'Temperature & Fan',
+  html: `
+    <p>Set targets and monitor live temperatures & fans.</p>
+
+    <h4>Controls</h4>
+    <ul>
+      <li>Hotend: <code>M104 S&lt;temp&gt;</code> · Bed: <code>M140 S&lt;temp&gt;</code> · Cooldown: set S0 or use the UI’s Off buttons.</li>
+      <li>Part fan: <code>M106 S0–255</code>, Off: <code>M107</code>. Some firmwares use 0–100% scales in UI; values are converted.</li>
+    </ul>
+
+    <h4>Graph</h4>
+    <ul>
+      <li>Temp polling via <code>M105</code> (interval shown near the chart).</li>
+      <li>Hover for exact readings; bed/nozzle lines match your theme.</li>
+    </ul>
+
+    <h4>Safety</h4>
+    <ul>
+      <li>Never leave heaters unattended. If temps run away, hit <strong>Emergency Stop</strong> (<code>M112</code>).</li>
+    </ul>
+  `
+});
+
+// 5) Movement & Axes
+Help.register('moveTab', {
+  title: 'Movement & Axes',
+  html: `
+    <p>Home, jog, and park axes for setup and maintenance.</p>
+
+    <h4>Basics</h4>
+    <ul>
+      <li><strong>Home</strong> all or per-axis (<code>G28</code>).</li>
+      <li><strong>Jog</strong> X/Y/Z by 0.1/1/10 mm; adjust feedrate if offered.</li>
+      <li><strong>Park</strong> positions the tool for easy access (configurable in UI).</li>
+    </ul>
+
+    <h4>Hand Moves</h4>
+    <ul>
+      <li><code>M84</code> disables steppers (careful: the tool can fall if Z isn’t supported).</li>
+    </ul>
+
+    <h4>Tips</h4>
+    <ul>
+      <li>If moves are inverted, check motor direction in firmware or swap connectors (power off!).</li>
+      <li>Binding or missed steps → check belt tension, pulley grub screws, and rails.</li>
+    </ul>
+  `
+});
+
+// 6) EEPROM / Config
+Help.register('eepromTab', {
+  title: 'EEPROM / Config',
+  html: `
+    <p>View and edit key motion/thermal settings. Parse <code>M503</code> output into readable fields.</p>
+
+    <h4>Key Parameters</h4>
+    <ul>
+      <li><strong>Steps/mm</strong> <code>M92</code> · <strong>Max feedrate</strong> <code>M203</code> · <strong>Accel</strong> <code>M201/M204</code>.</li>
+      <li><strong>PID</strong> hotend <code>M301</code> · bed <code>M304</code> · <strong>Z-probe offset</strong> <code>M851</code>.</li>
+      <li><strong>Retract</strong> <code>M207</code> · <strong>Recover</strong> <code>M208</code> · <strong>Auto-retract</strong> <code>M209</code>.</li>
+    </ul>
+
+    <h4>Workflow</h4>
+    <ol>
+      <li>Click <strong>Read</strong> to fetch current values (<code>M503</code>).</li>
+      <li>Adjust fields; the UI will generate the right commands.</li>
+      <li>Click <strong>Apply</strong> to send, then <strong>Save</strong> (<code>M500</code>).</li>
+    </ol>
+
+    <h4>Notes</h4>
+    <ul>
+      <li>Some boards/firmwares disable EEPROM — saving may be unavailable.</li>
+      <li>Always save your current config before big changes (export button in UI).</li>
+    </ul>
+  `
+});
+
+// 7) Maintenance
+Help.register('maintTab', {
+  title: 'Maintenance',
+  html: `
+    <p>One-click macros and a simple logbook to track upkeep.</p>
+
+    <h4>Macros</h4>
+    <ul>
+      <li><strong>Preheat</strong> PLA/PETG/ABS: sets bed/nozzle presets and waits.</li>
+      <li><strong>Cooldown</strong>: turns heaters off and fans as configured.</li>
+      <li><strong>Load/Unload</strong>: heats and runs controlled extrusions/retractions.</li>
+    </ul>
+
+    <h4>Logbook</h4>
+    <ul>
+      <li>Record nozzle swaps, lubrication, belt tensioning, cleanings.</li>
+      <li>Export or clear entries as needed.</li>
+    </ul>
+
+    <h4>Tips</h4>
+    <ul>
+      <li>Run a purge after swapping materials (esp. PLA ↔ PETG/ABS).</li>
+      <li>Lubricate Z lead screws lightly; avoid belts and idlers.</li>
+    </ul>
+  `
+});
+
+// 8) Filament
+Help.register('filamentTab', {
+  title: 'Filament',
+  html: `
+    <p>Track spools, presets, and estimated remaining material.</p>
+
+    <h4>Spools</h4>
+    <ul>
+      <li>Store brand, material, color, diameter, density, tare, capacity, and price.</li>
+      <li>Mark an <strong>active spool</strong> and deduct usage after prints.</li>
+      <li>Quick-filter by material or “With remaining only”.</li>
+    </ul>
+
+    <h4>Presets</h4>
+    <ul>
+      <li>Per-material default temps (nozzle/bed) and fan profiles.</li>
+    </ul>
+
+    <h4>Labels</h4>
+    <ul>
+      <li>Generate a simple shelf label with key info and QR if available.</li>
+    </ul>
+  `
+});
+
+// 9) Diagnostics
+Help.register('diagTab', {
+  title: 'Diagnostics',
+  html: `
+    <p>Inspect firmware and driver status.</p>
+
+    <h4>Quick Commands</h4>
+    <ul>
+      <li><code>M115</code> — firmware banner, capabilities.</li>
+      <li><code>M122</code> — TMC driver report (if supported): RMS current, microsteps, stealth/spread, errors.</li>
+    </ul>
+
+    <h4>Checks</h4>
+    <ul>
+      <li>Endstops/probe: trigger by hand and read status.</li>
+      <li>Thermistors: look for unrealistic temps or “def”/“open” errors.</li>
+    </ul>
+
+    <h4>Troubleshooting</h4>
+    <ul>
+      <li>Skipped steps → verify motor current, belt tension, pulley grub screws.</li>
+      <li>Thermal runaway → PID tune, inspect wiring, ensure fans work.</li>
+    </ul>
+  `
+});
+
+// 10) G-code Sender
+Help.register('senderTab', {
+  title: 'G-code Sender',
+  html: `
+    <p>Send single commands or stream full files with a live 2D preview.</p>
+
+    <h4>Pre-flight</h4>
+    <ul>
+      <li>Check temps and homing; the UI can enforce guardrails (e.g., refuse to print cold/unhomed).</li>
+      <li>Optional: run a skirt or prime line macro.</li>
+    </ul>
+
+    <h4>While Printing</h4>
+    <ul>
+      <li>Preview supports <code>G0/G1</code>, absolute/relative (<code>G90/G91</code>), extrusion modes (<code>M82/M83</code>), and common layer comments.</li>
+      <li>Scrub layers; toggle travel (dashed) to declutter.</li>
+      <li>Live highlight follows the current layer via <code>GCodePreview.updateCurrentZ(z)</code> or <code>updateByGcodeLine(n)</code>.</li>
+    </ul>
+
+    <h4>Recovery</h4>
+    <ul>
+      <li>Pause/Resume sends <code>M25/M24</code> (or equivalent); consult firmware if different.</li>
+      <li>Emergency stop: <code>M112</code>.</li>
+    </ul>
+  `
+});
+
+  // Keyboard toggle (F1 / ?)
+  document.addEventListener('keydown',(e)=>{
+    if(e.key==='F1' || e.key==='?' || (e.shiftKey && e.key==='/')){ e.preventDefault(); toggle(); }
+  });
+})();
 
 /* =========================================================
    10) INIT (runs once)
