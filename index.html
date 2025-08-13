@@ -7,6 +7,30 @@
 <meta name="author" content="issypup">
 <meta name="date" content="2025-08-10">
 <style>
+/* === G-code Preview === */
+.gp-wrap {
+  display: grid; gap: 8px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 10px; box-shadow: var(--shadow);
+}
+.gp-bar { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
+.gp-bar label { display:flex; align-items:center; gap:6px; font-size: 14px; color: var(--text); }
+.gp-bar input[type="range"] { width: 280px; }
+.gp-canvas {
+  position: relative; height: 360px; border: 1px dashed var(--border);
+  border-radius: 8px; background: color-mix(in oklab, var(--panel) 90%, var(--text) 10%);
+  overflow: hidden;
+}
+#gcodeCanvas { width: 100%; height: 100%; display: block; }
+.gp-legend { font-size:12px; color: var(--muted); display:flex; gap:12px; }
+.gp-chip { display:inline-flex; align-items:center; gap:6px; }
+.gp-dot { width:10px; height:10px; border-radius:999px; display:inline-block; }
+.gp-dot.prev { background: color-mix(in oklab, var(--text) 20%, transparent); }
+.gp-dot.curr { background: var(--accent); }
+.gp-dot.travel { background: color-mix(in oklab, var(--text) 35%, transparent); }
+
+
+
   :root { --bar-h: 42px; }
   body {
     font-family: sans-serif;
@@ -23,7 +47,6 @@
   .na      { background: #eaeaea; }
   .gap { border: none; background: transparent; color: #888; font-weight: bold; }
   #screwMap td { width: 110px; height: 60px; vertical-align: top; font-size: 0.85em; }
-
 
   /* Status bar (always visible) */
   #statusBar {
@@ -135,6 +158,24 @@
   .progress { height: 10px; background:#ddd; border-radius:999px; overflow:hidden; width:280px; }
   .progress > div { height:100%; background:#2a7; width:0%; }
 
+#preOverlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 10000;
+}
+#preModal   {
+  position: fixed; inset: 0; display: none; place-items: center; z-index: 10001;
+}
+#preCard    {
+  width: min(720px, 92vw); max-height: 80vh; background:#fff; border:1px solid #ddd;
+  border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,0.25);
+  display:grid; grid-template-rows:auto 1fr;
+}
+#preHeader  { display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:12px 14px; border-bottom:1px solid #eee; }
+#preBody    { padding:14px 16px; overflow:auto; line-height:1.35; }
+#preClose   { background:#eee; border:1px solid #ccc; padding:6px 10px; border-radius:8px; cursor:pointer; }
+#preClose:hover { background:#e5e5e5; }
+
+
   /* EE Modal */
 #eeOverlay {
   position: fixed; inset: 0;
@@ -180,6 +221,235 @@
 }
 #eeClose:hover { background:#e5e5e5; }
 
+#liveChart { width: 100%; height: 260px; display: block; }
+
+
+/* ===== HELP DRAWER ===== */
+.help-drawer {
+  position: fixed; right: 0; top: var(--bar-h, 42px);
+  width: min(420px, 88vw); height: calc(100vh - var(--bar-h, 42px));
+  background: var(--panel); color: var(--text);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  display: none; flex-direction: column; z-index: 9998;
+}
+.help-drawer.open { display: flex; }
+
+.help-head {
+  display:flex; align-items:center; gap:8px; padding:10px 12px;
+  border-bottom:1px solid var(--border);
+}
+.help-head h3 { margin:0; font-size:16px; flex:1; }
+.help-actions { display:flex; gap:8px; }
+.help-actions input[type="search"] { width: 180px; }
+
+.help-body {
+  overflow: auto; padding: 12px 14px; line-height: 1.45;
+}
+.help-body h4 { margin: 1em 0 .4em; }
+.help-body p { margin: .5em 0; }
+.help-body code, .help-body kbd {
+  background: color-mix(in oklab, var(--panel) 85%, var(--text) 15%);
+  border: 1px solid var(--border); padding: .1em .35em; border-radius: 6px;
+}
+.help-body pre {
+  background: color-mix(in oklab, var(--panel) 85%, var(--text) 15%);
+  border: 1px solid var(--border); padding: 8px; border-radius: 8px;
+  overflow: auto;
+}
+.help-resize {
+  position: absolute; left: -6px; top: 0; bottom: 0; width: 8px; cursor: ew-resize;
+}
+.help-toggle-btn {
+  display:inline-flex; align-items:center; gap:6px;
+  padding:4px 8px; border:1px solid var(--border);
+  background: var(--panel); border-radius: 8px; cursor: pointer;
+}
+/* ============ Docked Help layout ============ */
+
+/* Two-column grid that holds the whole app area (tabs + tabContent) and the Help aside */
+.app-layout {
+  display: grid;
+  grid-template-columns: 1fr minmax(300px, 420px);
+  gap: 12px;
+  align-items: start;
+  margin-top: 8px; /* tiny breathing room under the tab bar */
+}
+
+/* Make the drawer live "in flow" when docked */
+.app-layout .help-drawer {
+  position: sticky;      /* stays visible while you scroll */
+  top: calc(var(--bar-h, 42px) + 8px);
+  height: calc(100vh - var(--bar-h, 42px) - 24px);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  display: none;         /* hidden until Help is toggled */
+}
+
+/* Visible when toggled */
+.app-layout .help-drawer.open { display: flex; }
+
+/* The main content column */
+#appMain { min-width: 0; } /* allow content to shrink and not overflow */
+
+/* Responsiveness: on small screens, fall back to the original overlay behavior */
+@media (max-width: 1000px) {
+  .app-layout {
+    grid-template-columns: 1fr; /* single column */
+  }
+  .app-layout .help-drawer {
+    position: fixed;
+    right: 0; top: var(--bar-h, 42px);
+    width: min(420px, 88vw);
+    height: calc(100vh - var(--bar-h, 42px));
+    display: none; /* still controlled by .open */
+  }
+  .app-layout .help-drawer.open { display: flex; }
+}
+
+/* Position vars the JS will update */
+:root {
+  --help-top: calc(var(--bar-h, 42px) + 8px);
+}
+.help-drawer {
+  position: fixed;
+  right: 0;
+  top: var(--help-top);
+  height: calc(100vh - var(--help-top) - 16px);
+  width: min(420px, 88vw);
+}
+
+#helpCard {
+  width: min(760px, 92vw); max-height: 82vh;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+  display: grid; grid-template-rows: auto 1fr;
+}
+#helpHead {
+  display:flex; align-items:center; gap:8px;
+  padding:12px 14px; border-bottom:1px solid var(--border); cursor: move; /* draggable handle */
+}
+#helpHead h3 { margin:0; font-size:16px; flex:1; }
+#helpActions { display:flex; gap:8px; align-items:center; }
+#helpBodyWrap { overflow:auto; padding: 12px 14px; }
+
+/* Reuse existing help content styles */
+#helpBodyWrap .help-body h4 { margin: 1em 0 .4em; }
+#helpBodyWrap .help-body p  { margin: .5em 0; }
+#helpBodyWrap .help-body code, 
+#helpBodyWrap .help-body kbd {
+  background: color-mix(in oklab, var(--panel) 85%, var(--text) 15%);
+  border: 1px solid var(--border); padding: .1em .35em; border-radius: 6px;
+}
+#helpBodyWrap .help-body pre {
+  background: color-mix(in oklab, var(--panel) 85%, var(--text) 15%);
+  border: 1px solid var(--border); padding: 8px; border-radius: 8px; overflow:auto;
+}
+
+/* ==== HELP MODAL (fixed) ==== */
+#helpOverlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,.45);
+  display: none; z-index: 10000;
+}
+#helpModal {
+  position: fixed; inset: 0; display: none; place-items: center; z-index: 10001;
+}
+#helpHead {
+  display:flex; align-items:center; gap:8px;
+  padding:12px 14px; border-bottom:1px solid var(--border); cursor: move; /* draggable handle */
+}
+#helpHead h3 { margin:0; font-size:16px; flex:1; }
+#helpActions { display:flex; gap:8px; align-items:center; }
+#helpBodyWrap { overflow:auto; padding: 12px 14px; }
+
+/* show */
+#helpOverlay.open, #helpModal.open { display: grid; }
+
+/* Force a clean, white Help modal regardless of theme */
+#helpCard {
+  background: #fff !important;
+  color: #111 !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.25);
+}
+#helpHead { background: transparent; }
+#helpBodyWrap { background: transparent; }
+
+/* Make sure overlay is clickable and above everything */
+#helpOverlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.45);
+  z-index: 10000;
+}
+#helpModal { position: fixed; inset: 0; display: none; place-items: center; z-index: 10001; }
+#helpOverlay.open, #helpModal.open { display: grid; }
+
+#helpOverlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.45);
+  display: none;
+  z-index: 10000;
+}
+#helpModal {
+  position: fixed; inset: 0;
+  display: none;           /* toggled via .open */
+  place-items: center;
+  z-index: 10001;
+}
+#helpOverlay.open, #helpModal.open { display: grid; }
+
+#helpCard {
+  width: min(780px, 92vw);
+  max-height: 82vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  background: #fff !important;     /* force white card */
+  color: #111 !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,.25);
+}
+#helpHead {
+  display:flex; align-items:center; gap:8px;
+  padding:12px 14px; border-bottom:1px solid #e5e7eb;
+  cursor: move; /* draggable handle */
+}
+#helpHead h3 { margin:0; font-size:16px; flex:1; }
+#helpActions { display:flex; gap:8px; align-items:center; }
+#helpActions input[type="search"] { width: 220px; }
+#helpBodyWrap { overflow:auto; padding: 12px 14px; }
+
+/* Reuse your help body typography */
+#helpBodyWrap .help-body h4 { margin: 1em 0 .4em; }
+#helpBodyWrap .help-body p  { margin: .5em 0; }
+#helpBodyWrap .help-body code, 
+#helpBodyWrap .help-body kbd {
+  background: #f4f6f8;
+  border: 1px solid #e5e7eb; padding: .1em .35em; border-radius: 6px;
+}
+#helpBodyWrap .help-body pre {
+  background: #f4f6f8;
+  border: 1px solid #e5e7eb; padding: 8px; border-radius: 8px; overflow:auto;
+}
+
+#helpOverlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;z-index:10000;}
+#helpModal{position:fixed;inset:0;display:none;place-items:center;z-index:10001;}
+#helpOverlay.open,#helpModal.open{display:grid;}
+#helpCard{
+  width:min(780px,92vw);max-height:82vh;display:grid;grid-template-rows:auto 1fr;
+  background:#fff;color:#111;border:1px solid #e5e7eb;border-radius:12px;
+  box-shadow:0 12px 32px rgba(0,0,0,.25);
+}
+#helpHead{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid #e5e7eb;}
+#helpHead h3{margin:0;font-size:16px;flex:1;}
+#helpActions{display:flex;gap:8px;align-items:center;}
+#helpActions input[type="search"]{width:220px;}
+#helpBodyWrap{overflow:auto;padding:12px 14px;}
+/* Doc typography */
+#helpBody code,#helpBody kbd{background:#f4f6f8;border:1px solid #e5e7eb;padding:.1em .35em;border-radius:6px;}
+#helpBody pre{background:#f4f6f8;border:1px solid #e5e7eb;padding:8px;border-radius:8px;overflow:auto;}
+
 </style>
 </head>
 <body>
@@ -211,6 +481,7 @@
   <button data-tab="moveTab">Movement & Axes</button>
   <button data-tab="eepromTab">EEPROM / Config</button>
   <button data-tab="maintTab">Maintenance</button>
+  <button data-tab="filamentTab">Filament</button>
   <button data-tab="diagTab">Diagnostics</button>
   <button data-tab="senderTab">G-code Sender</button>
   <button data-tab="aboutTab">About</button>
@@ -355,6 +626,11 @@
       </div>
     </div>
   </div>
+  <div class="box">
+  <div class="label">Live Telemetry (last 10 min)</div>
+  <canvas id="liveChart" width="900" height="260" aria-label="Live temperatures, fan %, and M73 %"></canvas>
+  <div class="muted">Left axis: °C · Right axis: % (Fan, M73)</div>
+</div>
   <div class="row box">
 <div class="col">
   <div class="label">Safety</div>
@@ -411,11 +687,20 @@
 <!-- TAB 6: EEPROM / Config -->
 <div id="eepromTab" class="tabContent">
   <div class="row box">
-    <button id="readCfg" disabled>Read Config (M503)</button>
-    <button id="saveCfg" disabled>Save (M500)</button>
+  <button id="parseM503Btn" type="button">Parse M503 → Fields</button>
+  <button id="exportCfgBtn" type="button">Export JSON</button>
+  <span class="muted">Paste/receive M503 below, then Parse.</span>
     <!-- <button id="resetCfg" disabled>Factory Reset (M502)</button>-->
   </div>
-  <textarea id="configBox" class="widen" rows="14" placeholder="Printer configuration will appear here…"></textarea>
+  <table class="box" style="width:100%; max-width:900px; margin-bottom:8px">
+  <thead>
+    <tr><th style="width:220px">Setting</th><th>Value</th></tr>
+  </thead>
+<table id="m503Table" style="border-collapse:collapse;width:100%;max-width:900px">
+  <thead><tr><th style="text-align:left;width:240px">Field</th><th style="text-align:left">Value</th></tr></thead>
+  <tbody></tbody>
+</table>
+</table>
 </div>
 
 <!-- TAB 7: Maintenance -->
@@ -436,19 +721,171 @@
       <button id="loadFil"  disabled>Load (200°C)</button>
       <button id="unloadFil" disabled>Unload (200°C)</button>
     </div>
+        <div class="col">
+      <div class="label">Nozzle Prep</div>
+      <button id="primeLine" disabled>Wipe + Prime Line</button>
+    </div>
+      <div class="box col" style="margin-top:8px; max-width:840px">
+    <div class="label">Maintenance logbook</div>
+    <form id="maintForm" class="row" style="align-items:flex-start">
+      <input id="maintDate" type="date" />
+      <textarea id="maintNote" class="widen" rows="2" placeholder="What did you do? (e.g., Cleaned bed, lubed Z lead screw)"></textarea>
+      <button id="maintSave" type="submit">Save</button>
+      <button id="maintReset" type="button">Reset</button>
+    </form>
+
+    <div class="row" style="justify-content:space-between; margin-top:4px">
+      <div class="muted" id="maintSummary">—</div>
+      <div class="row">
+        <button id="maintExport" type="button">Export JSON</button>
+        <button id="maintClearAll" type="button">Clear all</button>
+      </div>
+    </div>
+
+    <table style="width:100%; margin-top:8px">
+      <thead>
+        <tr><th style="width:120px">Date</th><th>Note</th><th style="width:160px">Actions</th></tr>
+      </thead>
+      <tbody id="maintTable"></tbody>
+    </table>
+  </div>
   </div>
 </div>
 
-<!-- TAB 8: Diagnostics -->
+<!-- TAB 8: Filament -->
+<div id="filamentTab" class="tabContent">
+  <div class="row" style="gap:12px; align-items:flex-start">
+    <!-- Form: Add/Edit spool -->
+    <form id="spoolForm" class="box col" style="min-width:300px; max-width:420px">
+      <div class="label">Spool details</div>
+      <div class="row">
+        <input id="spBrand"  class="widen" placeholder="Brand (e.g., eSun)"/>
+        <input id="spMaterial" class="widen" list="matList" placeholder="Material (PLA/PETG/ABS/TPU/Nylon/…)" />
+        <datalist id="matList">
+          <option>PLA</option><option>PETG</option><option>ABS</option>
+          <option>TPU</option><option>Nylon</option><option>PC</option><option>PVA</option>
+        </datalist>
+      </div>
+
+      <div class="row">
+        <label>Ø
+          <select id="spDiameter">
+            <option value="1.75" selected>1.75</option>
+            <option value="2.85">2.85</option>
+          </select> mm
+        </label>
+        <label>Density
+          <input id="spDensity" type="number" step="0.01" min="0.5" max="3" value="1.24" style="width:110px"/> g/cm³
+        </label>
+      </div>
+
+      <div class="row">
+        <input id="spColorName" class="widen" placeholder="Color name (e.g., Deep Black)"/>
+        <label>Hex <input id="spColorHex" type="color" value="#000000" /></label>
+        <input id="spFinish" class="widen" placeholder="Finish (matte/silk/carbon/glow)"/>
+      </div>
+
+      <div class="row">
+        <label>Tare <input id="spTare" type="number" step="1" min="0" value="250" style="width:120px"/> g</label>
+        <label>Capacity <input id="spCapacity" type="number" step="1" min="0" value="1000" style="width:120px"/> g</label>
+      </div>
+
+      <div class="row">
+        <label>Total $ <input id="spCostTotal" type="number" step="0.01" min="0" style="width:110px"/></label>
+        <label>$/kg <input id="spCostPerKg" type="number" step="0.01" min="0" style="width:110px"/></label>
+      </div>
+
+      <div class="row">
+        <input id="spLot" class="widen" placeholder="Lot / batch"/>
+        <label>Date <input id="spDate" type="date" style="width:160px"/></label>
+      </div>
+
+      <input id="spVendor" class="widen" placeholder="Vendor link (https://…)" />
+
+      <div class="row" style="justify-content:flex-end; gap:8px; margin-top:8px">
+        <button id="spReset" type="button">Reset</button>
+        <button id="spSave"  type="submit">Save spool</button>
+      </div>
+
+      <div class="muted" id="spFormHint">Spool ID: <span id="spIdShow">— (new)</span></div>
+    </form>
+
+    <!-- Library / List -->
+    <div class="box col" style="flex:1 1 420px">
+      <div class="row" style="gap:8px; flex-wrap:wrap">
+        <input id="spSearch" class="widen" placeholder="Search brand/color/ID…"/>
+        <select id="spMatFilter">
+          <option value="">All materials</option>
+          <option>PLA</option><option>PETG</option><option>ABS</option>
+          <option>TPU</option><option>Nylon</option><option>PC</option><option>PVA</option>
+        </select>
+        <label><input id="spOnlyRemaining" type="checkbox" checked/> Only with remaining</label>
+        <select id="spSort">
+          <option value="remainingDesc" selected>Sort: Most remaining</option>
+          <option value="brandAsc">Brand A→Z</option>
+          <option value="materialAsc">Material A→Z</option>
+          <option value="createdDesc">Newest first</option>
+        </select>
+        <label style="margin-left:auto">Active:
+          <select id="spActiveSel" style="min-width:200px"></select>
+        </label>
+        <button id="spPrintLbl" type="button">Print label</button>
+      </div>
+
+      <div class="row" style="gap:8px; margin-top:6px">
+        <button id="spWeigh"  type="button">Weigh now</button>
+        <button id="spDeduct5" type="button">Deduct…</button>
+        <button id="spMarkEmpty" type="button">Mark as empty</button>
+      </div>
+
+      <table style="width:100%; margin-top:10px">
+        <thead>
+          <tr>
+            <th>ID</th><th>Brand</th><th>Mat</th><th>Color</th>
+            <th>Ø</th><th>Remain (g)</th><th>Cap (g)</th><th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="spTable"></tbody>
+      </table>
+      <div class="muted" id="spSummary" style="margin-top:6px">—</div>
+    </div>
+  </div>
+</div>
+
+<!-- TAB 9: Diagnostics -->
 <div id="diagTab" class="tabContent">
   <div class="row box">
-    <button id="fwInfo" disabled>Firmware Info (M115)</button>
-    <button id="tmcDiag" disabled>TMC Diagnostics (M122)</button>
+    <button id="parseM115Btn" type="button">Parse M115 → Fields</button>
+    <button id="parseM122Btn" type="button">Parse M122 → Fields</button>
   </div>
-  <textarea id="diagBox" class="widen" rows="14" placeholder="Diagnostics output…"></textarea>
+<table id="m115Table" style="border-collapse:collapse;width:100%;max-width:900px">
+  <thead><tr><th style="text-align:left;width:240px">Field</th><th style="text-align:left">Value</th></tr></thead>
+  <tbody></tbody>
+</table>
+<h3>TMC Diagnostics (M122)</h3>
+<table id="tmcTable" style="border-collapse:collapse; width:100%; max-width:900px">
+  <thead>
+    <tr>
+      <th style="width:60px">Axis</th>
+      <th>Driver</th>
+      <th>RMS (mA)</th>
+      <th>Microsteps</th>
+      <th>stealthChop</th>
+      <th>spreadCycle</th>
+      <th>OTPW</th>
+      <th>Error</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>X</td><td id="tmc_X_drv">—</td><td id="tmc_X_rms">—</td><td id="tmc_X_ms">—</td><td id="tmc_X_sc">—</td><td id="tmc_X_sp">—</td><td id="tmc_X_ot">—</td><td id="tmc_X_er">—</td></tr>
+    <tr><td>Y</td><td id="tmc_Y_drv">—</td><td id="tmc_Y_rms">—</td><td id="tmc_Y_ms">—</td><td id="tmc_Y_sc">—</td><td id="tmc_Y_sp">—</td><td id="tmc_Y_ot">—</td><td id="tmc_Y_er">—</td></tr>
+    <tr><td>Z</td><td id="tmc_Z_drv">—</td><td id="tmc_Z_rms">—</td><td id="tmc_Z_ms">—</td><td id="tmc_Z_sc">—</td><td id="tmc_Z_sp">—</td><td id="tmc_Z_ot">—</td><td id="tmc_Z_er">—</td></tr>
+    <tr><td>E</td><td id="tmc_E_drv">—</td><td id="tmc_E_rms">—</td><td id="tmc_E_ms">—</td><td id="tmc_E_sc">—</td><td id="tmc_E_sp">—</td><td id="tmc_E_ot">—</td><td id="tmc_E_er">—</td></tr>
+  </tbody>
+</table>
 </div>
 
-<!-- TAB 9: G-code Sender -->
+<!-- TAB 10: G-code Sender -->
 <div id="senderTab" class="tabContent">
   <div class="row box">
     <input type="file" id="gcodeFile" accept=".gcode,.gco,.gc,.txt" />
@@ -459,9 +896,84 @@
     <span id="etaStatus" class="muted" style="margin-left:10px"></span>
   </div>
   <p class="muted">Sends the file line-by-line over serial. Comments/blank lines are skipped. This is best for short jobs, calibration, or macros.</p>
+
+
+<div class="gp-wrap" id="gcodePreview">
+  <div class="gp-bar">
+    <label>File
+      <input type="file" id="gcodeFile" accept=".gcode,.gco,.nc,.txt">
+    </label>
+    <label>Layer
+      <input type="range" id="layerScrub" min="0" max="0" value="0" step="1">
+      <span id="layerInfo">—</span>
+    </label>
+    <label>
+      <input type="checkbox" id="showTravel" checked>
+      Show travel
+    </label>
+    <button id="zoomFit">Fit</button>
+    <button id="zoom1">1:1</button>
+    <button id="resetPan">Center</button>
+  </div>
+
+  <div class="gp-canvas">
+    <canvas id="gcodeCanvas"></canvas>
+  </div>
+
+  <div class="gp-legend">
+    <span class="gp-chip"><span class="gp-dot prev"></span> Previous layers</span>
+    <span class="gp-chip"><span class="gp-dot curr"></span> Current layer</span>
+    <span class="gp-chip"><span class="gp-dot travel"></span> Travel moves</span>
+  </div>
 </div>
 
-<!-- TAB 10: About -->
+
+
+  <!-- Preflight Modal -->
+<div id="preOverlay" aria-hidden="true" style="display:none"></div>
+<div id="preModal" role="dialog" aria-modal="true" aria-labelledby="preTitle" style="display:none">
+  <div id="preCard">
+    <div id="preHeader">
+      <h3 id="preTitle">Pre-flight checks</h3>
+      <button id="preClose" type="button" aria-label="Close">Close</button>
+    </div>
+    <div id="preBody">
+      <div class="muted" style="margin-bottom:8px">
+        File: <strong id="preFileName">—</strong> ·
+        Guardrail: <strong id="preGuardrail">—</strong> ·
+        Temps (hot/bed): <strong id="preTemps">—</strong> ·
+        Mode: <strong id="preMode">—</strong> ·
+        Homed: <strong id="preHomed">—</strong>
+      </div>
+
+      <fieldset style="border:none; padding:0; margin:0 0 8px 0;">
+        <legend class="label" style="margin-bottom:6px">Confirm all:</legend>
+        <label><input type="checkbox" class="preChk" id="chkBedClear"> Bed is clear (no clips, tools, hands, pets 🐱)</label><br>
+        <label><input type="checkbox" class="preChk" id="chkObstructions"> Gantry path clear (cables, spool, camera arms)</label><br>
+        <label><input type="checkbox" class="preChk" id="chkFilament"> Correct filament loaded & nozzle clean</label><br>
+        <label><input type="checkbox" class="preChk" id="chkAdhesion"> Adhesion ready (sheet, glue, texture)</label><br>
+        <label><input type="checkbox" class="preChk" id="chkZSafe"> Z head parked safely (≥10 mm)</label>
+      </fieldset>
+
+      <div class="row" style="margin:8px 0 12px">
+        <button id="preHome" type="button">Home Now (G28)</button>
+        <button id="prePark" type="button">Park Head (X0 Y0 Z10)</button>
+        <label style="margin-left:auto">
+          <input type="checkbox" id="preSkip"> Don’t ask again (this session)
+        </label>
+      </div>
+
+      <div class="row" style="justify-content:flex-end; gap:8px">
+        <button id="preCancel" type="button">Cancel</button>
+        <button id="preStart"  type="button" disabled>Start Print</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<!-- TAB 11: About -->
 <div id="aboutTab" class="tabContent">
   <div class="aboutCard">
     <h2>About</h2>
@@ -482,7 +994,6 @@
 </div>
 </div>
 
-
 <div id="footerStatus">
   <span id="lastCmd">Last Cmd: —</span>
   <span>GitHub Pages ready · LocalStorage only</span>
@@ -495,6 +1006,130 @@
    1) DOM REFERENCES (all const)
 ========================================================= */
 
+let oneShotCapture = null;
+
+function captureReplyOnce({ doneOnOk = true } = {}) {
+  if (oneShotCapture) throw new Error('capture already active');
+  return new Promise((resolve, reject) => {
+    oneShotCapture = { buf: [], resolve, reject, doneOnOk };
+  });
+}
+
+
+
+let lastHomeHintAt = 0;  // when we last saw a "homing-ish" line
+
+let _audioCtx = null;
+
+let _preflightFile = null;
+
+let net = {
+  txBytesTotal: 0,
+  rxBytesTotal: 0,
+  txSince: 0,
+  rxSince: 0,
+  lastSample: performance.now(),
+  txRate: 0,
+  rxRate: 0,
+  latencyEMA: null,   // ms
+  timer: null
+};
+
+let lastSendTs = null; 
+
+let heaterUnlocked = JSON.parse(localStorage.getItem('heaterUnlocked') || 'false');
+
+//Filament
+let spools = [];
+let activeSpoolId = null;
+let editingId = null;
+let _pendingFilament = null;
+
+//UI and State flags
+let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
+let criticalDepth = 0;
+let pidActiveHotend = false;
+let pidActiveBed    = false;
+let pidTarget = null; // 'hotend', 'bed', or null
+let isHomed = false;
+
+// Leveling / Probing flow control
+let probeLatch = null; // resolved when G29 T finishes (grid header or DWIN “Settings Stored”)
+
+//Mesh and Temps
+let meshScratch    = Array.from({ length: 4 }, () => Array(4).fill(null));
+let temps          = { hot: null, hotTarget: null, bed: null, bedTarget: null };
+
+//Connection lifecycle
+let connKind = 'none'; // 'none' | 'virtual' | 'real'
+let isConnecting = false;
+let isDisconnecting = false;
+
+//Serial — device handles
+let port           = null;
+let reader         = null;
+let writer         = null;
+let textDecoder    = null;
+
+//Comms - I/O state, buffers, timers
+let reading        = false;
+let rxBuffer       = '';
+let cancelStream   = false;
+let captureMode    = null; // null | 'config' | 'diag'
+let tempTimer      = null;
+let postPrintTimer = null;
+
+//Read and Telemetry
+let waitingResolvers = []; // (kept for compatibility)
+let isBusyProcessing  = false;
+let lastOkAt          = 0;
+let pendingOk      = []; // queue for waitForOk()
+
+//Virtual printer
+let virtualMode = false;
+let vSimTimer = null;
+
+//Easter Egg
+let streak = 0;
+
+const BEEP_BROWSER_ON = true;   // browser chime via Web Audio
+const BEEP_PRINTER_ON = false;  // send M300 to the printer (off by default)
+const primeLine = document.getElementById('primeLine');
+
+// =============== FILAMENT: DOM refs ===============
+const spoolForm = document.getElementById('spoolForm');
+const spIdShow = document.getElementById('spIdShow');
+const spBrand = document.getElementById('spBrand');
+const spMaterial = document.getElementById('spMaterial');
+const spDiameter = document.getElementById('spDiameter');
+const spDensity = document.getElementById('spDensity');
+const spColorName = document.getElementById('spColorName');
+const spColorHex = document.getElementById('spColorHex');
+const spFinish = document.getElementById('spFinish');
+const spTare = document.getElementById('spTare');
+const spCapacity = document.getElementById('spCapacity');
+const spCostTotal = document.getElementById('spCostTotal');
+const spCostPerKg = document.getElementById('spCostPerKg');
+const spLot = document.getElementById('spLot');
+const spDate = document.getElementById('spDate');
+const spVendor = document.getElementById('spVendor');
+const spReset = document.getElementById('spReset');
+const spSave = document.getElementById('spSave');
+
+const spSearch = document.getElementById('spSearch');
+const spMatFilter = document.getElementById('spMatFilter');
+const spOnlyRemaining = document.getElementById('spOnlyRemaining');
+const spSort = document.getElementById('spSort');
+const spActiveSel = document.getElementById('spActiveSel');
+const spPrintLbl = document.getElementById('spPrintLbl');
+
+const spWeigh = document.getElementById('spWeigh');
+const spDeduct5 = document.getElementById('spDeduct5');
+const spMarkEmpty = document.getElementById('spMarkEmpty');
+
+const spTable = document.getElementById('spTable');
+const spSummary = document.getElementById('spSummary');
+
 //Toggles and core controls
 const debugToggle     = document.getElementById('debugToggle');
 const virtualToggle = document.getElementById('virtualToggle');
@@ -505,6 +1140,7 @@ const clearLogBtn     = document.getElementById('clearLogBtn');
 
 //Log/UI text
 const printerLog      = document.getElementById('printerLog');
+window.logBox = printerLog;
 const lastUpdated     = document.getElementById('lastUpdated');
 const lastCmd         = document.getElementById('lastCmd');
 const activityBadge   = document.getElementById('activityBadge');
@@ -569,13 +1205,10 @@ const posYEl          = document.getElementById('posY');
 const posZEl          = document.getElementById('posZ');
 
 //eeprom and Config
-const readCfg         = document.getElementById('readCfg');
-const saveCfg         = document.getElementById('saveCfg');
 const configBox       = document.getElementById('configBox');
 
 //Diagnostics
 const fwInfo          = document.getElementById('fwInfo');
-const tmcDiag         = document.getElementById('tmcDiag');
 const diagBox         = document.getElementById('diagBox');
 
 //Sender
@@ -603,6 +1236,10 @@ const unloadFil       = document.getElementById('unloadFil');
    2) CONSTANTS (maps, regex, fixed values)
 ========================================================= */
 
+const HOME_SIG_DEFAULT = { x: 117, y: 117, z: 10.0, tolX: 2.0, tolY: 2.0, tolZ: 4.0 };
+
+connectBtn?.addEventListener('click', () => connectPrinter());
+
 //Mesh and screws map
 const screwAffects = {
   A1: [[0,0],[0,1],[1,0],[1,1]],
@@ -617,6 +1254,945 @@ const screwAffects = {
   C3: [[2,2],[2,3],[3,2],[3,3]],
   C4: [[3,3]]
 };
+
+document.getElementById('parseM503Btn')?.addEventListener('click', async () => {
+  try {
+    const raw = await readFullBlock('M503');
+    if (!raw.trim()) throw new Error('empty');
+    const cfg = parseM503Response(raw);
+    renderM503Table('#m503Table', cfg);
+    window._lastParsedCfg = cfg;
+  } catch (err) {
+    console.error('Failed to read M503:', err);
+    const fallback = prompt('No M503 received.\nPaste M503 output to parse:') || '';
+    const cfg = parseM503Response(fallback);
+    renderM503Table('#m503Table', cfg);
+    window._lastParsedCfg = cfg;
+  }
+});
+
+document.getElementById('parseM115Btn')?.addEventListener('click', async () => {
+  try {
+    stopTempPolling?.(); // optional, avoids temperature spam while capturing
+    const raw = await readFullBlock('M115'); // waits until full banner and 'ok' received
+
+    if (!raw || !raw.trim()) {
+      // If no reply, ask the user
+      const fallback = prompt('No M115 received.\nPaste firmware banner to parse:');
+      if (!fallback) return; // user cancelled
+      renderM115Table('#m115Table', parseM115Response(fallback));
+      return;
+    }
+
+    renderM115Table('#m115Table', parseM115Response(raw));
+  } catch (err) {
+    console.error('Failed to read M115:', err);
+    const fallback = prompt('No M115 received.\nPaste firmware banner to parse:');
+    if (!fallback) return;
+    renderM115Table('#m115Table', parseM115Response(fallback));
+  }
+});
+function renderM122Fields(ax) {
+  const put = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = (v ?? '—'); };
+  for (const a of ['X','Y','Z','E']) {
+    const d = ax[a] || {};
+    put(`tmc_${a}_drv`, d.driver ?? '—');
+    put(`tmc_${a}_rms`, d.rms ?? '—');
+    put(`tmc_${a}_ms`,  d.msteps ?? '—');
+    put(`tmc_${a}_sc`,  d.stealth ?? '—');
+    put(`tmc_${a}_sp`,  d.spread ?? '—');
+    put(`tmc_${a}_ot`,  d.otpw ?? '—');
+    put(`tmc_${a}_er`,  d.error ?? '—');
+  }
+}
+
+document.getElementById('parseM122Btn')?.addEventListener('click', async () => {
+  try {
+    stopTempPolling?.();
+    const raw = await sendCmd('M122');   // real or virtual returns the full block
+    const tmc = parseM122(raw || '');
+    renderM122Fields(tmc);
+  } catch (err) {
+    // Optional offline fallback (remove if you truly never want prompts):
+    // const raw = prompt('No M122 received.\nPaste M122 output to parse:') || '';
+    // const tmc = parseM122(raw);
+    // renderM122Fields(tmc);
+  }
+});
+
+// Robust block reader: works in virtual or real serial, with diagnostics.
+// Drop-in replacement: do NOT start capture here; rely on sendCmd's own capture
+async function readFullBlock(cmd, timeoutMs = 7000) {
+  try { stopTempPolling?.(); } catch {}
+  // clean up any stale capture, just in case
+  if (typeof oneShotCapture !== 'undefined' && oneShotCapture) {
+    try { oneShotCapture.resolve(oneShotCapture.buf?.join('\n') || ''); } catch {}
+    oneShotCapture = null;
+  }
+  let result;
+  try {
+    const direct = sendCmd(cmd); // string or promise
+    result = await Promise.race([
+      Promise.resolve(direct),
+      new Promise(res => setTimeout(() => res(''), timeoutMs)),
+    ]);
+  } finally {
+    try { startTempPolling?.(); } catch {}
+  }
+  return String(result || '');
+}
+
+
+
+function renderM115Table(containerSelector, parsed) {
+  const el = document.querySelector(containerSelector);
+  if (!el) return;
+  const tbody = el.querySelector('tbody');
+  if (!tbody) return;
+
+  const { info = {}, caps = {}, area = null } = parsed || {};
+  const rows = [];
+
+  // Primary info
+  const order = [
+    ['FIRMWARE_NAME','Firmware'],
+    ['SOURCE_CODE_URL','Source code URL'],
+    ['PROTOCOL_VERSION','Protocol version'],
+    ['MACHINE_TYPE','Machine type'],
+    ['EXTRUDER_COUNT','Extruder count'],
+    ['UUID','UUID'],
+  ];
+  order.forEach(([key, label]) => {
+    if (info[key] != null) rows.push([label, escapeHtml(String(info[key]))]);
+  });
+
+  // Add any extra keys we didn't list above
+  Object.keys(info).sort().forEach(k => {
+    if (order.find(x => x[0] === k)) return; // already added
+    rows.push([k.replace(/_/g,' '), escapeHtml(String(info[k]))]);
+  });
+
+  // Separator
+  if (Object.keys(caps).length) rows.push(['', '', true]);
+
+  // Capabilities (sorted)
+  if (Object.keys(caps).length) {
+    rows.push(['Capabilities', '']);
+    Object.keys(caps).sort().forEach(name => {
+      rows.push([`• ${name}`, caps[name] ? 'Yes' : 'No']);
+    });
+  }
+
+  // Separator
+  if (area) rows.push(['', '', true]);
+
+  // Area (pretty)
+  if (area) {
+    const full = area.full || {};
+    const work = area.work || {};
+    const fmin = full.min || {}, fmax = full.max || {};
+    const wmin = work.min || {}, wmax = work.max || {};
+    rows.push(['Area (full)', `min x:${fmin.x}, y:${fmin.y}, z:${fmin.z} &nbsp; | &nbsp; max x:${fmax.x}, y:${fmax.y}, z:${fmax.z}`]);
+    rows.push(['Area (work)', `min x:${wmin.x}, y:${wmin.y}, z:${wmin.z} &nbsp; | &nbsp; max x:${wmax.x}, y:${wmax.y}, z:${wmax.z}`]);
+  }
+
+  putTableRows(tbody, rows);
+}
+
+function renderM503Table(containerSelector, cfg) {
+  const el = document.querySelector(containerSelector);
+  if (!el) return;
+  const tbody = el.querySelector('tbody');
+  if (!tbody) return;
+
+  const rows = [];
+  const yesno = v => v == null ? '—' : (v ? 'On' : 'Off');
+
+  // General
+  rows.push(['Units', cfg.units || '—']);
+  rows.push(['Filament settings', cfg.filament?.enabled == null ? '—' : (cfg.filament.enabled ? 'Enabled' : 'Disabled')]);
+  rows.push(['Filament (M200)', cfg.filament?.M200 ? `S=${cfg.filament.M200.S} D=${cfg.filament.M200.D}` : '—']);
+  rows.push(['Home offset (M206)', cfg.homeOffset ? `X=${cfg.homeOffset.X} Y=${cfg.homeOffset.Y} Z=${cfg.homeOffset.Z}` : '—']);
+  rows.push(['Power-loss recovery (M413)', yesno(cfg.powerLossRecovery)]);
+  rows.push(['Runout sensor (M412)', yesno(cfg.runout)]);
+
+  rows.push(['', '', true]);
+
+  // Motion
+  rows.push(['Steps/mm (M92)', cfg.stepsPerUnit ? `X=${cfg.stepsPerUnit.X} Y=${cfg.stepsPerUnit.Y} Z=${cfg.stepsPerUnit.Z} E=${cfg.stepsPerUnit.E}` : '—']);
+  rows.push(['Max feedrate (M203)', cfg.maxFeedrate ? `X=${cfg.maxFeedrate.X} Y=${cfg.maxFeedrate.Y} Z=${cfg.maxFeedrate.Z} E=${cfg.maxFeedrate.E}` : '—']);
+  rows.push(['Max acceleration (M201)', cfg.maxAccel ? `X=${cfg.maxAccel.X} Y=${cfg.maxAccel.Y} Z=${cfg.maxAccel.Z} E=${cfg.maxAccel.E}` : '—']);
+  rows.push(['Acceleration (M204)', cfg.accel ? `P=${cfg.accel.P} R=${cfg.accel.R} T=${cfg.accel.T}` : '—']);
+  rows.push(['Advanced (M205)', cfg.advanced ? `B=${cfg.advanced.B} S=${cfg.advanced.S} T=${cfg.advanced.T} X=${cfg.advanced.X} Y=${cfg.advanced.Y} Z=${cfg.advanced.Z} E=${cfg.advanced.E}` : '—']);
+  rows.push(['Linear advance (M900)', (cfg.linearAdvance ?? '—')]);
+
+  rows.push(['', '', true]);
+
+  // Temperatures / PID / Presets
+  rows.push(['PID hotend (M301)', cfg.pid?.hotend ? `P=${cfg.pid.hotend.P} I=${cfg.pid.hotend.I} D=${cfg.pid.hotend.D}` : '—']);
+  rows.push(['PID bed (M304)', cfg.pid?.bed ? `P=${cfg.pid.bed.P} I=${cfg.pid.bed.I} D=${cfg.pid.bed.D}` : '—']);
+  rows.push(['Presets (M145)', (cfg.presets && cfg.presets.length)
+    ? cfg.presets.map(p => `S${p.S}: H${p.H}/B${p.B}/F${p.F}`).join(', ')
+    : '—']);
+  rows.push(['Probe heaters off (C001)', cfg.probeHeatersOff
+    ? `S=${cfg.probeHeatersOff.S ? 'On' : 'Off'} H=${cfg.probeHeatersOff.H} B=${cfg.probeHeatersOff.B} W=${cfg.probeHeatersOff.W}`
+    : '—']);
+
+  rows.push(['', '', true]);
+
+  // Retract / Recover / Auto-retract / Z-probe
+  rows.push(['Retract (M207)', cfg.retract ? `S=${cfg.retract.S} W=${cfg.retract.W} F=${cfg.retract.F} Z=${cfg.retract.Z}` : '—']);
+  rows.push(['Recover (M208)', cfg.recover ? `S=${cfg.recover.S} W=${cfg.recover.W} F=${cfg.recover.F}` : '—']);
+  rows.push(['Auto-retract (M209)', yesno(cfg.autoRetract)]);
+  rows.push(['Z-probe offset (M851)', cfg.zProbeOffset ? `X=${cfg.zProbeOffset.X} Y=${cfg.zProbeOffset.Y} Z=${cfg.zProbeOffset.Z}` : '—']);
+
+  rows.push(['', '', true]);
+
+  // ABL
+  const ablStr = cfg.abl ? `Enabled=${cfg.abl.enabled ? 'Yes' : 'No'}${cfg.abl.fade != null ? `, Fade Z=${cfg.abl.fade}` : ''}` : '—';
+  rows.push(['Auto Bed Leveling (M420)', ablStr]);
+
+  // Mesh (embed a colored table)
+  if (cfg.mesh && cfg.mesh.nx && cfg.mesh.ny) {
+    const { nx, ny, values } = cfg.mesh;
+    const flat = values.flat().filter(v => typeof v === 'number');
+    const min = Math.min(...flat), max = Math.max(...flat);
+    const range = max - min || 1;
+
+    const td = (z) => {
+      let bg = '#eee';
+      if (typeof z === 'number') {
+        const t = (z - min) / range;
+        let r,g,b;
+        if (t < 0.5) { const k = t/0.5; r=0; g=Math.round(255*k); b=Math.round(255*(1-k)); }
+        else { const k=(t-0.5)/0.5; r=Math.round(255*k); g=Math.round(255*(1-k)); b=0; }
+        bg = `rgb(${r},${g},${b})`;
+      }
+      return `<td style="padding:6px;text-align:center;background:${bg};border:1px solid #ddd">${(z==null)?'':Number(z).toFixed(5)}</td>`;
+    };
+
+    const stats = `<div><strong>Mesh:</strong> ${nx}×${ny}
+      &nbsp;|&nbsp;<strong>Min:</strong> ${min.toFixed(5)}
+      &nbsp;|&nbsp;<strong>Max:</strong> ${max.toFixed(5)}
+      &nbsp;|&nbsp;<strong>Avg:</strong> ${(flat.reduce((a,b)=>a+b,0)/flat.length).toFixed(5)}
+      &nbsp;|&nbsp;<strong>Range:</strong> ${(max-min).toFixed(5)}</div>`;
+
+    const table = `<div style="margin-top:6px">${stats}</div>
+      <table style="border-collapse:collapse;margin-top:6px">
+        <tbody>
+          ${values.map(row => `<tr>${row.map(td).join('')}</tr>`).join('')}
+        </tbody>
+      </table>`;
+
+    rows.push(['G29 Mesh', table]);
+  } else {
+    rows.push(['G29 Mesh', '<em>No mesh data</em>']);
+  }
+
+  putTableRows(tbody, rows);
+}
+
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
+}
+
+function putTableRows(tbody, rows) {
+  tbody.innerHTML = rows.map(([k, v, isSeparator]) => {
+    if (isSeparator) {
+      return `<tr><td colspan="2" style="padding:8px 0"><hr/></td></tr>`;
+    }
+    return `<tr>
+      <th style="border:1px solid #ddd;padding:6px;text-align:left;background:#fafafa">${escapeHtml(k)}</th>
+      <td style="border:1px solid #ddd;padding:6px;text-align:left">${v}</td>
+    </tr>`;
+  }).join('');
+}
+
+function parseM122(text) {
+  const axes = { X:{}, Y:{}, Z:{}, E:{} };
+  const boolify = v => /^(enabled|true|yes|1)$/i.test(v) ? 'enabled'
+                    : /^(disabled|false|no|0)$/i.test(v) ? 'disabled' : String(v);
+
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map(s => s.replace(/^echo:\s*/i, '').trim())
+    .filter(s => s && !/^>>\s*M122\b/i.test(s) && !/^ok\b/i.test(s));
+
+  for (const ln of lines) {
+    // Axis-prefixed key-value style lines
+    // Examples: "X driver: TMC2209", "Y RMS current: 850", "E microsteps: 16",
+    //           "Z stealthChop: enabled", "X spreadCycle: disabled", "E otpw: false", "Y error: false"
+    let m = ln.match(/^([XYZE])\s+driver:\s*(.+)$/i);
+    if (m) { axes[m[1].toUpperCase()].driver = m[2].trim(); continue; }
+
+    m = ln.match(/^([XYZE]).*?\bRMS\s*current:\s*([\d.]+)/i);
+    if (m) { axes[m[1].toUpperCase()].rms = +m[2]; continue; }
+
+    m = ln.match(/^([XYZE]).*?\bmicrosteps?:\s*([\d.]+)/i);
+    if (m) { axes[m[1].toUpperCase()].msteps = +m[2]; continue; }
+
+    m = ln.match(/^([XYZE]).*?\bstealthchop:\s*(\S+)/i);
+    if (m) { axes[m[1].toUpperCase()].stealth = boolify(m[2]); continue; }
+
+    m = ln.match(/^([XYZE]).*?\bspreadcycle:\s*(\S+)/i);
+    if (m) { axes[m[1].toUpperCase()].spread = boolify(m[2]); continue; }
+
+    m = ln.match(/^([XYZE]).*?\botpw:\s*(\S+)/i);
+    if (m) { axes[m[1].toUpperCase()].otpw = boolify(m[2]); continue; }
+
+    m = ln.match(/^([XYZE]).*?\berror:\s*(\S+)/i);
+    if (m) { axes[m[1].toUpperCase()].error = boolify(m[2]); continue; }
+
+    // If you later want more, add patterns here (e.g., CS actual, SG, TSTEP).
+  }
+  return axes;
+}
+
+function _fillMissingM503Fields(cfg, cleanLines) {
+  const num = s => (s == null ? null : Number(s));
+
+  // M200 S<mode> D<dia>
+  if (!cfg.filament?.M200) {
+    const m = cleanLines.find(l => /^M200\b/i.test(l));
+    if (m) {
+      const g = /M200(?:\s+S(?<S>-?\d+(?:\.\d+)?))?(?:\s+D(?<D>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.filament = cfg.filament || {};
+      cfg.filament.M200 = { S: num(g.S), D: num(g.D) };
+    }
+  }
+
+  // M206 X Y Z
+  if (!cfg.homeOffset) {
+    const m = cleanLines.find(l => /^M206\b/i.test(l));
+    if (m) {
+      const g = /M206(?:\s+X(?<X>-?\d+(?:\.\d+)?))?(?:\s+Y(?<Y>-?\d+(?:\.\d+)?))?(?:\s+Z(?<Z>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.homeOffset = { X: num(g.X), Y: num(g.Y), Z: num(g.Z) };
+    }
+  }
+
+  // M145 S H B F   (can appear multiple times)
+  if (!cfg.presets || !cfg.presets.length) {
+    cfg.presets = [];
+    cleanLines.filter(l => /^M145\b/i.test(l)).forEach(l => {
+      const g = /M145(?:\s+S(?<S>\d+))?(?:\s+H(?<H>-?\d+(?:\.\d+)?))?(?:\s+B(?<B>-?\d+(?:\.\d+)?))?(?:\s+F(?<F>-?\d+(?:\.\d+)?))?/i.exec(l)?.groups || {};
+      if (g.S != null) cfg.presets.push({ S: Number(g.S), H: num(g.H), B: num(g.B), F: num(g.F) });
+    });
+  }
+
+  // M301 / M304 PID
+  if (!cfg.pid) cfg.pid = {};
+  if (!cfg.pid.hotend) {
+    const m = cleanLines.find(l => /^M301\b/i.test(l));
+    if (m) {
+      const g = /M301(?:\s+P(?<P>-?\d+(?:\.\d+)?))?(?:\s+I(?<I>-?\d+(?:\.\d+)?))?(?:\s+D(?<D>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.pid.hotend = { P: num(g.P), I: num(g.I), D: num(g.D) };
+    }
+  }
+  if (!cfg.pid.bed) {
+    const m = cleanLines.find(l => /^M304\b/i.test(l));
+    if (m) {
+      const g = /M304(?:\s+P(?<P>-?\d+(?:\.\d+)?))?(?:\s+I(?<I>-?\d+(?:\.\d+)?))?(?:\s+D(?<D>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.pid.bed = { P: num(g.P), I: num(g.I), D: num(g.D) };
+    }
+  }
+
+  // M413 S
+  if (cfg.powerLossRecovery == null) {
+    const m = cleanLines.find(l => /^M413\b/i.test(l));
+    if (m) cfg.powerLossRecovery = /S1\b/.test(m);
+  }
+
+  // M207 S W F Z
+  if (!cfg.retract) {
+    const m = cleanLines.find(l => /^M207\b/i.test(l));
+    if (m) {
+      const g = /M207(?:\s+S(?<S>-?\d+(?:\.\d+)?))?(?:\s+W(?<W>-?\d+(?:\.\d+)?))?(?:\s+F(?<F>-?\d+(?:\.\d+)?))?(?:\s+Z(?<Z>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.retract = { S: num(g.S), W: num(g.W), F: num(g.F), Z: num(g.Z) };
+    }
+  }
+
+  // M208 S W F
+  if (!cfg.recover) {
+    const m = cleanLines.find(l => /^M208\b/i.test(l));
+    if (m) {
+      const g = /M208(?:\s+S(?<S>-?\d+(?:\.\d+)?))?(?:\s+W(?<W>-?\d+(?:\.\d+)?))?(?:\s+F(?<F>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.recover = { S: num(g.S), W: num(g.W), F: num(g.F) };
+    }
+  }
+
+  // M209 S
+  if (cfg.autoRetract == null) {
+    const m = cleanLines.find(l => /^M209\b/i.test(l));
+    if (m) cfg.autoRetract = /S1\b/.test(m);
+  }
+
+  // M851 X Y Z (X/Y may be integers in your dump)
+  if (!cfg.zProbeOffset) {
+    const m = cleanLines.find(l => /^M851\b/i.test(l));
+    if (m) {
+      const g = /M851(?:\s+X(?<X>-?\d+(?:\.\d+)?))?(?:\s+Y(?<Y>-?\d+(?:\.\d+)?))?(?:\s+Z(?<Z>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.zProbeOffset = { X: num(g.X), Y: num(g.Y), Z: num(g.Z) };
+    }
+  }
+
+  // M900 K
+  if (cfg.linearAdvance == null) {
+    const m = cleanLines.find(l => /^M900\b/i.test(l));
+    if (m) {
+      const g = /M900(?:\s+K(?<K>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.linearAdvance = num(g.K);
+    }
+  }
+
+  // M412 S
+  if (cfg.runout == null) {
+    const m = cleanLines.find(l => /^M412\b/i.test(l));
+    if (m) cfg.runout = /S1\b/.test(m);
+  }
+
+  // C001 S H B W  (CR-6 helper)
+  if (!cfg.probeHeatersOff) {
+    const m = cleanLines.find(l => /^C001\b/i.test(l));
+    if (m) {
+      const g = /C001(?:\s+S(?<S>[01]))?(?:\s+H(?<H>-?\d+(?:\.\d+)?))?(?:\s+B(?<B>-?\d+(?:\.\d+)?))?(?:\s+W(?<W>-?\d+))?/i.exec(m)?.groups || {};
+      cfg.probeHeatersOff = { S: g.S === '1', H: num(g.H), B: num(g.B), W: g.W != null ? Number(g.W) : null };
+    }
+  }
+}
+
+// ---------- PARSER FOR M503 ----------
+function parseM503Response(raw) {
+  const lines = raw.replace(/\r/g, '').split('\n').map(s => s.trim()).filter(Boolean);
+
+  const cfg = {
+    filament: {},
+    pid: {},
+    abl: {},
+    presets: []
+  };
+
+  const num = s => (s == null ? null : Number(s));
+  const grab = (re, line) => (re.exec(line) || {}).groups || null;
+
+  const clean = lines.map(l => l.replace(/^echo:\s*/, '').trim());
+
+  for (const line of clean) {
+    if (/^G21\b/.test(line)) cfg.units = 'mm';
+    if (/^G20\b/.test(line)) cfg.units = 'in';
+
+    if (/^; Filament settings:\s*(Enabled|Disabled)/i.test(line))
+      cfg.filament.enabled = /Enabled/i.test(line);
+
+    if (/^M92\b/.test(line)) {
+      const g = grab(/M92\s+X(?<X>\S+)\s+Y(?<Y>\S+)\s+Z(?<Z>\S+)\s+E(?<E>\S+)/, line);
+      if (g) cfg.stepsPerUnit = { X: num(g.X), Y: num(g.Y), Z: num(g.Z), E: num(g.E) };
+    }
+
+    if (/^M203\b/.test(line)) {
+      const g = grab(/M203\s+X(?<X>\S+)\s+Y(?<Y>\S+)\s+Z(?<Z>\S+)\s+E(?<E>\S+)/, line);
+      if (g) cfg.maxFeedrate = { X: num(g.X), Y: num(g.Y), Z: num(g.Z), E: num(g.E) };
+    }
+
+    if (/^M201\b/.test(line)) {
+      const g = grab(/M201\s+X(?<X>\S+)\s+Y(?<Y>\S+)\s+Z(?<Z>\S+)\s+E(?<E>\S+)/, line);
+      if (g) cfg.maxAccel = { X: num(g.X), Y: num(g.Y), Z: num(g.Z), E: num(g.E) };
+    }
+
+    if (/^M204\b/.test(line)) {
+      const g = grab(/M204\s+P(?<P>\S+)\s+R(?<R>\S+)\s+T(?<T>\S+)/, line);
+      if (g) cfg.accel = { P: num(g.P), R: num(g.R), T: num(g.T) };
+    }
+
+    if (/^M205\b/.test(line)) {
+      const g = grab(/M205.*X(?<X>\S+).*Y(?<Y>\S+).*Z(?<Z>\S+).*E(?<E>\S+)/, line);
+      if (g) cfg.advanced = { X: num(g.X), Y: num(g.Y), Z: num(g.Z), E: num(g.E) };
+    }
+
+    if (/^M420\b/.test(line)) {
+      const g = grab(/M420\s+S(?<S>[01])(?:\s+Z(?<Z>\S+))?/, line);
+      if (g) { cfg.abl.enabled = g.S === '1'; cfg.abl.fade = num(g.Z); }
+    }
+
+    if (/^G29\s+W\b/.test(line)) {
+      const g = grab(/I(?<I>\d+)\s+J(?<J>\d+)\s+Z(?<Z>\S+)/, line);
+      if (g) {
+        const I = Number(g.I), J = Number(g.J), Z = num(g.Z);
+        if (!cfg.mesh) cfg.mesh = { nx: 0, ny: 0, values: [] };
+        cfg.mesh.nx = Math.max(cfg.mesh.nx, I + 1);
+        cfg.mesh.ny = Math.max(cfg.mesh.ny, J + 1);
+        cfg.mesh.values[J] = cfg.mesh.values[J] || [];
+        cfg.mesh.values[J][I] = Z;
+      }
+    }
+  }
+_fillMissingM503Fields(cfg, clean);
+  return cfg;
+}
+
+
+function putRows(tbodySel, rows) {
+  const tbody = document.querySelector(tbodySel);
+  if (!tbody) return;
+  tbody.innerHTML = rows
+    .map(([k, v]) => `<tr><th style="text-align:left">${k}</th><td style="text-align:left">${v ?? ''}</td></tr>`)
+    .join('');
+}
+
+function renderM503Fields(cfg) {
+  // General
+  putRows('#m503General tbody', [
+    ['Units', cfg.units || '—'],
+    ['Filament Settings', cfg.filament.enabled == null ? '—' : (cfg.filament.enabled ? 'Enabled' : 'Disabled')],
+    ['Filament (M200)', cfg.filament.M200 ? `S=${cfg.filament.M200.S} D=${cfg.filament.M200.D}` : '—'],
+    ['Home Offset (M206)', cfg.homeOffset ? `X=${cfg.homeOffset.X} Y=${cfg.homeOffset.Y} Z=${cfg.homeOffset.Z}` : '—'],
+    ['Power-loss Recovery (M413)', cfg.powerLossRecovery == null ? '—' : (cfg.powerLossRecovery ? 'On' : 'Off')],
+    ['Runout Sensor (M412)', cfg.runout == null ? '—' : (cfg.runout ? 'On' : 'Off')],
+  ]);
+
+  // Motion
+  putRows('#m503Motion tbody', [
+    ['Steps/mm (M92)', cfg.stepsPerUnit ? `X=${cfg.stepsPerUnit.X} Y=${cfg.stepsPerUnit.Y} Z=${cfg.stepsPerUnit.Z} E=${cfg.stepsPerUnit.E}` : '—'],
+    ['Max Feedrate (M203)', cfg.maxFeedrate ? `X=${cfg.maxFeedrate.X} Y=${cfg.maxFeedrate.Y} Z=${cfg.maxFeedrate.Z} E=${cfg.maxFeedrate.E}` : '—'],
+    ['Max Accel (M201)', cfg.maxAccel ? `X=${cfg.maxAccel.X} Y=${cfg.maxAccel.Y} Z=${cfg.maxAccel.Z} E=${cfg.maxAccel.E}` : '—'],
+    ['Accel (M204)', cfg.accel ? `P=${cfg.accel.P} R=${cfg.accel.R} T=${cfg.accel.T}` : '—'],
+    ['Advanced (M205)', cfg.advanced ? `B=${cfg.advanced.B} S=${cfg.advanced.S} T=${cfg.advanced.T} X=${cfg.advanced.X} Y=${cfg.advanced.Y} Z=${cfg.advanced.Z} E=${cfg.advanced.E}` : '—'],
+    ['Linear Advance (M900)', cfg.linearAdvance ?? '—'],
+  ]);
+
+  // Temperatures / PID / Presets
+  putRows('#m503Temps tbody', [
+    ['PID Hotend (M301)', cfg.pid.hotend ? `P=${cfg.pid.hotend.P} I=${cfg.pid.hotend.I} D=${cfg.pid.hotend.D}` : '—'],
+    ['PID Bed (M304)', cfg.pid.bed ? `P=${cfg.pid.bed.P} I=${cfg.pid.bed.I} D=${cfg.pid.bed.D}` : '—'],
+    ['Presets (M145)', cfg.presets.length ? cfg.presets.map(p => `S${p.S}: H${p.H}/B${p.B}/F${p.F}`).join(', ') : '—'],
+    ['Probe Heaters Off (C001)', cfg.probeHeatersOff ? `S=${cfg.probeHeatersOff.S ? 'On' : 'Off'} H=${cfg.probeHeatersOff.H} B=${cfg.probeHeatersOff.B} W=${cfg.probeHeatersOff.W}` : '—'],
+  ]);
+
+  // Retract
+  putRows('#m503Retract tbody', [
+    ['Retract (M207)', cfg.retract ? `S=${cfg.retract.S} W=${cfg.retract.W} F=${cfg.retract.F} Z=${cfg.retract.Z}` : '—'],
+    ['Recover (M208)', cfg.recover ? `S=${cfg.recover.S} W=${cfg.recover.W} F=${cfg.recover.F}` : '—'],
+    ['Auto-Retract (M209)', cfg.autoRetract == null ? '—' : (cfg.autoRetract ? 'On' : 'Off')],
+    ['Z Probe Offset (M851)', cfg.zProbeOffset ? `X=${cfg.zProbeOffset.X} Y=${cfg.zProbeOffset.Y} Z=${cfg.zProbeOffset.Z}` : '—'],
+  ]);
+
+  // ABL + Mesh
+  const ablStr = `Enabled=${cfg.abl.enabled ? 'Yes' : 'No'}${cfg.abl.fade != null ? `, Fade Z=${cfg.abl.fade}` : ''}`;
+  putRows('#m503ABL tbody', [['ABL (M420)', ablStr]]);
+
+  renderMesh('#m503Mesh', cfg.mesh);
+}
+
+function renderMesh(containerSel, mesh) {
+  const container = document.querySelector(containerSel);
+  if (!container) return;
+  if (!mesh) { container.innerHTML = '<em>No mesh</em>'; return; }
+
+  // Stats
+  const vals = mesh.values.flat().filter(v => typeof v === 'number');
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const avg = vals.reduce((a,b)=>a+b,0) / vals.length;
+  const range = max - min;
+
+  // Simple color mapping (green ~ median, blue = low, red = high)
+  const tdFor = (z) => {
+    let bg = '#eee';
+    if (typeof z === 'number') {
+      const t = range > 1e-9 ? (z - min) / range : 0.5;
+      // interpolate blue(0) -> green(0.5) -> red(1)
+      let r,g,b;
+      if (t < 0.5) { // blue to green
+        const k = t/0.5; r = 0; g = Math.round(255*k); b = Math.round(255*(1-k));
+      } else { // green to red
+        const k = (t-0.5)/0.5; r = Math.round(255*k); g = Math.round(255*(1-k)); b = 0;
+      }
+      bg = `rgb(${r},${g},${b})`;
+    }
+    const text = (z==null) ? '' : z.toFixed(5);
+    return `<td style="padding:6px; text-align:center; background:${bg}; color:#000;">${text}</td>`;
+  };
+
+  const header = `<div style="margin:6px 0;">
+    <strong>Mesh:</strong> ${mesh.nx}×${mesh.ny}
+    &nbsp;|&nbsp; <strong>Min:</strong> ${min.toFixed(5)}
+    &nbsp;|&nbsp; <strong>Max:</strong> ${max.toFixed(5)}
+    &nbsp;|&nbsp; <strong>Avg:</strong> ${avg.toFixed(5)}
+    &nbsp;|&nbsp; <strong>Range:</strong> ${range.toFixed(5)}
+  </div>`;
+
+  const rows = mesh.values.map(row => `<tr>${row.map(tdFor).join('')}</tr>`).join('');
+  container.innerHTML = header + `<table style="border-collapse:collapse;"><tbody>${rows}</tbody></table>`;
+}
+
+function renderM115Fields(parsed) {
+  const { info, caps, area } = parsed;
+  const tbody = document.querySelector('#m115Table tbody');
+  if (!tbody) return;
+
+  const rows = [];
+
+  // Top-level info (show common keys nicely)
+  const mapKeys = [
+    ['FIRMWARE_NAME', 'Firmware'],
+    ['SOURCE_CODE_URL', 'Source'],
+    ['PROTOCOL_VERSION', 'Protocol'],
+    ['MACHINE_TYPE', 'Machine'],
+    ['EXTRUDER_COUNT', 'Extruders'],
+    ['UUID', 'UUID'],
+  ];
+
+  for (const [k, label] of mapKeys) {
+    if (info[k]) rows.push([label, info[k]]);
+  }
+
+  // Caps (only show ones present)
+  const capEntries = Object.keys(caps).sort().map(name => [name, caps[name] ? 'Yes' : 'No']);
+  if (capEntries.length) {
+    rows.push(['—', '—']);
+    rows.push(['Capabilities', '']);
+    for (const [k, v] of capEntries) rows.push(['• ' + k, v]);
+  }
+
+  // Area (pretty print if available)
+  if (area) {
+    rows.push(['—', '—']);
+    rows.push(['Area (full)', `min x:${area.full?.min?.x}, y:${area.full?.min?.y}, z:${area.full?.min?.z} | max x:${area.full?.max?.x}, y:${area.full?.max?.y}, z:${area.full?.max?.z}`]);
+    rows.push(['Area (work)', `min x:${area.work?.min?.x}, y:${area.work?.min?.y}, z:${area.work?.min?.z} | max x:${area.work?.max?.x}, y:${area.work?.max?.y}, z:${area.work?.max?.z}`]);
+  }
+
+  // Render
+  tbody.innerHTML = rows.map(([k, v]) => `<tr><th style="text-align:left">${k}</th><td style="text-align:left">${v ?? ''}</td></tr>`).join('');
+}
+
+
+function parseM115(text) {
+  const cfg = {};
+  String(text || '')
+    .split(/\r?\n/)
+    .map(s => s.replace(/^echo:\s*/i, '').trim())
+    .filter(s => s && !/^ok\b/i.test(s))
+    .forEach(line => {
+      if (/^FIRMWARE_NAME:/i.test(line))   cfg.name      = line.split(':')[1]?.trim();
+      else if (/^FIRMWARE_URL:/i.test(line)) cfg.url     = line.split(':')[1]?.trim();
+      else if (/^PROTOCOL_VERSION:/i.test(line)) cfg.protocol = line.split(':')[1]?.trim();
+      else if (/^MACHINE_TYPE:/i.test(line)) cfg.machine = line.split(':')[1]?.trim();
+      else if (/^EXTRUDER_COUNT:/i.test(line)) cfg.extruders = line.split(':')[1]?.trim();
+      else if (/^UUID:/i.test(line))       cfg.uuid      = line.split(':')[1]?.trim();
+    });
+  return cfg;
+}
+
+function parseM115Response(raw) {
+  const info = {};
+  const caps = {};
+  let area = null;
+
+  const lines = raw
+    .replace(/\r/g, '')
+    .split('\n')
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  const mainLine = lines.find(l => /FIRMWARE_NAME:/.test(l));
+  if (mainLine) {
+    const re = /([A-Z_]+):(.*?)(?=\s[A-Z_]+:|$)/g;
+    let m;
+    while ((m = re.exec(mainLine)) !== null) {
+      info[m[1]] = m[2].trim();
+    }
+  }
+
+  for (const line of lines) {
+    const capMatch = /^Cap:([A-Z_]+):([01])$/.exec(line);
+    if (capMatch) caps[capMatch[1]] = capMatch[2] === '1';
+  }
+
+  const areaLine = lines.find(l => /^area:\{/.test(l));
+  if (areaLine) {
+    try {
+      const jsonish = areaLine
+        .replace(/^area:/, '')
+        .replace(/([a-zA-Z_]+)\s*:/g, '"$1":');
+      area = JSON.parse(jsonish);
+    } catch (e) { console.warn('Failed to parse area:', e); }
+  }
+
+  return { info, caps, area };
+}
+
+function parseM503(text) {
+  const out = {};
+
+  // Normalize lines: strip comments like echo:, trim
+  const lines = String(text || '')
+    .replace(/^echo:\s*/gmi, '')
+    .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+
+  const grab = (re, parseFn = (m)=>m) => {
+    for (const ln of lines) {
+      const m = ln.match(re);
+      if (m) return parseFn(m);
+    }
+    return null;
+  };
+
+  // M92: Steps/mm
+  // e.g. "M92 X80.00 Y80.00 Z400.00 E420.00"
+  out.M92 = grab(/\bM92\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([EXYZA])\s*([-+]?\d*\.?\d+)/gi, (_, ax, v) => (obj[ax.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M203: Max feedrate mm/s
+  out.M203 = grab(/\bM203\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([EXYZA])\s*([-+]?\d*\.?\d+)/gi, (_, ax, v) => (obj[ax.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M201: Acceleration mm/s²
+  out.M201 = grab(/\bM201\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([EXYZA])\s*([-+]?\d*\.?\d+)/gi, (_, ax, v) => (obj[ax.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M204: Accel presets (P/R/T)
+  // e.g. "M204 P500.00 R1000.00 T500.00" OR Marlin variants A/T
+  out.M204 = grab(/\bM204\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([PRTA])\s*([-+]?\d*\.?\d+)/gi, (_, k, v) => (obj[k.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M205: Jerk/junction settings (X/Y/Z/E, J, S, T etc.)
+  out.M205 = grab(/\bM205\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([A-Z])\s*([-+]?\d*\.?\d+)/gi, (_, k, v) => (obj[k.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M851: Z probe offset
+  out.M851 = grab(/\bM851\s+Z\s*([-+]?\d*\.?\d+)/i, m => ({ Z: +m[1] }));
+
+  // M301: Hotend PID "M301 P22.20 I1.08 D114.00"
+  out.M301 = grab(/\bM301\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([PID])\s*([-+]?\d*\.?\d+)/gi, (_, k, v) => (obj[k.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M304: Bed PID
+  out.M304 = grab(/\bM304\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([PID])\s*([-+]?\d*\.?\d+)/gi, (_, k, v) => (obj[k.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M420: Bed leveling state
+  // e.g. "M420 S1 Z0.00" (S=on/off, Z=fade)
+  out.M420 = grab(/\bM420\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([A-Z])\s*([-+]?\d*\.?\d+)/gi, (_, k, v) => (obj[k.toUpperCase()] = isNaN(v) ? v : +v));
+    return obj;
+  });
+
+  // M404: Filament diameter
+  out.M404 = grab(/\bM404\s+(?:DN?\s*)?([-+]?\d*\.?\d+)/i, m => ({ D: +m[1] }));
+
+  return out;
+}
+
+function fmtKV(obj, order) {
+  if (!obj) return '—';
+  const keys = order && order.length ? order : Object.keys(obj);
+  return keys.filter(k => obj[k] != null)
+             .map(k => `${k}:${obj[k]}`)
+             .join(' · ') || '—';
+}
+
+const isVirtual = () => virtualToggle?.checked === true;
+
+function renderM503Fields(cfg) {
+  const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text || '—'; };
+
+  set('f_M92',  fmtKV(cfg.M92,  ['X','Y','Z','E']));
+  set('f_M203', fmtKV(cfg.M203, ['X','Y','Z','E']));
+  set('f_M201', fmtKV(cfg.M201, ['X','Y','Z','E']));
+  set('f_M204', fmtKV(cfg.M204, ['P','R','T','A']));
+  set('f_M205', fmtKV(cfg.M205));
+  set('f_M851', cfg.M851 && typeof cfg.M851.Z === 'number' ? `Z:${cfg.M851.Z}` : '—');
+  set('f_M301', fmtKV(cfg.M301, ['P','I','D']));
+  set('f_M304', fmtKV(cfg.M304, ['P','I','D']));
+  set('f_M420', fmtKV(cfg.M420, ['S','Z']));
+  set('f_M404', cfg.M404 && cfg.M404.D ? `D:${cfg.M404.D}` : '—');
+}
+
+
+// Wire buttons
+
+document.getElementById('exportCfgBtn')?.addEventListener('click', () => {
+  const cfg = window._lastParsedCfg || {};
+  const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'm503_parsed.json'; a.click();
+  URL.revokeObjectURL(url);
+});
+
+// Optional: auto-parse on paste/changes to the textarea
+configBox?.addEventListener('input', () => {
+  // lightweight debounce
+  clearTimeout(configBox._deb);
+  configBox._deb = setTimeout(() => {
+    const cfg = parseM503(configBox.value || '');
+    renderM503Fields(cfg);
+    window._lastParsedCfg = cfg;
+  }, 250);
+});
+
+
+// ===== Maintenance Logbook =====
+const LS_MAINT = 'maintLog';
+let maint = [];               // [{id, dateISO, note, createdTs}]
+let maintEditingId = null;
+
+// DOM refs (Maintenance)
+const maintForm     = document.getElementById('maintForm');
+const maintDate     = document.getElementById('maintDate');
+const maintNote     = document.getElementById('maintNote');
+const maintSaveBtn  = document.getElementById('maintSave');
+const maintResetBtn = document.getElementById('maintReset');
+const maintTable    = document.getElementById('maintTable');
+const maintSummary  = document.getElementById('maintSummary');
+const maintExport   = document.getElementById('maintExport');
+const maintClearAll = document.getElementById('maintClearAll');
+
+function loadMaint() {
+  try { maint = JSON.parse(localStorage.getItem(LS_MAINT) || '[]'); }
+  catch { maint = []; }
+}
+function saveMaint() {
+  localStorage.setItem(LS_MAINT, JSON.stringify(maint));
+}
+function genMaintId() {
+  return 'M' + Date.now().toString(36) + Math.random().toString(36).slice(2,5).toUpperCase();
+}
+function clearMaintForm() {
+  maintEditingId = null;
+  maintDate.value = new Date().toISOString().slice(0,10); // today
+  maintNote.value = '';
+  maintSaveBtn.textContent = 'Save';
+}
+function renderMaint() {
+  // newest first
+  const rows = [...maint].sort((a,b) => (b.dateISO||'').localeCompare(a.dateISO) || b.createdTs - a.createdTs)
+    .map(m => {
+      const d = m.dateISO || '—';
+      const n = (m.note || '').replace(/</g,'&lt;');
+      return `<tr>
+        <td>${d}</td>
+        <td style="text-align:left">${n}</td>
+        <td>
+          <button type="button" data-edit="${m.id}">Edit</button>
+          <button type="button" data-del="${m.id}">Delete</button>
+        </td>
+      </tr>`;
+    }).join('');
+  maintTable.innerHTML = rows || `<tr><td colspan="3" class="muted">No maintenance recorded yet.</td></tr>`;
+  maintSummary.textContent = `${maint.length} entr${maint.length===1?'y':'ies'}`;
+}
+
+function upsertMaintFromForm() {
+  const dateISO = maintDate.value || new Date().toISOString().slice(0,10);
+  const note = maintNote.value.trim();
+  if (!note) { alert('Please enter a note.'); return; }
+
+  if (maintEditingId) {
+    const i = maint.findIndex(m => m.id === maintEditingId);
+    if (i !== -1) {
+      maint[i].dateISO = dateISO;
+      maint[i].note = note;
+    }
+  } else {
+    maint.push({
+      id: genMaintId(),
+      dateISO,
+      note,
+      createdTs: Date.now()
+    });
+  }
+  saveMaint();
+  clearMaintForm();
+  renderMaint();
+}
+
+function editMaint(id) {
+  const m = maint.find(x => x.id === id);
+  if (!m) return;
+  maintEditingId = id;
+  maintDate.value = m.dateISO || new Date().toISOString().slice(0,10);
+  maintNote.value = m.note || '';
+  maintSaveBtn.textContent = 'Update';
+}
+
+function deleteMaint(id) {
+  const i = maint.findIndex(x => x.id === id);
+  if (i === -1) return;
+  if (!confirm('Delete this entry?')) return;
+  maint.splice(i, 1);
+  saveMaint();
+  renderMaint();
+}
+
+// Event wiring
+maintForm?.addEventListener('submit', (e) => { e.preventDefault(); upsertMaintFromForm(); });
+maintResetBtn?.addEventListener('click', clearMaintForm);
+
+maintTable?.addEventListener('click', (e) => {
+  const t = e.target;
+  if (t.matches('button[data-edit]')) editMaint(t.getAttribute('data-edit'));
+  if (t.matches('button[data-del]'))  deleteMaint(t.getAttribute('data-del'));
+});
+
+maintExport?.addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(maint, null, 2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'maintenance-log.json'; a.click();
+  URL.revokeObjectURL(url);
+});
+
+maintClearAll?.addEventListener('click', () => {
+  if (!maint.length) return;
+  if (!confirm('Clear ALL maintenance entries?')) return;
+  maint = [];
+  saveMaint();
+  renderMaint();
+});
+
+// Initialize logbook once on load
+(function maintInit(){
+  if (!maintForm) return; // in case markup not present
+  loadMaint();
+  clearMaintForm();
+  renderMaint();
+})();
+
+
+//Filament
+const DEFAULT_DENSITY = {
+  'PLA': 1.24, 'PETG': 1.27, 'ABS': 1.04, 'TPU': 1.21, 'Nylon': 1.15,
+  'PC': 1.20, 'PVA': 1.23
+};
+const LS_SPOOLS = 'spools';
+const LS_ACTIVE = 'activeSpoolId';
 
 //Regex
 const NOISY_REGEX = /^(?:echo:busy:\s*processing|\/\/action:.*|setnewscreen(?:\s*\([^)]*\))?:?.*|invoking handler for screen.*)/i;
@@ -662,69 +2238,10 @@ const vState = {
    3) STATE (all let)
 ========================================================= */
 
-let net = {
-  txBytesTotal: 0,
-  rxBytesTotal: 0,
-  txSince: 0,
-  rxSince: 0,
-  lastSample: performance.now(),
-  txRate: 0,
-  rxRate: 0,
-  latencyEMA: null,   // ms
-  timer: null
-};
-
-let lastSendTs = null; 
 
 
-let heaterUnlocked = JSON.parse(localStorage.getItem('heaterUnlocked') || 'false');
 
-//UI and State flags
-let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
-let criticalDepth = 0;
-let pidActiveHotend = false;
-let pidActiveBed    = false;
-let pidTarget = null; // 'hotend', 'bed', or null
-let isHomed = false;
 
-// Leveling / Probing flow control
-let probeLatch = null; // resolved when G29 T finishes (grid header or DWIN “Settings Stored”)
-
-//Mesh and Temps
-let meshScratch    = Array.from({ length: 4 }, () => Array(4).fill(null));
-let temps          = { hot: null, hotTarget: null, bed: null, bedTarget: null };
-
-//Connection lifecycle
-let connKind = 'none'; // 'none' | 'virtual' | 'real'
-let isConnecting = false;
-let isDisconnecting = false;
-
-//Serial — device handles
-let port           = null;
-let reader         = null;
-let writer         = null;
-let textDecoder    = null;
-
-//Comms - I/O state, buffers, timers
-let reading        = false;
-let rxBuffer       = '';
-let cancelStream   = false;
-let captureMode    = null; // null | 'config' | 'diag'
-let tempTimer      = null;
-let postPrintTimer = null;
-
-//Read and Telemetry
-let waitingResolvers = []; // (kept for compatibility)
-let isBusyProcessing  = false;
-let lastOkAt          = 0;
-let pendingOk      = []; // queue for waitForOk()
-
-//Virtual printer
-let virtualMode = false;
-let vSimTimer = null;
-
-//Easter Egg
-let streak = 0;
 
 /* =========================================================
    4) TABS BOOTSTRAP (runs once)
@@ -755,12 +2272,1294 @@ let streak = 0;
    5) HELPERS (pure UI / formatting / state)
 ========================================================= */
 
+/* ================= G-code Previewer ================= */
+(function(){
+  const els = {
+    file: document.getElementById('gcodeFile'),
+    canvas: document.getElementById('gcodeCanvas'),
+    scrub: document.getElementById('layerScrub'),
+    info: document.getElementById('layerInfo'),
+    travel: document.getElementById('showTravel'),
+    zoomFit: document.getElementById('zoomFit'),
+    zoom1: document.getElementById('zoom1'),
+    resetPan: document.getElementById('resetPan'),
+    wrap: document.getElementById('gcodePreview')
+  };
+  const ctx = els.canvas.getContext('2d', { alpha: false });
+
+  // ----- Model -----
+  let layers = [];            // [{z, lines:[{x1,y1,x2,y2, extruding, lineNo}]}]
+  let zList = [];             // sorted z values
+  let bbox = {minX:0, minY:0, maxX:1, maxY:1};
+  let scale = 1, offsetX = 0, offsetY = 0; // world->screen
+  let pan = {x:0, y:0}, zoom = 1;
+
+  // ----- Utilities -----
+  const EPS_Z = 0.0009;
+  function nearlyEqual(a,b,eps){ return Math.abs(a-b) <= eps; }
+  function clamp(n,min,max){ return Math.max(min, Math.min(max, n)); }
+
+  // Color tokens from CSS
+  function token(name, fallback){
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+  }
+
+  // ----- Parser -----
+  function parseGCode(text){
+    layers = []; zList = [];
+    bbox = {minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity};
+
+    let x=0, y=0, z=0, e=0, f=0;
+    let absPos = true;   // G90/G91
+    let absE = true;     // M82/M83
+    let lastE = 0;
+
+    let currentLayer = null;
+    let layerByIndex = {}; // capture ;LAYER: comments
+
+    const lines = text.split(/\r?\n/);
+    for (let i=0; i<lines.length; i++){
+      let raw = lines[i];
+      // strip comments (; ... or ( ... ) ) basic
+      let line = raw.replace(/\(.*?\)/g,'').split(';')[0].trim();
+      if (!line) {
+        // Capture Cura-like layer markers for better accuracy
+        const layerMatch = raw.match(/;\s*LAYER\s*:\s*(\d+)/i) || raw.match(/;\s*layer\s*(\d+)/i);
+        if (layerMatch) layerByIndex[Number(layerMatch[1])] = z;
+        continue;
+      }
+
+      const cmd = line.split(/\s+/)[0].toUpperCase();
+
+      if (cmd === 'G90') { absPos = true; continue; }
+      if (cmd === 'G91') { absPos = false; continue; }
+      if (cmd === 'M82') { absE = true;  continue; }
+      if (cmd === 'M83') { absE = false; continue; }
+
+      if (cmd === 'G92') {
+        // Set position: parse axes present
+        const p = parseParams(line);
+        if (p.X!=null) x = p.X;
+        if (p.Y!=null) y = p.Y;
+        if (p.Z!=null) z = p.Z;
+        if (p.E!=null) { e = p.E; lastE = e; }
+        continue;
+      }
+
+      if (cmd === 'G0' || cmd === 'G1') {
+        const p = parseParams(line);
+        let nx = (p.X!=null) ? (absPos ? p.X : x + p.X) : x;
+        let ny = (p.Y!=null) ? (absPos ? p.Y : y + p.Y) : y;
+        let nz = (p.Z!=null) ? (absPos ? p.Z : z + p.Z) : z;
+        let ne = (p.E!=null) ? (absE ? p.E : e + p.E) : e;
+        if (p.F!=null) f = p.F;
+
+        // new layer if Z changed noticeably
+        if (!currentLayer || !nearlyEqual(nz, currentLayer.z, EPS_Z)) {
+          currentLayer = getOrCreateLayer(nz);
+        }
+
+        const extruding = (ne > lastE + 1e-9);
+        if ((nx!==x || ny!==y || nz!==z) && (extruding || p.X!=null || p.Y!=null)) {
+          // store only XY segments (2D top view). Ignore pure Z hops.
+          if (!nearlyEqual(nz, currentLayer.z, EPS_Z)) {
+            currentLayer = getOrCreateLayer(nz);
+          }
+          if (nx!==x || ny!==y) {
+            currentLayer.lines.push({ x1:x, y1:y, x2:nx, y2:ny, extruding, lineNo: i+1 });
+            // expand bbox
+            bbox.minX = Math.min(bbox.minX, x, nx);
+            bbox.minY = Math.min(bbox.minY, y, ny);
+            bbox.maxX = Math.max(bbox.maxX, x, nx);
+            bbox.maxY = Math.max(bbox.maxY, y, ny);
+          }
+        }
+        x = nx; y = ny; z = nz; lastE = e = ne;
+        continue;
+      }
+
+      // ignore other codes for 2D preview
+    }
+
+    // sort layers by z
+    layers.sort((a,b)=>a.z-b.z);
+    zList = layers.map(l=>l.z);
+
+    // If any ;LAYER markers existed, we could remap (optional, kept simple here)
+
+    // guard bbox
+    if (!isFinite(bbox.minX)) bbox = {minX:0, minY:0, maxX:1, maxY:1};
+    return { layers, bbox };
+  }
+
+  function parseParams(line){
+    const p = {};
+    line.replace(/[A-Za-z][-+]?\d*\.?\d+(e[-+]?\d+)?/gi, tok=>{
+      const letter = tok[0].toUpperCase();
+      const num = parseFloat(tok.slice(1));
+      p[letter] = num;
+    });
+    return p;
+  }
+
+  function getOrCreateLayer(z){
+    // merge z into existing within EPS_Z
+    for (const L of layers) if (nearlyEqual(L.z, z, EPS_Z)) return L;
+    const L = { z, lines: [] };
+    layers.push(L);
+    return L;
+  }
+
+  // ----- View / Transform -----
+  function resizeCanvas(){
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    const r = els.canvas.getBoundingClientRect();
+    els.canvas.width = Math.floor(r.width * dpr);
+    els.canvas.height = Math.floor(r.height * dpr);
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.scale(dpr, dpr);
+    fitView();
+  }
+
+  function fitView(){
+    const pad = 10;
+    const w = els.canvas.clientWidth - pad*2;
+    const h = els.canvas.clientHeight - pad*2;
+    const bw = Math.max(1e-6, bbox.maxX - bbox.minX);
+    const bh = Math.max(1e-6, bbox.maxY - bbox.minY);
+    const sx = w / bw;
+    const sy = h / bh;
+    scale = Math.min(sx, sy);
+    offsetX = -bbox.minX + (w/scale - bw)/2;
+    offsetY = -bbox.minY + (h/scale - bh)/2;
+    zoom = 1; pan = {x:0, y:0};
+    render();
+  }
+
+  function worldToScreen(x,y){
+    // Flip Y so +Y is up visually (optional). Here we keep slicer coords (origin lower-left).
+    const sx = (x + offsetX + pan.x) * scale * zoom + 10;
+    const sy = (y + offsetY + pan.y) * scale * zoom + 10;
+    return [sx, els.canvas.clientHeight - sy]; // invert for canvas pixels
+  }
+
+  // ----- Render -----
+  let currentLayerIdx = 0;
+  function render(){
+    const bg = token('--panel','#fff');
+    const grid = token('--border','#ccd');
+    const text = token('--text','#111');
+    const prevCol = `rgba(128,128,128,0.35)`;
+    const currCol = token('--accent','#4f46e5');
+    const travelCol = `rgba(120,120,120,0.55)`;
+
+    ctx.clearRect(0,0,els.canvas.clientWidth,els.canvas.clientHeight);
+
+    // Very light grid
+    ctx.save();
+    ctx.globalAlpha = 0.6;
+    ctx.strokeStyle = grid;
+    ctx.lineWidth = 1;
+    // simple frame
+    ctx.strokeRect(0.5,0.5,els.canvas.clientWidth-1,els.canvas.clientHeight-1);
+    ctx.restore();
+
+    if (!layers.length) return;
+
+    // Draw previous layers faint
+    for (let i=0; i<currentLayerIdx; i++){
+      drawLayer(layers[i], prevCol, travelCol, els.travel.checked, 1);
+    }
+    // Draw current layer full
+    drawLayer(layers[currentLayerIdx], currCol, travelCol, els.travel.checked, 2);
+    // HUD text
+    ctx.fillStyle = text;
+    ctx.font = '12px system-ui, sans-serif';
+    const z = layers[currentLayerIdx]?.z ?? 0;
+    ctx.fillText(`Layer ${currentLayerIdx+1}/${layers.length}  •  Z=${z.toFixed(3)} mm`, 12, 18);
+  }
+
+  function drawLayer(L, extrudeColor, travelColor, showTravel, widthBase){
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const seg of L.lines){
+      const [x1,y1] = worldToScreen(seg.x1, seg.y1);
+      const [x2,y2] = worldToScreen(seg.x2, seg.y2);
+      const isTravel = !seg.extruding;
+      if (isTravel && !showTravel) continue;
+      ctx.beginPath();
+      ctx.moveTo(x1,y1);
+      ctx.lineTo(x2,y2);
+      if (isTravel){
+        ctx.strokeStyle = travelColor;
+        ctx.setLineDash([6,6]);
+        ctx.lineWidth = widthBase;
+      } else {
+        ctx.strokeStyle = extrudeColor;
+        ctx.setLineDash([]);
+        ctx.lineWidth = widthBase + 0.5;
+      }
+      ctx.stroke();
+    }
+  }
+
+  // ----- Scrubber / Controls -----
+  function syncScrubber(){
+    els.scrub.max = Math.max(0, layers.length-1);
+    currentLayerIdx = clamp(currentLayerIdx, 0, layers.length-1);
+    els.scrub.value = currentLayerIdx;
+    const z = layers[currentLayerIdx]?.z ?? 0;
+    els.info.textContent = layers.length
+      ? `#${currentLayerIdx+1}/${layers.length} (Z=${z.toFixed(3)}mm)`
+      : '—';
+  }
+
+  els.scrub.addEventListener('input', () => {
+    currentLayerIdx = Number(els.scrub.value|0);
+    syncScrubber(); render();
+  });
+
+  els.travel.addEventListener('change', render);
+  els.zoomFit.addEventListener('click', fitView);
+  els.zoom1.addEventListener('click', ()=>{ zoom = 1; render(); });
+  els.resetPan.addEventListener('click', ()=>{ pan = {x:0,y:0}; render(); });
+
+  // Pan & Zoom (mouse)
+  let panning = false, last = {x:0,y:0};
+  els.canvas.addEventListener('pointerdown', e=>{
+    panning = true; last = {x:e.clientX, y:e.clientY}; els.canvas.setPointerCapture(e.pointerId);
+  });
+  els.canvas.addEventListener('pointermove', e=>{
+    if (!panning) return;
+    const dx = (e.clientX - last.x) / (scale * zoom);
+    const dy = (e.clientY - last.y) / (scale * zoom);
+    pan.x += dx;
+    pan.y -= dy; // invert due to screen Y invert
+    last = {x:e.clientX, y:e.clientY};
+    render();
+  });
+  window.addEventListener('pointerup', ()=>{ panning = false; });
+  els.canvas.addEventListener('wheel', e=>{
+    e.preventDefault();
+    const factor = Math.exp((e.deltaY>0?-1:1)*0.08);
+    zoom = clamp(zoom*factor, 0.1, 20);
+    render();
+  }, { passive:false });
+
+  // ----- Loading -----
+  els.file.addEventListener('change', async (e)=>{
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const text = await file.text();
+    loadFromText(text);
+  });
+
+  function loadFromText(text){
+    parseGCode(text);
+    resizeCanvas(); // sets fitView via render
+    currentLayerIdx = 0;
+    syncScrubber(); render();
+  }
+
+  // Resize handling
+  const ro = new ResizeObserver(()=>resizeCanvas());
+  ro.observe(els.canvas);
+
+  // ----- Live highlight API -----
+  function updateCurrentZ(z){
+    if (!layers.length) return;
+    // find nearest layer by Z
+    let idx = 0, best = Infinity;
+    for (let i=0;i<layers.length;i++){
+      const d = Math.abs(layers[i].z - z);
+      if (d < best) { best = d; idx = i; }
+    }
+    if (idx !== currentLayerIdx){
+      currentLayerIdx = idx;
+      syncScrubber(); render();
+    }
+  }
+
+  function updateByGcodeLine(lineNo){
+    if (!layers.length) return;
+    // find the highest layer that has any segment with lineNo <= given
+    let idx = currentLayerIdx;
+    for (let i=0;i<layers.length;i++){
+      const has = layers[i].lines.some(s => s.lineNo <= lineNo && s.extruding);
+      if (has) idx = i;
+    }
+    if (idx !== currentLayerIdx){
+      currentLayerIdx = idx;
+      syncScrubber(); render();
+    }
+  }
+
+  // Expose a small API for your sender
+  window.GCodePreview = {
+    loadFromText,
+    updateCurrentZ,
+    updateByGcodeLine,
+    fitView,
+    setLayer: (i)=>{ currentLayerIdx = clamp(i,0,layers.length-1); syncScrubber(); render(); },
+    get meta(){ return { layers: layers.length, zList:[...layers.map(l=>l.z)], bbox }; }
+  };
+
+  // If you already have the file string available elsewhere, you can do:
+  // GCodePreview.loadFromText(gcodeString);
+
+})();
+
+function genSpoolId() {
+  const t = Date.now().toString(36).slice(-5);
+  const r = Math.floor(Math.random() * 0xffff).toString(36).padStart(3, '0');
+  return `S-${t}${r}`.toUpperCase();
+}
+
+function saveSpools() {
+  localStorage.setItem(LS_SPOOLS, JSON.stringify(spools));
+}
+
+
+function loadSpools() {
+  try {
+    spools = JSON.parse(localStorage.getItem(LS_SPOOLS) || '[]');
+  } catch {
+    spools = [];
+  }
+}
+
+function saveActive(id) {
+  activeSpoolId = id || null;
+  localStorage.setItem(LS_ACTIVE, activeSpoolId || '');
+}
+
+function materialDensityGuess(mat) {
+  const k = String(mat || '').trim().toUpperCase();
+  // Common aliases
+  if (k === 'PA' || k.startsWith('PA')) return DEFAULT_DENSITY.NYLON; // PA/PA12/PA6
+  return DEFAULT_DENSITY[k] ?? null;
+}
+
+
+function findSpool(id) {
+  return spools.find(s => s.id === id) || null;
+}
+
+function formatG(x) {
+  return Number.isFinite(x) ? Math.round(x) : '—';
+}
+
+function clamp(v, min, max) {
+  return Math.max(min, Math.min(max, v));
+}
+
+function fillDensityByMaterial() {
+  if (!window.spMaterial || !window.spDensity) return;
+  const d = materialDensityGuess(spMaterial.value);
+  if (d != null) {
+    spDensity.value = d.toFixed(2);
+    spDensity.dataset.auto = '1';
+  } else {
+    spDensity.value = '';
+    delete spDensity.dataset.auto;
+  }
+}
+
+// On init (where you wire your form):
+spMaterial.addEventListener('change', fillDensityByMaterial);
+
+// After you populate the form (writeForm/clearForm), call this so the field matches:
+fillDensityByMaterial();
+
+function qrUrlForSpool(s) {
+  const payload = encodeURIComponent(JSON.stringify({
+    id: s.id,
+    brand: s.brand,
+    mat: s.material,
+    dia: s.diameter,
+    dens: s.density,
+    color: s.colorHex,
+    cap: s.capacityG,
+    rem: s.remainingG
+  }));
+  return `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${payload}`;
+}
+
+function openPrintLabel(s) {
+  const w = window.open('', '_blank', 'width=360,height=520');
+  if (!w) return;
+
+  const html = `
+    <html><head><title>Spool ${s.id}</title></head>
+    <body style="font-family:sans-serif;padding:12px">
+      <h3 style="margin:0 0 8px">Spool Label</h3>
+      <div><strong>ID:</strong> ${s.id}</div>
+      <div><strong>Brand:</strong> ${s.brand || '—'}</div>
+      <div><strong>Material:</strong> ${s.material} — Ø ${s.diameter} mm</div>
+      <div><strong>Color:</strong> ${s.colorName || ''} 
+        <span style="display:inline-block;width:12px;height:12px;background:${s.colorHex};
+          border:1px solid #999;vertical-align:middle"></span>
+      </div>
+      <div><strong>Remaining:</strong> ${formatG(s.remainingG)} g / ${formatG(s.capacityG)} g</div>
+      <img src="${qrUrlForSpool(s)}" alt="QR" style="margin-top:10px"/>
+      <script>setTimeout(()=>window.print(), 200);<\/script>
+
+    </body></html>`;
+
+  w.document.write(html);
+  w.document.close();
+}
+
+function loadActive() {
+  try {
+    const v = localStorage.getItem(LS_ACTIVE);
+    activeSpoolId = v && v !== '' ? v : null;
+    if (activeSpoolId && !findSpool(activeSpoolId)) {
+      activeSpoolId = null;
+      localStorage.setItem(LS_ACTIVE, ''); // clear ghost
+    }
+  } catch {
+    activeSpoolId = null;
+  }
+}
+function estimateGramsFromGcodeText(text, diameterMM, densityGperCM3) {
+  const dia  = Math.max(0.5, parseFloat(diameterMM) || 1.75);
+  const dens = Math.max(0.1, parseFloat(densityGperCM3) || 1.20);
+  const A    = Math.PI * Math.pow(dia / 2, 2); // mm^2
+
+  let absoluteE = true; // default: M82 unless G-code says otherwise
+  let lastE = 0;
+  let usedMM = 0;
+
+  const lines = text.split(/\r?\n/);
+  for (let raw of lines) {
+    let line = raw.replace(/;.*$/, '').trim();
+    if (!line) continue;
+
+    if (/^M82\b/i.test(line)) { absoluteE = true;  continue; }
+    if (/^M83\b/i.test(line)) { absoluteE = false; continue; }
+
+    const g92 = line.match(/^G92\s+.*?E\s*([-+]?\d*\.?\d+)/i);
+    if (g92) { lastE = parseFloat(g92[1]) || 0; continue; }
+
+    if (/^G0?1\b/i.test(line)) {
+      const m = line.match(/\bE\s*([-+]?\d*\.?\d+)/i);
+      if (!m) continue;
+      const eNow = parseFloat(m[1]);
+      if (!Number.isFinite(eNow)) continue;
+
+      let dE;
+      if (absoluteE) {
+        dE = eNow - lastE;
+        lastE = eNow;
+      } else {
+        dE = eNow;
+      }
+      if (dE > 0) usedMM += dE; // ignore retractions
+    }
+  }
+  const volMM3 = usedMM * A;      // mm^3
+  const volCM3 = volMM3 / 1000.0; // cm^3
+  return volCM3 * dens;           // grams
+}
+
+function clearForm(newId = true) {
+  editingId = null;
+  spIdShow.textContent = newId ? genSpoolId() : '—';
+  spBrand.value = '';
+  spMaterial.value = '';
+  spDiameter.value = '1.75';
+  spDensity.value = '1.24';
+  spColorName.value = '';
+  spColorHex.value = '#000000';
+  spFinish.value = '';
+  spTare.value = '250';
+  spCapacity.value = '1000';
+  spCostTotal.value = '';
+  spCostPerKg.value = '';
+  spLot.value = '';
+  spDate.value = ''; // or set to today if you prefer: new Date().toISOString().slice(0,10)
+  spVendor.value = '';
+
+  // keep dependent fields fresh
+  fillDensityByMaterial?.();
+  autofillLot(true);      // <= generate a fresh lot every new spool
+}
+
+function fillForm(s) {
+  editingId = s.id;
+  spIdShow.textContent = s.id;
+  spBrand.value     = s.brand || '';
+  spMaterial.value  = s.material || '';
+  spDiameter.value  = String(s.diameter || '1.75');
+  spDensity.value   = String(s.density ?? 1.24);
+  spColorName.value = s.colorName || '';
+  spColorHex.value  = s.colorHex || '#000000';
+  spFinish.value    = s.finish || '';
+  spTare.value      = String(s.tareG ?? 0);
+  spCapacity.value  = String(s.capacityG ?? 0);
+  spCostTotal.value = s.costTotal ?? '';
+  spCostPerKg.value = s.costPerKg ?? '';
+  spLot.value       = s.lot || '';
+  spDate.value      = s.purchaseDate || '';
+  spVendor.value    = s.vendorUrl || '';
+
+  // respect saved density/lot; otherwise auto-fill
+  if (!s.density) fillDensityByMaterial?.();
+  if (!s.lot) { autofillLot(true); } else { delete spLot.dataset.auto; }
+}
+
+function upsertFromForm(e) {
+  if (e) e.preventDefault();
+  const id = editingId || spIdShow.textContent || genSpoolId();
+
+  const diameter = parseFloat(spDiameter.value);
+  const density  = parseFloat(spDensity.value);
+  const tare     = Math.max(0, parseFloat(spTare.value) || 0);
+  const capacity = Math.max(0, parseFloat(spCapacity.value) || 0);
+
+  if (!(diameter > 0)) return alert('Diameter must be > 0.');
+  if (!(density  > 0)) return alert('Density must be > 0.');
+  if (!(capacity >= 0)) return alert('Capacity must be ≥ 0.');
+
+  // cost sanity
+  let costTotal = spCostTotal.value ? parseFloat(spCostTotal.value) : null;
+  let costPerKg = spCostPerKg.value ? parseFloat(spCostPerKg.value) : null;
+  if (costTotal == null && costPerKg != null && capacity > 0) {
+    costTotal = costPerKg * (capacity / 1000);
+  } else if (costPerKg == null && costTotal != null && capacity > 0) {
+    costPerKg = costTotal / (capacity / 1000);
+  }
+
+  const existing = findSpool(id);
+  const base = {
+    id,
+    brand: spBrand.value.trim(),
+    material: spMaterial.value.trim() || 'PLA',
+    diameter,
+    density,
+    colorName: spColorName.value.trim(),
+    colorHex: spColorHex.value || '#000000',
+    finish: spFinish.value.trim(),
+    tareG: tare,
+    capacityG: capacity,
+    costTotal:  (costTotal  != null) ? +costTotal.toFixed(2)  : null,
+    costPerKg:  (costPerKg  != null) ? +costPerKg.toFixed(2)  : null,
+    lot: spLot.value.trim(),
+    purchaseDate: spDate.value || '',
+    vendorUrl: spVendor.value.trim()
+  };
+
+  if (existing) {
+    Object.assign(existing, base);
+    existing.remainingG = clamp(existing.remainingG ?? capacity, 0, capacity);
+    existing.updatedAt  = Date.now();
+  } else {
+    spools.push({
+      ...base,
+      remainingG: capacity,
+      createdAt:  Date.now(),
+      updatedAt:  Date.now(),
+      lastUsedAt: null
+    });
+  }
+  saveSpools();
+  renderSpoolList();
+  renderActiveSel();
+  clearForm(true);
+  setActivity('Spool saved', 'ok');
+}
+
+function clearGhostActive() {
+  try {
+    const v = localStorage.getItem(LS_ACTIVE); // 'activeSpoolId'
+    const isGhost = v && !spools.some(s => s.id === v);
+    if (isGhost) {
+      localStorage.setItem(LS_ACTIVE, '');  // clear saved ghost
+      activeSpoolId = null;                 // clear in memory
+    }
+  } catch {
+    activeSpoolId = null;
+  }
+}
+
+function renderActiveSel() {
+  if (activeSpoolId && !findSpool(activeSpoolId)) {
+    saveActive(''); // clear ghost before building
+  }
+  const idKeep = activeSpoolId;
+  spActiveSel.innerHTML =
+    '<option value="">— none —</option>' +
+    spools.map(s => `<option value="${s.id}" ${s.id === idKeep ? 'selected' : ''}>
+        ${s.id} · ${s.brand || ''} ${s.material} ${s.colorName || ''}
+      </option>`).join('');
+}
+
+
+function renderSpoolList() {
+  const q      = spSearch.value.trim().toLowerCase();
+  const mat    = spMatFilter.value.trim();
+  const onlyRem= spOnlyRemaining.checked;
+
+  let rows = spools.slice();
+  if (q) {
+    rows = rows.filter(s => (s.id + s.brand + s.colorName).toLowerCase().includes(q));
+  }
+  if (mat) rows = rows.filter(s => s.material === mat);
+  if (onlyRem) rows = rows.filter(s => (s.remainingG || 0) > 0);
+
+  const sort = spSort.value;
+  rows.sort((a, b) => {
+    if (sort === 'remainingDesc') return (b.remainingG || 0) - (a.remainingG || 0);
+    if (sort === 'brandAsc')     return (a.brand || '').localeCompare(b.brand || '');
+    if (sort === 'materialAsc')  return (a.material || '').localeCompare(b.material || '');
+    if (sort === 'createdDesc')  return (b.createdAt || 0) - (a.createdAt || 0);
+    return 0;
+  });
+
+  spTable.innerHTML = rows.map(s => `
+    <tr>
+      <td>${s.id}</td>
+      <td>${s.brand || '—'}</td>
+      <td>${s.material}</td>
+      <td>
+        <span style="display:inline-block;width:10px;height:10px;background:${s.colorHex};border:1px solid #999;vertical-align:middle"></span>
+        ${s.colorName || ''}
+      </td>
+      <td>${s.diameter}</td>
+      <td>${formatG(s.remainingG)}</td>
+      <td>${formatG(s.capacityG)}</td>
+      <td>
+        <button data-act="edit" data-id="${s.id}">Edit</button>
+        <button data-act="setActive" data-id="${s.id}">Set active</button>
+        <button data-act="label" data-id="${s.id}">Label</button>
+        <button data-act="del" data-id="${s.id}">Delete</button>
+      </td>
+    </tr>
+  `).join('');
+
+  const total   = spools.length;
+  const withRem = spools.filter(s => (s.remainingG || 0) > 0).length;
+  spSummary.textContent = `${rows.length}/${total} shown · ${withRem} have remaining`;
+}
+
+
+function setActiveSpool(id) {
+  saveActive(id || '');
+  spActiveSel.value = activeSpoolId || '';
+  setActivity(
+    activeSpoolId ? `Active spool: ${activeSpoolId}` : 'No active spool',
+    activeSpoolId ? 'ok' : ''
+  );
+}
+
+// --- Lot / Batch auto-generator ---
+function _slug3(s) {
+  // first 3 letters/numbers of brand, fallback to 'XXX'
+  const t = String(s || '').replace(/[^a-z0-9]/gi, '').toUpperCase();
+  return (t.slice(0, 3) || 'XXX').padEnd(3, 'X');
+}
+function _matCode(s) {
+  const k = String(s || '').trim().toUpperCase();
+  if (k.startsWith('PA')) return 'NYL'; // PA, PA6, PA12 -> Nylon
+  return (k || 'MAT').slice(0, 3);
+}
+function _dateYYMMDD(dateStr) {
+  const d = dateStr ? new Date(dateStr) : new Date();
+  const y = String(d.getFullYear()).slice(-2);
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${y}${m}${dd}`;
+}
+function genLotBatch() {
+  const brand = _slug3(spBrand.value);
+  const mat   = _matCode(spMaterial.value);
+  const ymd   = _dateYYMMDD(spDate.value);
+  const seq   = Math.random().toString(36).slice(2, 5).toUpperCase();
+  return `${brand}-${mat}${ymd}-${seq}`;
+}
+/**
+ * Fill lot only if:
+ *  - force = true, or
+ *  - field is empty, or
+ *  - it was previously auto-filled (tracked via data-auto="1")
+ */
+function autofillLot(force = false) {
+  if (!spLot) return;
+  if (force || !spLot.value || spLot.dataset.auto === '1') {
+    spLot.value = genLotBatch();
+    spLot.dataset.auto = '1';
+  }
+}
+
+// Keep lot in sync while user is building a new spool
+spBrand?.addEventListener('input',  () => autofillLot(false));
+spMaterial?.addEventListener('change', () => autofillLot(false));
+spDate?.addEventListener('change', () => autofillLot(false));
+
+// Optional: a quick way to "lock" custom lot once user types anything
+spLot?.addEventListener('input', () => { delete spLot.dataset.auto; });
+
+function ensureMeshTable() {
+  if (!meshInput) return;
+  if (meshInput.children.length) return; // already built
+
+  const rows = 4, cols = 4;
+  meshInput.innerHTML = '';
+  for (let r = 0; r < rows; r++) {
+    const tr = document.createElement('tr');
+    for (let c = 0; c < cols; c++) {
+      const td = document.createElement('td');
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.step = '0.001';
+      inp.style.width = '90px';
+      inp.id = `m_${r}_${c}`;
+      td.appendChild(inp);
+      tr.appendChild(td);
+    }
+    meshInput.appendChild(tr);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', ensureMeshTable);
+
+function deleteSpool(id) {
+  const s = findSpool(id);
+  if (!s) return;
+  if (!safeConfirm(`Delete spool ${id}?`)) return;
+  spools = spools.filter(x => x.id !== id);
+  if (activeSpoolId === id) saveActive('');
+  saveSpools();
+  renderSpoolList();
+  renderActiveSel();
+}
+
+function adjustRemaining(id, deltaG) {
+  const s = findSpool(id);
+  if (!s) return;
+  const cap = s.capacityG || 0;
+  s.remainingG = clamp((s.remainingG || 0) + deltaG, 0, cap);
+  s.updatedAt  = Date.now();
+  saveSpools();
+  renderSpoolList();
+  renderActiveSel();
+}
+
+// =============== FILAMENT: event wiring ===============
+spMaterial?.addEventListener('change', fillDensityByMaterial);
+spReset?.addEventListener('click', () => clearForm(true));
+spoolForm?.addEventListener('submit', upsertFromForm);
+
+spTable?.addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  const id  = btn.getAttribute('data-id');
+  const s   = findSpool(id);
+  const act = btn.getAttribute('data-act');
+
+  if (act === 'edit'      && s) fillForm(s);
+  if (act === 'setActive' && s) setActiveSpool(id);
+  if (act === 'label'     && s) openPrintLabel(s);
+  if (act === 'del')           deleteSpool(id);
+});
+
+[spSearch, spMatFilter, spOnlyRemaining, spSort]
+  .forEach(el => el?.addEventListener('input', renderSpoolList));
+
+spActiveSel?.addEventListener('change', () => setActiveSpool(spActiveSel.value || ''));
+
+spPrintLbl?.addEventListener('click', () => {
+  const s = findSpool(activeSpoolId || '');
+  if (!s) return alert('Select an active spool first.');
+  openPrintLabel(s);
+});
+
+spWeigh?.addEventListener('click', () => {
+  const s = findSpool(activeSpoolId || '');
+  if (!s) return alert('Select an active spool first.');
+  const gross = parseFloat(safePrompt('Current gross weight (g) — spool+filament on scale:', '850') || '');
+  if (!Number.isFinite(gross) || gross <= 0) return;
+  const net = gross - (s.tareG || 0);
+  if (net < 0) return alert('Gross must be ≥ tare weight.');
+  s.remainingG = clamp(Math.round(net), 0, s.capacityG || 0);
+  s.updatedAt  = Date.now();
+  saveSpools();
+  renderSpoolList();
+  renderActiveSel();
+});
+
+spDeduct5?.addEventListener('click', () => {
+  const s = findSpool(activeSpoolId || '');
+  if (!s) return alert('Select an active spool first.');
+
+  const def = localStorage.getItem('spDeductDefault') || '5';
+  const input = safePrompt('Deduct amount (grams):', def);
+  const amt = parseFloat(input || '');
+  if (!Number.isFinite(amt) || amt <= 0) return;
+
+  localStorage.setItem('spDeductDefault', String(amt));
+  adjustRemaining(s.id, -Math.abs(amt)); // deduct
+});
+
+spMarkEmpty?.addEventListener('click', () => {
+  const s = findSpool(activeSpoolId || '');
+  if (!s) return alert('Select an active spool first.');
+  s.remainingG = 0;
+  s.updatedAt  = Date.now();
+  saveSpools();
+  renderSpoolList();
+});
+
+// =============== FILAMENT: init ===============
+(function filamentInit() {
+  try {
+    loadSpools();
+    loadActive?.();          // if you have it
+    clearGhostActive();      // <= add this line
+    renderSpoolList();
+    renderActiveSel();
+    clearForm(true);
+  } catch (e) {
+    console.error('filamentInit failed:', e);
+  }
+})();
+
+function updatePricePerKg() {
+  const totalPrice = parseFloat(spCostTotal.value) || 0;
+  const capacityGrams = parseFloat(spCapacity.value) || 0;
+  if (capacityGrams > 0) {
+    const perKg = totalPrice / (capacityGrams / 1000);
+    spCostPerKg.value = perKg.toFixed(2);
+  } else {
+    spCostPerKg.value = '';
+  }
+}
+
+spCostTotal.addEventListener('input', updatePricePerKg);
+spCapacity.addEventListener('input', updatePricePerKg);
 
 
 
 
 
 
+
+
+
+
+
+function getHomeSig() {
+  try { return JSON.parse(localStorage.getItem('homeSig')) || HOME_SIG_DEFAULT; }
+  catch { return HOME_SIG_DEFAULT; }
+}
+function setHomeSig(sig) {
+  localStorage.setItem('homeSig', JSON.stringify(sig));
+}
+
+// Call on every incoming log line to update the “hint” window
+function maybeMarkHomingHint(line) {
+  if (/\b(Homing|Home\s+all|Taring probe|Preheating)\b/i.test(line)) {
+    lastHomeHintAt = performance.now();
+  }
+}
+
+// Call when you parse a position to decide if we’re homed
+function maybeMarkHomedFromPos(x, y, z) {
+  const now = performance.now();
+
+  // If we saw a homing-ish line very recently, trust this as homed
+  if (now - lastHomeHintAt < 4000) {
+    isHomed = true;
+    return;
+  }
+
+  // Otherwise, compare to a known "home signature" with tolerance
+  const sig = getHomeSig();
+  const near =
+    Math.abs(x - sig.x) <= sig.tolX &&
+    Math.abs(y - sig.y) <= sig.tolY &&
+    Math.abs(z - sig.z) <= sig.tolZ;
+
+  if (near) isHomed = true;
+}
+
+// (optional) learn & persist your printer’s home signature after a known-good G28
+function learnHomeSignature(x, y, z) {
+  setHomeSig({ x, y, z, tolX: 2.0, tolY: 2.0, tolZ: 4.0 });
+}
+
+// === Nozzle Wipe + Prime Line (staged warmup, safe home, purge, cool, exit) ===
+async function runPrimeLine() {
+  cancelStream = false; // ← clear leftover cancel flag from a previous send
+  const HOT_FINAL = 200;
+  const BED_FINAL = 60;
+
+  try {
+    setActivity('Nozzle prep…', 'warn');
+
+    // Restore mesh & motion defaults
+    await sendCmdsSequential(
+      'M420 S1',
+      'M201 X500.00 Y500.00 Z100.00 E5000.00',
+      'M203 X500.00 Y500.00 Z10.00 E50.00',
+      'M204 P500.00 R1000.00 T500.00',
+      'M205 X8.00 Y8.00 Z0.40 E5.00',
+      'M220 S100',
+      'M221 S100'
+    );
+
+    // Staged warmup to avoid droop before homing (per your script)
+    await sendCmd('M190 S50');            await waitForOk(); // bed to 50 (wait)
+    await sendCmd('M140 S65');            await waitForOk(); // bed target 65 (no wait)
+    await sendCmd('M104 S120');           await waitForOk(); // nozzle 120 (no wait)
+    await sendCmd('M190 S65');            await waitForOk(); // bed to 65 (wait)
+    await sendCmd('M109 S145');           await waitForOk(); // nozzle to 145 (wait)
+    await sendCmd('M105');                await waitForOk();
+
+    // Home while warm (Z sensor happy at ~145)
+    await sendCmd('G28');                 await waitForOk();
+
+    // Set final print temps (don’t wait yet), park, then wait to temps
+    await sendCmd(`M104 S${HOT_FINAL}`);  await waitForOk();
+    await sendCmd(`M140 S${BED_FINAL}`);  await waitForOk();
+    await sendCmd('M105');                await waitForOk();
+    await sendCmdsSequential('G90', 'G0 Z20', 'G0 X0 Y0');
+    await sendCmd(`M190 S${BED_FINAL}`);  await waitForOk();
+    await sendCmd(`M109 S${HOT_FINAL}`);  await waitForOk();
+    await sendCmd('M105');                await waitForOk();
+
+    // Purge / prime lines
+    await sendCmdsSequential(
+      'G92 E0',
+      'M83',
+      'G1 Z2.0 F3000',
+      'G1 X10.1 Y20 Z0.28 F5000.0',
+      'G1 X10.1 Y200.0 Z0.28 F1500.0 E15',
+      'G1 X10.4 Y200.0 Z0.28 F5000.0',
+      'G1 X10.4 Y20 Z0.28 F1500.0 E30',
+      'G92 E0',
+      'G1 Z2.0 F3000',
+      'M82'
+    );
+
+    // Drain queue, Z hop +10, cool down, then close print screen
+    await sendCmd('M400');                await waitForOk().catch(()=>{});
+    await sendCmd('G91');                 await waitForOk().catch(()=>{});
+    await sendCmd('G1 Z10 F600');         await waitForOk().catch(()=>{});
+    await sendCmd('G90');                 await waitForOk().catch(()=>{});
+    await sendCmd('M104 S0');             await waitForOk().catch(()=>{});
+    await sendCmd('M140 S0');             await waitForOk().catch(()=>{});
+    exitPrintScreen(0, { tellHost: false }); 
+
+    isHomed = true;
+    setActivity('Wipe + prime complete (cooled)', 'ok');
+    logMsg('✅ Homed at 65/145; primed at 200/60; Z+10; heaters OFF; closed print screen.');
+    updateLastUpdated();
+  } catch (e) {
+    setActivity('Prep failed', 'bad');
+    logMsg('⚠️ Wipe/prime error: ' + (e?.message || e));
+  }
+}
+
+// === Nozzle Wipe + Prime Line (staged warmup, safe home, purge, cool, exit) ===
+async function runPrimeLine() {
+  const HOT_FINAL = 200;
+  const BED_FINAL = 60;
+
+  try {
+    setActivity('Nozzle prep…', 'warn');
+
+    // Restore mesh & motion defaults
+    await sendCmdsSequential(
+      'M420 S1',
+      'M201 X500.00 Y500.00 Z100.00 E5000.00',
+      'M203 X500.00 Y500.00 Z10.00 E50.00',
+      'M204 P500.00 R1000.00 T500.00',
+      'M205 X8.00 Y8.00 Z0.40 E5.00',
+      'M220 S100',
+      'M221 S100'
+    );
+
+    // Staged warmup to avoid droop before homing (per your script)
+    await sendCmd('M190 S50');            await waitForOk(); // bed to 50 (wait)
+    await sendCmd('M140 S65');            await waitForOk(); // bed target 65 (no wait)
+    await sendCmd('M104 S120');           await waitForOk(); // nozzle 120 (no wait)
+    await sendCmd('M190 S65');            await waitForOk(); // bed to 65 (wait)
+    await sendCmd('M109 S145');           await waitForOk(); // nozzle to 145 (wait)
+    await sendCmd('M105');                await waitForOk();
+
+    // Home while warm (Z sensor happy at ~145)
+    await sendCmd('G28');                 await waitForOk();
+
+    // Set final print temps (don’t wait yet), park, then wait to temps
+    await sendCmd(`M104 S${HOT_FINAL}`);  await waitForOk();
+    await sendCmd(`M140 S${BED_FINAL}`);  await waitForOk();
+    await sendCmd('M105');                await waitForOk();
+    await sendCmdsSequential('G90', 'G0 Z20', 'G0 X0 Y0');
+    await sendCmd(`M190 S${BED_FINAL}`);  await waitForOk();
+    await sendCmd(`M109 S${HOT_FINAL}`);  await waitForOk();
+    await sendCmd('M105');                await waitForOk();
+
+    // Purge / prime lines
+    await sendCmdsSequential(
+      'G92 E0',
+      'M83',
+      'G1 Z2.0 F3000',
+      'G1 X10.1 Y20 Z0.28 F5000.0',
+      'G1 X10.1 Y200.0 Z0.28 F1500.0 E15',
+      'G1 X10.4 Y200.0 Z0.28 F5000.0',
+      'G1 X10.4 Y20 Z0.28 F1500.0 E30',
+      'G92 E0',
+      'G1 Z2.0 F3000',
+      'M82'
+    );
+
+    // Drain queue, Z hop +10, cool down, then close print screen
+    await sendCmd('M400');                await waitForOk().catch(()=>{});
+    await sendCmd('G91');                 await waitForOk().catch(()=>{});
+    await sendCmd('G1 Z10 F600');         await waitForOk().catch(()=>{});
+    await sendCmd('G90');                 await waitForOk().catch(()=>{});
+    await sendCmd('M104 S0');             await waitForOk().catch(()=>{});
+    await sendCmd('M140 S0');             await waitForOk().catch(()=>{});
+    exitPrintScreen(0, { tellHost: false }); 
+
+    isHomed = true;
+    setActivity('Wipe + prime complete (cooled)', 'ok');
+    logMsg('✅ Homed at 65/145; primed at 200/60; Z+10; heaters OFF; closed print screen.');
+    updateLastUpdated();
+  } catch (e) {
+    setActivity('Prep failed', 'bad');
+    logMsg('⚠️ Wipe/prime error: ' + (e?.message || e));
+  }
+}
+
+
+function _ensureAudioCtx() {
+  if (!_audioCtx) {
+    try { _audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch {}
+  }
+  if (_audioCtx && _audioCtx.state === 'suspended') _audioCtx.resume();
+  return _audioCtx;
+}
+
+function _tone(freq=880, ms=120, vol=0.22, when=0) {
+  const ctx = _ensureAudioCtx(); if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'square';
+  osc.frequency.value = freq;
+
+  const t0 = ctx.currentTime + when;
+  gain.gain.setValueAtTime(0.0001, t0);
+  gain.gain.linearRampToValueAtTime(vol, t0 + 0.01);
+  gain.gain.exponentialRampToValueAtTime(0.0001, t0 + ms/1000);
+
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(t0);
+  osc.stop(t0 + ms/1000 + 0.02);
+}
+
+function beep(kind='start') {
+  try {
+    if (!BEEP_BROWSER_ON) return;
+    if (kind === 'start') { _tone(880,120,0.24,0); _tone(1100,120,0.24,0.15); }
+    else if (kind === 'done') { _tone(784,120,0.24,0); _tone(988,120,0.24,0.16); _tone(1319,160,0.26,0.34); }
+    else if (kind === 'cancel') { _tone(220,260,0.28,0); }
+    else if (kind === 'error') { _tone(200,160,0.28,0); _tone(150,220,0.28,0.22); }
+    if (navigator.vibrate) {
+      if (kind === 'start') navigator.vibrate([25]);
+      else if (kind === 'done') navigator.vibrate([20,40,20]);
+      else if (kind === 'cancel' || kind === 'error') navigator.vibrate([60]);
+    }
+  } catch {}
+}
+
+async function printerBeep(kind='start') {
+  if (!BEEP_PRINTER_ON) return;
+  // only try if connected
+  if (!(connKind === 'virtual' || writer)) return;
+
+  // simple patterns (freq S, duration P)
+  const seq = (kind === 'start') ? [[880,120],[1100,120]]
+            : (kind === 'done')  ? [[784,120],[988,120],[1319,160]]
+            : (kind === 'cancel')? [[220,260]]
+            :                      [];
+  try {
+    for (const [s,p] of seq) {
+      await sendCmd(`M300 S${Math.round(s)} P${Math.round(p)}`);
+      await waitForOk().catch(()=>{});
+      await sleep(10);
+    }
+  } catch {}
+}
+
+/* ===== Live Telemetry Chart (temps, fan %, M73 %) ===== */
+const live = {
+  el: null, ctx: null, buf: [], maxSec: 600, // 10 minutes
+  lastFan255: 0, lastProg: null, raf: 0
+};
+
+(function initLiveChart(){
+  live.el = document.getElementById('liveChart');
+  if (!live.el) return;
+  live.ctx = live.el.getContext('2d');
+
+  const resize = () => {
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = live.el.clientWidth || 900;
+    const cssH = live.el.clientHeight || 260;
+    live.el.width  = Math.round(cssW * dpr);
+    live.el.height = Math.round(cssH * dpr);
+    live.ctx.setTransform(dpr,0,0,dpr,0,0); // draw in CSS pixels
+    queueLiveDraw();
+  };
+  window.addEventListener('resize', resize);
+  resize();
+})();
+
+function recordLiveSample() {
+  if (!live.ctx) return;
+  const now = Date.now()/1000;
+  live.buf.push({
+    ts: now,
+    hot: Number.isFinite(temps.hot) ? temps.hot : null,
+    bed: Number.isFinite(temps.bed) ? temps.bed : null,
+    fanPct: Number.isFinite(live.lastFan255) ? Math.round(live.lastFan255 * 100 / 255) : null,
+    progPct: (live.lastProg != null ? live.lastProg : null)
+  });
+  // drop old
+  const cut = now - live.maxSec;
+  while (live.buf.length && live.buf[0].ts < cut) live.buf.shift();
+  queueLiveDraw();
+}
+
+function queueLiveDraw(){
+  if (live.raf) return;
+  live.raf = requestAnimationFrame(() => { live.raf = 0; drawLive(); });
+}
+
+function drawLive(){
+  const el = live.el, ctx = live.ctx;
+  if (!ctx) return;
+  const W = el.clientWidth || 900, H = el.clientHeight || 260;
+  ctx.clearRect(0,0,W,H);
+
+  // Axes and layout
+  const padL = 40, padR = 40, padT = 10, padB = 20;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  // Time window
+  const now = Date.now()/1000;
+  const t0 = now - live.maxSec, t1 = now;
+
+  // Scales
+  const tempMin = 0, tempMax = 270;   // °C
+  const pctMin  = 0, pctMax  = 100;   // %
+  const xOf = ts => padL + ((ts - t0) / (t1 - t0)) * plotW;
+  const yTemp = v => padT + (1 - (v - tempMin) / (tempMax - tempMin)) * plotH;
+  const yPct  = v => padT + (1 - (v - pctMin)  / (pctMax  - pctMin )) * plotH;
+
+  // Grid
+  ctx.globalAlpha = 0.15;
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i=0;i<=5;i++){
+    const y = padT + (i/5)*plotH;
+    ctx.moveTo(padL, y); ctx.lineTo(W - padR, y);
+  }
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+
+  // Labels
+  ctx.fillStyle = '#333';
+  ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Arial';
+  ctx.textAlign = 'left';  ctx.fillText('°C', 4, padT+12);
+  ctx.textAlign = 'right'; ctx.fillText('%', W-4, padT+12);
+
+  // Helper to draw a series
+  const drawSeries = (key, yFn, color, dash=[]) => {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.setLineDash(dash);
+    ctx.lineWidth = 2;
+    let started = false;
+    ctx.beginPath();
+    for (const s of live.buf) {
+      const v = s[key];
+      if (v == null || !isFinite(v)) continue;
+      const x = xOf(s.ts), y = yFn(v);
+      if (!started) { ctx.moveTo(x,y); started = true; }
+      else ctx.lineTo(x,y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  // Series
+  drawSeries('hot',    yTemp, '#e74c3c');        // Hotend (red)
+  drawSeries('bed',    yTemp, '#3498db', [6,4]); // Bed (blue, dashed)
+  drawSeries('fanPct', yPct,  '#7f8c8d');        // Fan % (gray)
+  drawSeries('progPct',yPct,  '#2ecc71');        // M73 % (green)
+
+  // Frame
+  ctx.strokeStyle = '#ccc';
+  ctx.strokeRect(padL, padT, plotW, plotH);
+}
+
+function openPreflight(file) {
+  _preflightFile = file;
+
+  // dynamic bits
+  document.getElementById('preFileName').textContent = file?.name || '(unnamed)';
+  document.getElementById('preGuardrail').textContent = heaterUnlocked ? 'OFF' : 'ON';
+  const ht = (temps.hot ?? NaN), bt = (temps.bed ?? NaN);
+  const hT = (temps.hotTarget ?? NaN), bT = (temps.bedTarget ?? NaN);
+  const fmt = (v) => Number.isFinite(v) ? (''+ (v % 1 ? v.toFixed(1) : Math.round(v))) : '—';
+  document.getElementById('preTemps').textContent = `${fmt(ht)} / ${fmt(hT)} · ${fmt(bt)} / ${fmt(bT)}`;
+  document.getElementById('preMode').textContent = (connKind === 'virtual') ? 'Virtual' : 'Serial';
+  document.getElementById('preHomed').textContent = isHomed ? 'Yes' : 'No';
+
+  // reset checks & button
+  document.querySelectorAll('.preChk').forEach(c => c.checked = false);
+  document.getElementById('preStart').disabled = true;
+  document.getElementById('preSkip').checked = false;
+
+  // wire buttons
+  document.getElementById('preStart').onclick = async () => {
+    if (document.getElementById('preSkip').checked) sessionStorage.setItem('skipPreflight','1');
+    closePreflight();
+    await streamGcode(_preflightFile);
+  };
+  document.getElementById('preCancel').onclick = closePreflight;
+  document.getElementById('preClose').onclick  = closePreflight;
+
+  document.getElementById('preHome').onclick = async () => {
+    try {
+      await sendCmd('G28'); await waitForOk().catch(()=>{});
+      isHomed = true;
+      document.getElementById('preHomed').textContent = 'Yes';
+    } catch {}
+  };
+  document.getElementById('prePark').onclick = async () => {
+    try { await sendCmdsSequential('G90', 'G1 X0 Y0 Z10 F3000'); } catch {}
+  };
+
+  // show
+  document.getElementById('preOverlay').style.display = 'block';
+  document.getElementById('preModal').style.display   = 'grid';
+
+  // esc to close
+  const esc = (e) => { if (e.key === 'Escape') closePreflight(); };
+  document.addEventListener('keydown', esc, { once:true });
+}
+
+function closePreflight() {
+  document.getElementById('preModal').style.display   = 'none';
+  document.getElementById('preOverlay').style.display = 'none';
+  _preflightFile = null;
+}
 
 function updateUnlockUi() {
   const btn  = document.getElementById('unlockTempsBtn');
@@ -806,7 +3605,6 @@ function onUnlockToggle(e){
 
 if (unlockTempsBtn) unlockTempsBtn.onclick = onUnlockToggle; // bind once
 
-
 function guardHeaterFromCmd(cmd) {
   if (heaterUnlocked) return true;
   // Only gate heater-set commands with S values
@@ -835,7 +3633,6 @@ function guardHeaterSet(tool, target, sourceLabel='UI') {
   }
   return true;
 }
-
 
 function startNetMeter() {
   if (net.timer) return;
@@ -1226,23 +4023,20 @@ function _logBase(msg) {
   printerLog.scrollTop = printerLog.scrollHeight;
 }
 
-function logMsg(msg) {
-  const lines = String(msg).split(/\r?\n/);
-  for (let line of lines) {
-    if (!line) continue;
-    line = normalizeLine(line);
-
-    if (!debugMode && (isSetNewScreenLine(line) || isNoisyLine(line))) continue;
-    if (!debugMode && TELEMETRY_REGEX.test(line)) continue;
-
-    if (captureMode === 'config') {
-      configBox.value += line + '\n';
-      configBox.scrollTop = configBox.scrollHeight;
-    } else if (captureMode === 'diag') {
-      diagBox.value += line + '\n';
-      diagBox.scrollTop = diagBox.scrollHeight;
+function logMsg(msg, kind = 'info') {
+  const el = window.logBox || document.getElementById('logBox');
+  if (el) {
+    // if it's a <textarea>, use .value; otherwise append textContent
+    if ('value' in el) {
+      el.value += (el.value ? '\n' : '') + String(msg);
+      // keep scrolled to bottom
+      el.scrollTop = el.scrollHeight;
+    } else {
+      el.textContent += (el.textContent ? '\n' : '') + String(msg);
     }
-    _logBase(line);
+  } else {
+    // fallback to console so we still see output
+    (kind === 'bad' ? console.error : console.log)(msg);
   }
 }
 
@@ -1253,6 +4047,8 @@ function setActivity(text, cls='') {
 }
 
 function setConnected(connected) {
+    if (connectBtn) connectBtn.disabled = connected;
+  if (disconnectBtn) disconnectBtn.disabled = !connected;
   if (connected) {
     connBadge.textContent = 'Connected';
     connBadge.className = 'pill ok';
@@ -1277,6 +4073,7 @@ function setConnected(connected) {
     stopTempPolling();
  stopNetMeter();   
     setOfflinePills();
+    if (live) { live.buf.length = 0; live.lastProg = null; queueLiveDraw(); }
   }
 
   connectBtn.disabled    = connected;
@@ -1301,14 +4098,10 @@ function setConnected(connected) {
   zMinus.disabled = zPlus.disabled = !connected;
   parkHead.disabled     = !connected;
 
-  readCfg.disabled      = !connected;
-  saveCfg.disabled      = !connected;
-
   preheatPLA.disabled = preheatPETG.disabled =
   preheatABS.disabled = cooldown.disabled =
   loadFil.disabled = unloadFil.disabled = !connected;
-
-  fwInfo.disabled = tmcDiag.disabled = !connected;
+primeLine.disabled = !connected;
 
   sendGcode.disabled   = !connected || !gcodeFile.files.length;
   cancelSend.disabled  = true;
@@ -1322,8 +4115,14 @@ function updateLastUpdated(){
 function setLastCmd(cmd){ lastCmd.textContent = 'Last Cmd: ' + cmd; }
 
 //Polling
-function startTempPolling(){
-  if (!tempTimer) tempTimer = setInterval(() => sendCmd('M105', true), 3000);
+function startTempPolling(periodMs = 1000) {
+  if (tempTimer) return;              // already polling
+  tempTimer = setInterval(() => {
+    // quiet=true is fine; we just need the inbound line
+    try { sendCmd('M105', /*quiet*/ true); } catch (e) { /* ignore */ }
+  }, Math.max(250, periodMs));
+  // optional UI cue
+  if (typeof showTempPill === 'function') showTempPill('Polling temps', 'good');
 }
 
 function stopTempPolling(){
@@ -1371,20 +4170,25 @@ function safeConfirm(message) {
 }
 
 //Firmware screen exit
-function exitPrintScreen(delayMs = 0) {
-  if (postPrintTimer) { clearTimeout(postPrintTimer); postPrintTimer = null; }
-
-  const fire = () => {
-    logMsg('⌛ Closing print screen in firmware…');
-    // Let sendCmd route to real/virtual; keep it quiet
-    sendCmd('//action:cancel', true);
+function exitPrintScreen(delayMs = 0, { tellHost = false } = {}) {
+  const run = async () => {
+    try {
+      logMsg('⌛ Tidying up LCD/host state…');
+      const cmds = [
+        'M400',                   // let moves/ISRs drain
+        ...(tellHost ? ['M118 A1 action:cancel'] : []), // host-action for OctoPrint/etc.
+        'M524',                   // abort SD print (harmless if none)
+        'M117 Ready'              // friendly status on many LCDs
+      ];
+      await sendCmdsSequential(...cmds);
+    } catch (e) {
+      // non-fatal
+      console.warn('exitPrintScreen failed:', e);
+    }
   };
 
-  if (delayMs > 0) {
-    postPrintTimer = setTimeout(() => { fire(); postPrintTimer = null; }, delayMs);
-  } else {
-    fire();
-  }
+  if (delayMs > 0) setTimeout(() => { run(); }, delayMs);
+  else run();
 }
 
 //Misc
@@ -1710,6 +4514,11 @@ function promptNumber(message, def) {
    7) SERIAL / COMMS (connect, read loop, send, waits)
 ========================================================= */
 
+async function requestPortSafe() {
+  if (isVirtual()) throw new Error('virtual-mode'); // never open picker in virtual
+  return await navigator.serial.requestPort();
+}
+
 //Real Connection
 //Real Connection
 async function connectPrinter() {
@@ -1718,12 +4527,11 @@ async function connectPrinter() {
 
   try {
     // Virtual path
-    if (virtualMode) {
-      await connectVirtual();
-      connKind = 'virtual';
-      return;
-    }
-
+if (virtualMode) {
+  await connectVirtual();
+  connKind = 'virtual';
+  return;
+}
     // Real serial path
     if (!('serial' in navigator)) {
       setConnected(false);
@@ -1738,7 +4546,7 @@ async function connectPrinter() {
 
     if (!port) {
       const granted = await navigator.serial.getPorts();
-      port = granted[0] || await navigator.serial.requestPort();
+      port = granted[0] || await requestPortSafe();
     }
 
     const sel = baudSelection();
@@ -1769,6 +4577,7 @@ async function connectPrinter() {
 
     // We're open with reader/writer from openAtBaud()/probeAtBaud()
     setConnected(true);
+    cancelStream = false; // ← clear leftover cancel flag from a previous send
     sendCmd('M105', true); // prime a latency sample
     updateLevelView();
     hideEtaPill();
@@ -1801,27 +4610,31 @@ async function disconnectPrinter(reason = 'user') {
     // Fail any pending waits / streams immediately
     _rejectAllOk(new Error(lost ? 'Connection lost' : 'Disconnected'));
     if (probeLatch) {
-  try { probeLatch.reject(new Error(lost ? 'lost' : 'disconnected')); }
-  finally { probeLatch = null; }
-}
+      try { probeLatch.reject(new Error(lost ? 'lost' : 'disconnected')); }
+      finally { probeLatch = null; }
+    }
+
+    // Put sender into a cancelled/abort state during teardown
     cancelStream = true;
 
     // Reset sender UI + ETA
     if (sendProgress) sendProgress.style.width = '0%';
     if (sendStatus)   sendStatus.textContent = 'Idle';
     hideEtaPill();
-  clearAllPidUi();
+    clearAllPidUi();
+
+    // Virtual path
     if (connKind === 'virtual' || virtualMode) {
-      await disconnectVirtual();
+      await disconnectVirtual();  // handles setConnected(false)
       connKind = 'none';
       stopTempPolling();
       setActivity(lost ? 'Connection lost (virtual)' : 'Disconnected', lost ? 'bad' : 'ok');
       if (lost) logMsg('❌ Connection lost (virtual).'); else logMsg('🔌 Virtual printer disconnected.');
-      return;
+      return; // finally{} will still run
     }
 
     // Real serial path
-    setConnected(false);
+    setConnected(false); // also stops temp polling + net meter + sets offline pills
     setActivity(lost ? 'Connection lost…' : 'Disconnecting…', lost ? 'bad' : 'warn');
     stopTempPolling();
 
@@ -1844,9 +4657,31 @@ async function disconnectPrinter(reason = 'user') {
     setActivity('Disconnect error', 'bad');
     connKind = 'none';
   } finally {
+    // IMPORTANT: don’t let a previous cancel poison future one-shot macros
+    cancelStream = false;      // ← reset the sticky flag
     isDisconnecting = false;
   }
 }
+
+const VIRT_REPLIES = {
+  M115: [
+    'FIRMWARE_NAME:Marlin 2.1.2.1 (Github)',
+    'FIRMWARE_URL:https://github.com/MarlinFirmware/Marlin',
+    'PROTOCOL_VERSION:1.0',
+    'MACHINE_TYPE:Ender-3 Pro',
+    'EXTRUDER_COUNT:1',
+    'UUID:00000000-0000-0000-0000-000000000000',
+    'ok'
+  ].join('\n'),
+
+  M503: [
+    'echo:  Steps per unit: M92 X80.00 Y80.00 Z400.00 E93.00',
+    'echo:  Maximum feedrates: M203 X500.00 Y500.00 Z12.00 E25.00',
+    'echo:  Acceleration: M201 X1000.00 Y1000.00 Z100.00 E5000.00',
+    'echo:  Advanced: M205 X10.00 Y10.00 Z0.30 E5.00 J0.10',
+    'ok'
+  ].join('\n')
+};
 
 //Virtual Connection
 async function connectVirtual() {
@@ -1900,6 +4735,7 @@ function startVirtualSim() {
     }
     // keep temps in sync and refresh UI
     refreshVirtualTemps();
+    recordLiveSample();
   }, 100);
 }
 
@@ -1907,32 +4743,64 @@ function stopVirtualSim() {
   if (vSimTimer) { clearInterval(vSimTimer); vSimTimer = null; }
 }
 
-//Send paths
+// Send paths — virtual and real separated cleanly
 async function sendCmd(cmd, quiet = false) {
+  const line = String(cmd).trim();
+  const id = line.split(/\s+/)[0].toUpperCase(); // e.g. "M503", "M115"
+
+  const isM503 = id === 'M503';
+  const isM115 = id === 'M115';
+  const isM122 = id === 'M122';
+
+  // ---------------- VIRTUAL PATH ----------------
   if (connKind === 'virtual') {
-    return sendCmdVirtual(cmd, quiet);
+    // canned replies by id
+    const canned = VIRT_REPLIES && VIRT_REPLIES[id];
+    if (!quiet) logMsg('>> ' + line);
+
+    if (canned) {
+      // stream lines into the log and return the full block
+      canned.split('\n').forEach(l => logMsg(l));
+      return canned; // IMPORTANT: tables/parsers rely on this
+    }
+
+    // No canned reply — simulate a simple ok
+    logMsg('ok');
+    return 'ok';
   }
 
-  // Guardrail first (blocks M104/109 or M140/190 over limits)
-  if (!guardHeaterFromCmd(cmd)) {
+  // ---------------- REAL SERIAL PATH ----------------
+  // Heater guardrail
+  if (!guardHeaterFromCmd(line)) {
     throw new Error('Heater guardrail blocked high temperature command');
   }
-
   if (!writer) {
     setActivity('Not connected', 'bad');
     throw new Error('Not connected');
   }
 
-  setLastCmd(cmd);
+  setLastCmd(line);
   setActivity('Sending…', 'warn');
 
-  const payload = new TextEncoder().encode(cmd + '\n');
+  // Prepare optional capture for commands that dump multi-line blocks
+  let replyPromise = null;
+  if (isM503 || isM115 || isM122) {
+    // ensure no stale capture is active
+    if (typeof oneShotCapture !== 'undefined' && oneShotCapture) {
+      try { oneShotCapture.resolve(oneShotCapture.buf?.join('\n') || ''); } catch {}
+      oneShotCapture = null;
+    }
+    beginCritical?.();
+    stopTempPolling?.();
+    replyPromise = captureReplyOnce({ doneOnOk: true });
+  }
 
-  // ✅ stamp the send time so “ok” without a waiter can update latency
+  // Write to serial
+  const payload = new TextEncoder().encode(line + '\n');
   lastSendTs = performance.now();
 
   await writer.write(payload);
-  if (!quiet) logMsg('>> ' + cmd);
+  if (!quiet) logMsg('>> ' + line);
 
   // TX metering
   net.txBytesTotal += payload.length;
@@ -1940,12 +4808,47 @@ async function sendCmd(cmd, quiet = false) {
 
   updateLastUpdated();
   setActivity('Waiting…', 'warn');
+
+  // If we started a capture, return it; make sure we endCritical/start polling after it finishes
+  if (replyPromise) {
+    return replyPromise.finally(() => {
+      try { startTempPolling?.(); } catch {}
+      endCritical?.();
+    });
+  }
+
+  // Commands that don't produce a block reply just return empty string
+  return '';
+}
+
+function updateTempsUI({ hotend, hotendSet, bed, bedSet }) {
+  // Example spans – change selectors to your IDs/classes
+  const elH = document.getElementById('tempHotend');
+  const elHS = document.getElementById('tempHotendSet');
+  const elB = document.getElementById('tempBed');
+  const elBS = document.getElementById('tempBedSet');
+
+  if (elH)  elH.textContent  = isFinite(hotend)    ? hotend.toFixed(1) : '—';
+  if (elHS) elHS.textContent = isFinite(hotendSet) ? hotendSet.toFixed(0) : '—';
+  if (elB)  elB.textContent  = isFinite(bed)       ? bed.toFixed(1) : '—';
+  if (elBS) elBS.textContent = isFinite(bedSet)    ? bedSet.toFixed(0) : '—';
+
+  // If you have a live chart, enqueue a point here too
+  if (typeof queueLiveDraw === 'function') {
+    try {
+      live.lastHotend = hotend;
+      live.lastHotendSet = hotendSet;
+      live.lastBed = bed;
+      live.lastBedSet = bedSet;
+      queueLiveDraw();
+    } catch {}
+  }
 }
 
 async function sendCmdVirtual(cmd, quiet = false) {
   const line = String(cmd).trim();
 
-  // ✅ Heater guardrail (blocks M104/109 >300, M140/190 >130 unless unlocked)
+  // Heater guardrail (blocks M104/M109 or M140/M190 over limits unless unlocked)
   if (!guardHeaterFromCmd(line)) {
     throw new Error('Heater guardrail blocked high temperature command');
   }
@@ -1954,14 +4857,47 @@ async function sendCmdVirtual(cmd, quiet = false) {
   setActivity('Sending…', 'warn');
   if (!quiet) logMsg('>> ' + line);
 
-lastSendTs = performance.now();
-
-  // approximate TX size for virtual path (no real serial)
+  // Approximate TX size for virtual path (no real serial)
   const approxLen = line.length + 1; // + '\n'
   if (typeof net !== 'undefined') {
     net.txBytesTotal += approxLen;
     net.txSince      += approxLen;
   }
+
+  // Stamp send time for latency EMA in no-waiter cases
+  lastSendTs = performance.now();
+
+  // --- Live graph taps: fan (M106/M107) + progress (M73) -------------------
+  // Fan set
+  if (/^M106\b/i.test(line)) {
+    const m = line.match(/\bS\s*([0-9.]+)/i);
+    if (m) {
+      const s = Math.max(0, Math.min(255, parseInt(m[1], 10) || 0));
+      if (typeof live !== 'undefined') live.lastFan255 = s;
+      if (typeof queueLiveDraw === 'function') queueLiveDraw();
+    }
+  }
+  if (/^M107\b/i.test(line)) {
+    if (typeof live !== 'undefined') live.lastFan255 = 0;
+    if (typeof queueLiveDraw === 'function') queueLiveDraw();
+  }
+  // M73 progress
+  if (/^M73\b/i.test(line)) {
+    const p = line.match(/\bP\s*([0-9]+)/i);
+    if (p && typeof live !== 'undefined') {
+      live.lastProg = Math.max(0, Math.min(100, parseInt(p[1], 10) || 0));
+      if (typeof queueLiveDraw === 'function') queueLiveDraw();
+    }
+    const r = line.match(/\bR\s*([0-9]+)/i);
+    if (r) {
+      const mins = Math.max(0, parseInt(r[1], 10) || 0);
+      showEtaPill('ETA: ' + formatETA(mins * 60), 'warn');
+    }
+  }
+
+
+
+  // -------------------------------------------------------------------------
 
   const ok = () => {
     setActivity('Waiting…', 'warn');
@@ -1983,6 +4919,45 @@ lastSendTs = performance.now();
   };
 
   switch (true) {
+
+      case /^M122\b/i.test(line): {
+    const lines = [
+      'echo:  Testing TMC drivers...',
+      'echo:  X driver: TMC2209',
+      'echo:  X RMS current: 800',
+      'echo:  X microsteps: 16',
+      'echo:  X stealthChop: enabled',
+      'echo:  X spreadCycle: disabled',
+      'echo:  X otpw: false',
+      'echo:  X error: false',
+      'echo:  Y driver: TMC2209',
+      'echo:  Y RMS current: 850',
+      'echo:  Y microsteps: 16',
+      'echo:  Y stealthChop: enabled',
+      'echo:  Y spreadCycle: disabled',
+      'echo:  Y otpw: false',
+      'echo:  Y error: false',
+      'echo:  Z driver: TMC2209',
+      'echo:  Z RMS current: 900',
+      'echo:  Z microsteps: 16',
+      'echo:  Z stealthChop: enabled',
+      'echo:  Z spreadCycle: disabled',
+      'echo:  Z otpw: false',
+      'echo:  Z error: false',
+      'echo:  E driver: TMC2209',
+      'echo:  E RMS current: 700',
+      'echo:  E microsteps: 16',
+      'echo:  E stealthChop: enabled',
+      'echo:  E spreadCycle: disabled',
+      'echo:  E otpw: false',
+      'echo:  E error: false',
+      'ok'
+    ];
+    lines.forEach(l => logMsg(l));
+    if (typeof ok === 'function') ok();
+    return lines.join('\n'); // returning ends the switch branch
+  }
+
     // --- Telemetry ---
     case /^M105\b/i.test(line): {
       emitTelemetry();
@@ -2077,22 +5052,40 @@ lastSendTs = performance.now();
     }
 
     // --- Info / diagnostics ---
-    case /^M115\b/i.test(line): {
-      logMsg('FIRMWARE_NAME:VirtualPrinter PROTOCOL_VERSION:1.0 MACHINE_TYPE:Simulated EXTRUDER_COUNT:1');
-      ok();
-      break;
-    }
+case /^M115\b/i.test(line): {
+  const lines = [
+    'FIRMWARE_NAME:Marlin 2.1.2.1 (Github)',
+    'FIRMWARE_URL:https://github.com/MarlinFirmware/Marlin',
+    'PROTOCOL_VERSION:1.0',
+    'MACHINE_TYPE:Ender-3 Pro',
+    'EXTRUDER_COUNT:1',
+    'UUID:00000000-0000-0000-0000-000000000000',
+    'ok'
+  ];
+  lines.forEach(l => logMsg(l));
+  if (typeof ok === 'function') ok();
+  return lines.join('\n');
+}
     case /^M122\b/i.test(line): {
       logMsg('Driver diag (virtual): all good.');
       ok();
       break;
     }
-    case /^M503\b/i.test(line): {
-      logMsg('echo:  Steps per unit: M92 X80.00 Y80.00 Z400.00 E93.00');
-      logMsg('echo:  Maximum feedrates: M203 X500.00 Y500.00 Z12.00 E25.00');
-      ok();
-      break;
-    }
+case /^M503\b/i.test(line): {
+  const lines = [
+    'echo:  Steps per unit: M92 X80.00 Y80.00 Z400.00 E93.00',
+    'echo:  Maximum feedrates: M203 X500.00 Y500.00 Z12.00 E25.00',
+    'echo:  Acceleration: M201 X1000.00 Y1000.00 Z100.00 E5000.00',
+    'echo:  Advanced: M205 X10.00 Y10.00 Z0.30 E5.00 J0.10',
+    'ok'
+  ];
+  lines.forEach(l => logMsg(l));
+  // if your flow expects an “ok”, keep this
+  if (typeof ok === 'function') ok();
+  // IMPORTANT: return the text so parseM503 receives it
+  return lines.join('\n');
+}
+
 
     // --- UI cancel hook ---
     case /^\/\/action:cancel/i.test(line): {
@@ -2107,15 +5100,15 @@ lastSendTs = performance.now();
   }
 }
 
+
 //Read and parse loop
-// --- replace your readLoop() with this (adds RX metering, preserves your parsing) ---
 async function readLoop() {
   reading = true;
   try {
     while (true) {
       const { value, done } = await reader.read();
 
-      // If the stream closed, treat as a lost connection
+      // stream closed -> treat as lost connection
       if (done) {
         if (!isDisconnecting) await disconnectPrinter('lost');
         break;
@@ -2124,18 +5117,14 @@ async function readLoop() {
 
       // --- RX metering ---
       if (value instanceof Uint8Array) {
-        if (typeof net !== 'undefined') {
-          net.rxBytesTotal += value.length;
-          net.rxSince      += value.length;
-        }
+        net.rxBytesTotal += value.length;
+        net.rxSince      += value.length;
       } else if (typeof value === 'string') {
-        if (typeof net !== 'undefined') {
-          net.rxBytesTotal += value.length;
-          net.rxSince      += value.length;
-        }
+        net.rxBytesTotal += value.length;
+        net.rxSince      += value.length;
       }
 
-      // Normalize chunk to string for both reader types
+      // normalize to string
       const chunk = (value instanceof Uint8Array)
         ? textDecoder.decode(value, { stream: true })
         : value;
@@ -2148,8 +5137,7 @@ async function readLoop() {
         const line = raw.trim();
         if (!line) continue;
 
-        // --- Temp parsing (M105-style telemetry) ---
-        // gated by captureMode so M115/M122 dumps don't clobber temps
+        // --- temps (M105-style) ---
         const tMatch = !captureMode && line.match(TEMP_T);
         const bMatch = !captureMode && line.match(TEMP_B);
 
@@ -2159,7 +5147,6 @@ async function readLoop() {
           if (Number.isFinite(tCur)) {
             temps.hot = tCur;
             temps.hotTarget = Number.isFinite(tTar) ? tTar : null;
-
             _pushAmbientSample('hot', temps.hot ?? 0, temps.hotTarget);
             setTempPill(topHotendPill, topHotendText, temps.hot, temps.hotTarget, 'hotend');
           }
@@ -2170,29 +5157,46 @@ async function readLoop() {
           if (Number.isFinite(bCur)) {
             temps.bed = bCur;
             temps.bedTarget = Number.isFinite(bTar) ? bTar : null;
-
             _pushAmbientSample('bed', temps.bed ?? 0, temps.bedTarget);
             setTempPill(topBedPill, topBedText, temps.bed, temps.bedTarget, 'bed');
           }
         }
-        if (tMatch || bMatch) updateTempPanel();
+                if (tMatch || bMatch) {
+          updateTempPanel();
+          // NEW: push a point into the live chart whenever we ingest temps
+          if (typeof recordLiveSample === 'function') recordLiveSample();
+        }
 
-        // --- Positions (e.g., "X:.. Y:.. Z:..") ---
+        // --- positions (e.g., "X:.. Y:.. Z:..") ---
         const posMatch = line.match(POS_REGEX);
         if (posMatch) {
           const x = parseFloat(posMatch[1]);
           const y = parseFloat(posMatch[2]);
           const z = parseFloat(posMatch[3]);
-          if ([x, y, z].every(Number.isFinite)) updateAxisPanel(x, y, z);
+          if ([x, y, z].every(Number.isFinite)) {
+            updateAxisPanel(x, y, z);
+            // NEW: infer homed if it looks like the post-home coordinates
+            maybeMarkHomedFromPos(x, y, z);
+          }
         }
 
-        // --- Logging (respect noisy/telemetry filters & debug mode) ---
+        // --- logging (respect noisy/telemetry filters & debug) ---
         const isTelemetry = TELEMETRY_REGEX.test(line);
         const out = normalizeLine(line);
 
-        if (!debugMode && (isSetNewScreenLine(out) || isNoisyLine(out))) continue;
+        // ---- FEED CAPTURE (non-ok lines only)  --------------------
+        // CHANGED: only push here; don't resolve here.
+        if (oneShotCapture && out && !/^ok\b/i.test(out)) {
+          oneShotCapture.buf.push(out);
+        }
+        // -----------------------------------------------------------
 
-        if (debugMode) {
+        // track “homing-ish” hints for printer-panel homes
+        maybeMarkHomingHint(out);
+
+        if (!debugMode && (isSetNewScreenLine(out) || isNoisyLine(out))) {
+          // skip
+        } else if (debugMode) {
           if (tMatch || bMatch) {
             const hotStr = temps.hot != null
               ? `${temps.hot.toFixed(1)}${temps.hotTarget != null ? ' / ' + Math.round(temps.hotTarget) : ''}`
@@ -2204,13 +5208,13 @@ async function readLoop() {
           } else {
             logMsg(out);
           }
-        } else if (!isTelemetry) {
-          logMsg(out);
+        } else {
+          if (!isTelemetry) logMsg(out);
         }
 
-        // --- Mesh line ingestion (G29 T variants) ---
-        const justCompleted = ingestMeshLine(out);
-        if (justCompleted) {
+        // --- mesh ingestion (G29 T variants) ---
+        const meshCompleted = ingestMeshLine(out);
+        if (meshCompleted) {
           const meshForUi = meshScratch.map(r => r.slice()); // already Y-flipped
           setActivity('Mesh parsed', 'ok');
           saveMeshLS(meshForUi);
@@ -2220,24 +5224,22 @@ async function readLoop() {
           resetMeshScratch();
         }
 
-        // ---- Probe completion latch (no timeout) ----
+        // --- probe completion latch ---
         if (probeLatch) {
           if (
-            out.includes('//action:notification Settings Stored') || // exact DWIN save event
-            /Bilinear Leveling Grid:/i.test(out)                     // fallback
+            out.includes('//action:notification Settings Stored') ||  // DWIN save event
+            /Bilinear Leveling Grid:/i.test(out)                      // fallback
           ) {
             try { probeLatch.resolve(); } finally { probeLatch = null; }
           }
         }
 
-        // --- PID state hints (don't override if already set) ---
+        // --- PID hints ---
         if (/PID Autotune start/i.test(out)) {
           setActivity('PID tuning…', 'warn');
           if (!pidTarget) {
             if (/\(bed\)/i.test(out) || /\bE-?1\b/i.test(out) || /\bBED\b/i.test(out)) {
               setPidActive('bed', true);
-            } else if (/\(hotend\)/i.test(out) || /\bE0\b/i.test(out) || /\bHOTEND\b/i.test(out)) {
-              setPidActive('hotend', true);
             } else {
               setPidActive('hotend', true);
             }
@@ -2252,8 +5254,14 @@ async function readLoop() {
           clearAllPidUi();
         }
 
-        // --- OK resolver ---
+        // --- ok resolver (single source of truth) ---
         if (/^ok\b/i.test(out)) {
+          // Resolve capture first so callers get full text
+          if (oneShotCapture && oneShotCapture.doneOnOk) {
+            try { oneShotCapture.resolve(oneShotCapture.buf.join('\n')); }
+            finally { oneShotCapture = null; }
+          }
+
           updateLastUpdated();
           if (captureMode) { captureMode = null; startTempPolling(); }
           _resolveNextOk();
@@ -2267,6 +5275,8 @@ async function readLoop() {
     reading = false;
   }
 }
+
+
 
 
 //Wait plumbing
@@ -2470,6 +5480,8 @@ async function streamGcode(file) {
   if (sendStatus)   sendStatus.textContent   = 'Homing…';
 
   try {
+    beep('start');
+printerBeep('start');
     const text  = await file.text();
     const lines = text
       .split(/\r?\n/)
@@ -2557,14 +5569,18 @@ async function streamGcode(file) {
     if (cancelStream) {
       sendStatus.textContent = 'Cancelled';
       showEtaPill('ETA: —', 'bad');
-      exitPrintScreen(0);
+      beep('cancel');
+printerBeep('cancel');
+      exitPrintScreen(0, { tellHost: false }); 
       hideEtaPill();
       clearAllPidUi();
     } else {
       sendProgress.style.width = '100%';
       sendStatus.textContent = 'Done';
       showEtaPill('Complete', 'ok');
-      exitPrintScreen(0);
+      beep('done');
+printerBeep('done');
+      exitPrintScreen(0, { tellHost: false }); 
     }
 
     setTimeout(hideEtaPill, 2500);
@@ -2572,6 +5588,8 @@ async function streamGcode(file) {
     cancelSend.disabled = true;
     sendStatus.textContent = 'Error during send';
     showEtaPill('Error', 'bad');
+    beep('error');
+printerBeep('cancel');
     logMsg('❌ Send error: ' + (err?.message || err));
     setTimeout(hideEtaPill, 2500);
   }
@@ -2603,15 +5621,20 @@ async function coolToIdle(opts = {}) {
 }
 
 async function markHomedAfterG28() {
-  await sendCmd('G28'); 
+  await sendCmd('G28');
   await waitForOk().catch(()=>{});
   isHomed = true;
+
+  // Ask for current pos and learn the signature
+  await sendCmd('M114', true);
+  await waitForOk().catch(()=>{});
 }
 
 /* =========================================================
    9) EVENT LISTENERS
 ========================================================= */
 
+primeLine.addEventListener('click', runPrimeLine);
 
 // --- Unlock button: remove any old listeners, bind once ---
 (function bindUnlockClean(){
@@ -2705,10 +5728,16 @@ bedOff.addEventListener('click',      () => sendCmd('M140 S0'));
 
 fanSlider.addEventListener('input',   () => { fanVal.textContent = fanSlider.value; });
 
-fanApply.addEventListener('click',    () =>
-  sendCmd(`M106 S${Math.max(0, Math.min(255, parseInt(fanSlider.value)||0))}`));
+fanApply.addEventListener('click', () => {
+  const val = Math.max(0, Math.min(255, parseInt(fanSlider.value)||0));
+  live.lastFan255 = val;                  // ← add this
+  sendCmd(`M106 S${val}`);
+});
 
-fanOff.addEventListener('click',      () => sendCmd('M107'));
+fanOff.addEventListener('click', () => {
+  live.lastFan255 = 0;                    // ← add this
+  sendCmd('M107');
+});
 
 //Movement
 homeAll.addEventListener('click', async () => {
@@ -2744,28 +5773,6 @@ parkHead.addEventListener('click', () =>sendCmdsSequential('G90', 'G1 X0 Y0 Z10 
 );
 
 //EEPROM and Diag
-readCfg.addEventListener('click', async () => {
-  configBox.value = '';
-  captureMode = 'config';
-  stopTempPolling();
-  await sendCmd('M503');
-});
-
-saveCfg.addEventListener('click', async () => { await sendCmd('M500'); });
-
-fwInfo.addEventListener('click', () => {
-  diagBox.value = '';
-  captureMode = 'diag';
-  stopTempPolling();
-  sendCmd('M115');
-});
-
-tmcDiag.addEventListener('click', () => {
-  diagBox.value = '';
-  captureMode = 'diag';
-  stopTempPolling();
-  sendCmd('M122');
-});
 
 
 // Maintenance
@@ -2836,14 +5843,24 @@ gcodeFile.addEventListener('change', () => {
   sendGcode.disabled = !gcodeFile.files.length || !connected;
 });
 
-sendGcode.addEventListener('click',  () => {
-  if (gcodeFile.files[0]) streamGcode(gcodeFile.files[0]);
+sendGcode.addEventListener('click', (e) => {
+  e.preventDefault();
+  e.stopImmediatePropagation();
+
+  const file = gcodeFile?.files?.[0];
+  if (!file) { gcodeFile.click(); return; }
+
+  if (sessionStorage.getItem('skipPreflight') === '1') {
+    streamGcode(file);
+    return;
+  }
+  openPreflight(file);
 });
 
 cancelSend.addEventListener('click', async () => {
   if (sendStatus) sendStatus.textContent = 'Cancelling…';
-  cancelSend.disabled = true;              // ✅ prevent double taps
-  showEtaPill('Cancelling…', 'warn');      // ✅ mirror status up top
+  cancelSend.disabled = true;
+  showEtaPill('Cancelling…', 'warn');
 
   cancelStream = true;
   _rejectAllOk(new Error('Cancelled'));
@@ -2852,11 +5869,13 @@ cancelSend.addEventListener('click', async () => {
   await sendCmd('M140 S0'); await waitForOk().catch(() => {});
   await sendCmd('G90');     await waitForOk().catch(() => {});
   await sendCmd('G1 X0 Y0 Z10 F3000'); await waitForOk().catch(() => {});
-
-  exitPrintScreen(0);
+  exitPrintScreen(0, { tellHost: false }); 
   hideEtaPill();
-clearAllPidUi();
+  clearAllPidUi();
+
+  cancelStream = false; // ← reset so future macros work
 });
+
 
 //PID Tab
 bedPidBtn.addEventListener('click', runBedPID);
@@ -2903,6 +5922,18 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 });
 
+
+const preBody  = document.getElementById('preBody');
+const preStart = document.getElementById('preStart');
+if (preBody && preStart) {
+  preBody.addEventListener('change', (e) => {
+    if (!(e.target instanceof HTMLInputElement) || !e.target.classList.contains('preChk')) return;
+    const all = Array.from(preBody.querySelectorAll('.preChk')).every(c => c.checked);
+    preStart.disabled = !all;
+  });
+}
+
+
 //Selectors and toggles
 if (levelPrinterSelect) {
   const saved = localStorage.getItem('levelPrinterChoice');
@@ -2925,14 +5956,367 @@ if (debugToggle) {
 if (virtualToggle) {
   virtualMode = JSON.parse(localStorage.getItem('virtualMode') || 'false');
   virtualToggle.checked = virtualMode;
-
   virtualToggle.addEventListener('change', () => {
     virtualMode = virtualToggle.checked;
     localStorage.setItem('virtualMode', JSON.stringify(virtualMode));
-    // If user flips on while connected to real printer, we keep the current connection
-    // The "Connect" button will use virtual when not already connected.
   });
 }
+
+(function(){
+  // Build modal once
+  let overlay=document.getElementById('helpOverlay');
+  if(!overlay){overlay=document.createElement('div');overlay.id='helpOverlay';document.body.appendChild(overlay);}
+  let modal=document.getElementById('helpModal');
+  if(!modal){
+    modal=document.createElement('div');modal.id='helpModal';modal.setAttribute('role','dialog');modal.setAttribute('aria-modal','true');
+    modal.innerHTML=`
+      <div id="helpCard">
+        <div id="helpHead">
+          <h3 id="helpTitle">Help</h3>
+          <div id="helpActions">
+            <input id="helpSearch" type="search" placeholder="Search in help…">
+            <button id="helpClose" type="button" aria-label="Close">Close</button>
+          </div>
+        </div>
+        <div id="helpBodyWrap"><div id="helpBody" class="help-body"></div></div>
+      </div>`;
+    document.body.appendChild(modal);
+  }
+
+  const titleEl  = document.getElementById('helpTitle');
+  const searchEl = document.getElementById('helpSearch');
+  const closeBtn = document.getElementById('helpClose');
+  const bodyEl   = document.getElementById('helpBody');
+
+  // Mini Help engine
+  const registry=new Map();
+  const state={open:false, activeTab:'default', q:''};
+
+  function register(id,{title,html}){ registry.set(id,{title,html,rawHtml:html}); }
+  function setActiveTab(id){ state.activeTab = registry.has(id)?id:'default'; if(state.open) render(); }
+  function highlight(html,q){ if(!q) return html;
+    const esc=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    return html.replace(new RegExp(`(${esc(q)})`,'gi'),'<mark>$1</mark>');
+  }
+  function render(){
+    const page=registry.get(state.activeTab)||registry.get('default')||{title:'Help',html:'<p>No help yet.</p>'};
+    titleEl.textContent=page.title;
+    bodyEl.innerHTML = state.q?highlight(page.rawHtml||page.html,state.q):page.html;
+  }
+
+  function open(){ state.open=true; overlay.classList.add('open'); modal.classList.add('open'); try{searchEl.focus();}catch{}; render(); }
+  function close(){ state.open=false; overlay.classList.remove('open'); modal.classList.remove('open'); }
+  function toggle(){ state.open?close():open(); }
+
+  window.Help={register,setActiveTab,open,close,toggle,setHTML:(id,title,html)=>{register(id,{title,html}); if(state.activeTab===id&&state.open) render();}};
+
+  // Close wiring (capture so nothing blocks it)
+  overlay.addEventListener('click',e=>{e.stopImmediatePropagation();close();},{capture:true});
+  closeBtn.addEventListener('click',e=>{e.preventDefault();e.stopImmediatePropagation();close();},{capture:true});
+  document.addEventListener('keydown',e=>{ if(e.key==='Escape'&&modal.classList.contains('open')){e.stopImmediatePropagation();close();}}, {capture:true});
+  searchEl.addEventListener('input',()=>{ state.q=searchEl.value.trim(); render(); });
+
+  // Keep Help button from switching tabs
+  (function isolateHelpButton(){
+    const bar=document.getElementById('tabButtons');
+    const help=document.getElementById('helpToggleBtn');
+    if(!bar||!help) return;
+    bar.addEventListener('click',(e)=>{ if(e.target===help||help.contains(e.target)){ e.stopImmediatePropagation(); e.preventDefault(); toggle(); }}, true);
+    help.addEventListener('click',(e)=>{ e.stopPropagation(); e.preventDefault(); toggle(); });
+  })();
+
+  // Auto-sync to your active tab
+  (function wireTabs(){
+    const bar=document.getElementById('tabButtons');
+    if(!bar) return;
+    const tabs=[...bar.querySelectorAll('button[data-tab]')];
+    function current(){ const btn=tabs.find(b=>b.classList.contains('active'))||tabs[0]; return btn?.dataset.tab||'connectTab'; }
+    setActiveTab(current());
+    tabs.forEach(b=>b.addEventListener('click',()=>requestAnimationFrame(()=>setActiveTab(current()))));
+    new MutationObserver(()=>setActiveTab(current())).observe(bar,{attributes:true,subtree:true,attributeFilter:['class']});
+  })();
+
+  // Default + tab pages
+  register('default',{title:'Help',html:'<p>Select a tab to see contextual help. Toggle with <kbd>F1</kbd> or <kbd>?</kbd>.</p>'});
+// 1) Connection & Log
+Help.register('connectTab', {
+  title: 'Connection & Log',
+  html: `
+    <p>Connect to your printer (USB/Serial or Web Serial) and monitor live firmware output.</p>
+
+    <h4>Workflow</h4>
+    <ol>
+      <li>Select <strong>Port</strong> → pick your device (often “USB-Serial”, “CH340”, “Silicon Labs”).</li>
+      <li>Pick <strong>Baud</strong> (115200 or 250000 are most common).</li>
+      <li>Click <strong>Connect</strong>. You should see a banner line (e.g., Marlin/Klipper) in the log.</li>
+      <li>Use the <strong>Manual G-code</strong> box to send quick commands (e.g., <code>M115</code>, <code>M503</code>).</li>
+    </ol>
+
+    <h4>Useful Commands</h4>
+    <ul>
+      <li><code>M115</code> — firmware info; <code>M503</code> — dump settings; <code>M112</code> — emergency stop.</li>
+      <li><code>G28</code> — home axes; <code>M105</code> — read temps (polled periodically by the UI).</li>
+    </ul>
+
+    <h4>Tips</h4>
+    <ul>
+      <li>If connect fails: try a different cable/port, or close other apps that hold the port (e.g., PrusaSlicer/OctoPrint).</li>
+      <li>Toggle <strong>Echo/Debug</strong> in the UI to see more parsing detail.</li>
+      <li>“Virtual printer” mode lets you test the UI without hardware.</li>
+    </ul>
+  `
+});
+
+// 2) Leveling
+Help.register('levelTab', {
+  title: 'Leveling',
+  html: `
+    <p>Probe a mesh, evaluate flatness, and optionally get screw-turn guidance.</p>
+
+    <h4>Before You Start</h4>
+    <ul>
+      <li>Heat the bed/nozzle to normal print temps (flatness changes with heat).</li>
+      <li>Make sure the nozzle is clean; remove filament blobs.</li>
+    </ul>
+
+    <h4>Procedure</h4>
+    <ol>
+      <li><strong>Home</strong> (<code>G28</code>).</li>
+      <li><strong>Probe mesh</strong> (e.g., <code>G29 T</code> in Marlin) via the UI’s button.</li>
+      <li>Inspect the heatmap: aim for range ≤ <code>0.02–0.05 mm</code> for best first-layers.</li>
+      <li>Use the <strong>screw hints</strong> panel (if your bed has manual screws). Turn little-by-little, then re-probe.</li>
+    </ol>
+
+    <h4>Common Tweaks</h4>
+    <ul>
+      <li><code>M851 Z</code> — set Z-offset; <code>M500</code> — save.</li>
+      <li>On printers with mesh leveling stored in EEPROM: <code>M420 S1</code> enables saved mesh after homing.</li>
+    </ul>
+
+    <h4>Troubleshooting</h4>
+    <ul>
+      <li>Probe crashes or misses points → check Z-min/probe wiring and homing direction.</li>
+      <li>Mesh looks “tilted” → ensure X/Y gantry is square and belts are tensioned.</li>
+    </ul>
+  `
+});
+
+// 3) PID Tuning
+Help.register('pidTab', {
+  title: 'PID Tuning',
+  html: `
+    <p>Autotune heaters to reduce overshoot and oscillation.</p>
+
+    <h4>Quick Start</h4>
+    <ol>
+      <li>Hotend autotune: <code>M303 E0 S200 C8</code> (adjust temp for your material).</li>
+      <li>Bed autotune: <code>M303 E-1 S60 C8</code>.</li>
+      <li>Apply results with <code>M301</code> (hotend) / <code>M304</code> (bed), then <code>M500</code> to save.</li>
+    </ol>
+
+    <h4>Targets</h4>
+    <ul>
+      <li>PLA ~200 °C, PETG ~235 °C, ABS ~245 °C (choose your typical print temp).</li>
+      <li>Bed: PLA ~60 °C, PETG ~80 °C, ABS ~100 °C.</li>
+    </ul>
+
+    <h4>Tips</h4>
+    <ul>
+      <li>Run fans as you would during printing to get accurate results.</li>
+      <li>Verify by plotting a small print: overshoot ±3–5 °C or less is fine.</li>
+    </ul>
+  `
+});
+
+// 4) Temperature & Fan
+Help.register('tempTab', {
+  title: 'Temperature & Fan',
+  html: `
+    <p>Set targets and monitor live temperatures & fans.</p>
+
+    <h4>Controls</h4>
+    <ul>
+      <li>Hotend: <code>M104 S&lt;temp&gt;</code> · Bed: <code>M140 S&lt;temp&gt;</code> · Cooldown: set S0 or use the UI’s Off buttons.</li>
+      <li>Part fan: <code>M106 S0–255</code>, Off: <code>M107</code>. Some firmwares use 0–100% scales in UI; values are converted.</li>
+    </ul>
+
+    <h4>Graph</h4>
+    <ul>
+      <li>Temp polling via <code>M105</code> (interval shown near the chart).</li>
+      <li>Hover for exact readings; bed/nozzle lines match your theme.</li>
+    </ul>
+
+    <h4>Safety</h4>
+    <ul>
+      <li>Never leave heaters unattended. If temps run away, hit <strong>Emergency Stop</strong> (<code>M112</code>).</li>
+    </ul>
+  `
+});
+
+// 5) Movement & Axes
+Help.register('moveTab', {
+  title: 'Movement & Axes',
+  html: `
+    <p>Home, jog, and park axes for setup and maintenance.</p>
+
+    <h4>Basics</h4>
+    <ul>
+      <li><strong>Home</strong> all or per-axis (<code>G28</code>).</li>
+      <li><strong>Jog</strong> X/Y/Z by 0.1/1/10 mm; adjust feedrate if offered.</li>
+      <li><strong>Park</strong> positions the tool for easy access (configurable in UI).</li>
+    </ul>
+
+    <h4>Hand Moves</h4>
+    <ul>
+      <li><code>M84</code> disables steppers (careful: the tool can fall if Z isn’t supported).</li>
+    </ul>
+
+    <h4>Tips</h4>
+    <ul>
+      <li>If moves are inverted, check motor direction in firmware or swap connectors (power off!).</li>
+      <li>Binding or missed steps → check belt tension, pulley grub screws, and rails.</li>
+    </ul>
+  `
+});
+
+// 6) EEPROM / Config
+Help.register('eepromTab', {
+  title: 'EEPROM / Config',
+  html: `
+    <p>View and edit key motion/thermal settings. Parse <code>M503</code> output into readable fields.</p>
+
+    <h4>Key Parameters</h4>
+    <ul>
+      <li><strong>Steps/mm</strong> <code>M92</code> · <strong>Max feedrate</strong> <code>M203</code> · <strong>Accel</strong> <code>M201/M204</code>.</li>
+      <li><strong>PID</strong> hotend <code>M301</code> · bed <code>M304</code> · <strong>Z-probe offset</strong> <code>M851</code>.</li>
+      <li><strong>Retract</strong> <code>M207</code> · <strong>Recover</strong> <code>M208</code> · <strong>Auto-retract</strong> <code>M209</code>.</li>
+    </ul>
+
+    <h4>Workflow</h4>
+    <ol>
+      <li>Click <strong>Read</strong> to fetch current values (<code>M503</code>).</li>
+      <li>Adjust fields; the UI will generate the right commands.</li>
+      <li>Click <strong>Apply</strong> to send, then <strong>Save</strong> (<code>M500</code>).</li>
+    </ol>
+
+    <h4>Notes</h4>
+    <ul>
+      <li>Some boards/firmwares disable EEPROM — saving may be unavailable.</li>
+      <li>Always save your current config before big changes (export button in UI).</li>
+    </ul>
+  `
+});
+
+// 7) Maintenance
+Help.register('maintTab', {
+  title: 'Maintenance',
+  html: `
+    <p>One-click macros and a simple logbook to track upkeep.</p>
+
+    <h4>Macros</h4>
+    <ul>
+      <li><strong>Preheat</strong> PLA/PETG/ABS: sets bed/nozzle presets and waits.</li>
+      <li><strong>Cooldown</strong>: turns heaters off and fans as configured.</li>
+      <li><strong>Load/Unload</strong>: heats and runs controlled extrusions/retractions.</li>
+    </ul>
+
+    <h4>Logbook</h4>
+    <ul>
+      <li>Record nozzle swaps, lubrication, belt tensioning, cleanings.</li>
+      <li>Export or clear entries as needed.</li>
+    </ul>
+
+    <h4>Tips</h4>
+    <ul>
+      <li>Run a purge after swapping materials (esp. PLA ↔ PETG/ABS).</li>
+      <li>Lubricate Z lead screws lightly; avoid belts and idlers.</li>
+    </ul>
+  `
+});
+
+// 8) Filament
+Help.register('filamentTab', {
+  title: 'Filament',
+  html: `
+    <p>Track spools, presets, and estimated remaining material.</p>
+
+    <h4>Spools</h4>
+    <ul>
+      <li>Store brand, material, color, diameter, density, tare, capacity, and price.</li>
+      <li>Mark an <strong>active spool</strong> and deduct usage after prints.</li>
+      <li>Quick-filter by material or “With remaining only”.</li>
+    </ul>
+
+    <h4>Presets</h4>
+    <ul>
+      <li>Per-material default temps (nozzle/bed) and fan profiles.</li>
+    </ul>
+
+    <h4>Labels</h4>
+    <ul>
+      <li>Generate a simple shelf label with key info and QR if available.</li>
+    </ul>
+  `
+});
+
+// 9) Diagnostics
+Help.register('diagTab', {
+  title: 'Diagnostics',
+  html: `
+    <p>Inspect firmware and driver status.</p>
+
+    <h4>Quick Commands</h4>
+    <ul>
+      <li><code>M115</code> — firmware banner, capabilities.</li>
+      <li><code>M122</code> — TMC driver report (if supported): RMS current, microsteps, stealth/spread, errors.</li>
+    </ul>
+
+    <h4>Checks</h4>
+    <ul>
+      <li>Endstops/probe: trigger by hand and read status.</li>
+      <li>Thermistors: look for unrealistic temps or “def”/“open” errors.</li>
+    </ul>
+
+    <h4>Troubleshooting</h4>
+    <ul>
+      <li>Skipped steps → verify motor current, belt tension, pulley grub screws.</li>
+      <li>Thermal runaway → PID tune, inspect wiring, ensure fans work.</li>
+    </ul>
+  `
+});
+
+// 10) G-code Sender
+Help.register('senderTab', {
+  title: 'G-code Sender',
+  html: `
+    <p>Send single commands or stream full files with a live 2D preview.</p>
+
+    <h4>Pre-flight</h4>
+    <ul>
+      <li>Check temps and homing; the UI can enforce guardrails (e.g., refuse to print cold/unhomed).</li>
+      <li>Optional: run a skirt or prime line macro.</li>
+    </ul>
+
+    <h4>While Printing</h4>
+    <ul>
+      <li>Preview supports <code>G0/G1</code>, absolute/relative (<code>G90/G91</code>), extrusion modes (<code>M82/M83</code>), and common layer comments.</li>
+      <li>Scrub layers; toggle travel (dashed) to declutter.</li>
+      <li>Live highlight follows the current layer via <code>GCodePreview.updateCurrentZ(z)</code> or <code>updateByGcodeLine(n)</code>.</li>
+    </ul>
+
+    <h4>Recovery</h4>
+    <ul>
+      <li>Pause/Resume sends <code>M25/M24</code> (or equivalent); consult firmware if different.</li>
+      <li>Emergency stop: <code>M112</code>.</li>
+    </ul>
+  `
+});
+
+  // Keyboard toggle (F1 / ?)
+  document.addEventListener('keydown',(e)=>{
+    if(e.key==='F1' || e.key==='?' || (e.shiftKey && e.key==='/')){ e.preventDefault(); toggle(); }
+  });
+})();
 
 /* =========================================================
    10) INIT (runs once)
