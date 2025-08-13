@@ -435,11 +435,20 @@
 <!-- TAB 6: EEPROM / Config -->
 <div id="eepromTab" class="tabContent">
   <div class="row box">
-    <button id="readCfg" disabled>Read Config (M503)</button>
-    <button id="saveCfg" disabled>Save (M500)</button>
+  <button id="parseM503Btn" type="button">Parse M503 → Fields</button>
+  <button id="exportCfgBtn" type="button">Export JSON</button>
+  <span class="muted">Paste/receive M503 below, then Parse.</span>
     <!-- <button id="resetCfg" disabled>Factory Reset (M502)</button>-->
   </div>
-  <textarea id="configBox" class="widen" rows="14" placeholder="Printer configuration will appear here…"></textarea>
+  <table class="box" style="width:100%; max-width:900px; margin-bottom:8px">
+  <thead>
+    <tr><th style="width:220px">Setting</th><th>Value</th></tr>
+  </thead>
+<table id="m503Table" style="border-collapse:collapse;width:100%;max-width:900px">
+  <thead><tr><th style="text-align:left;width:240px">Field</th><th style="text-align:left">Value</th></tr></thead>
+  <tbody></tbody>
+</table>
+</table>
 </div>
 
 <!-- TAB 7: Maintenance -->
@@ -594,10 +603,34 @@
 <!-- TAB 9: Diagnostics -->
 <div id="diagTab" class="tabContent">
   <div class="row box">
-    <button id="fwInfo" disabled>Firmware Info (M115)</button>
-    <button id="tmcDiag" disabled>TMC Diagnostics (M122)</button>
+    <button id="parseM115Btn" type="button">Parse M115 → Fields</button>
+    <button id="parseM122Btn" type="button">Parse M122 → Fields</button>
   </div>
-  <textarea id="diagBox" class="widen" rows="14" placeholder="Diagnostics output…"></textarea>
+<table id="m115Table" style="border-collapse:collapse;width:100%;max-width:900px">
+  <thead><tr><th style="text-align:left;width:240px">Field</th><th style="text-align:left">Value</th></tr></thead>
+  <tbody></tbody>
+</table>
+<h3>TMC Diagnostics (M122)</h3>
+<table id="tmcTable" style="border-collapse:collapse; width:100%; max-width:900px">
+  <thead>
+    <tr>
+      <th style="width:60px">Axis</th>
+      <th>Driver</th>
+      <th>RMS (mA)</th>
+      <th>Microsteps</th>
+      <th>stealthChop</th>
+      <th>spreadCycle</th>
+      <th>OTPW</th>
+      <th>Error</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td>X</td><td id="tmc_X_drv">—</td><td id="tmc_X_rms">—</td><td id="tmc_X_ms">—</td><td id="tmc_X_sc">—</td><td id="tmc_X_sp">—</td><td id="tmc_X_ot">—</td><td id="tmc_X_er">—</td></tr>
+    <tr><td>Y</td><td id="tmc_Y_drv">—</td><td id="tmc_Y_rms">—</td><td id="tmc_Y_ms">—</td><td id="tmc_Y_sc">—</td><td id="tmc_Y_sp">—</td><td id="tmc_Y_ot">—</td><td id="tmc_Y_er">—</td></tr>
+    <tr><td>Z</td><td id="tmc_Z_drv">—</td><td id="tmc_Z_rms">—</td><td id="tmc_Z_ms">—</td><td id="tmc_Z_sc">—</td><td id="tmc_Z_sp">—</td><td id="tmc_Z_ot">—</td><td id="tmc_Z_er">—</td></tr>
+    <tr><td>E</td><td id="tmc_E_drv">—</td><td id="tmc_E_rms">—</td><td id="tmc_E_ms">—</td><td id="tmc_E_sc">—</td><td id="tmc_E_sp">—</td><td id="tmc_E_ot">—</td><td id="tmc_E_er">—</td></tr>
+  </tbody>
+</table>
 </div>
 
 <!-- TAB 10: G-code Sender -->
@@ -688,6 +721,91 @@
    1) DOM REFERENCES (all const)
 ========================================================= */
 
+let oneShotCapture = null;
+
+function captureReplyOnce({ doneOnOk = true } = {}) {
+  if (oneShotCapture) throw new Error('capture already active');
+  return new Promise((resolve, reject) => {
+    oneShotCapture = { buf: [], resolve, reject, doneOnOk };
+  });
+}
+
+
+
+let lastHomeHintAt = 0;  // when we last saw a "homing-ish" line
+
+let _audioCtx = null;
+
+let _preflightFile = null;
+
+let net = {
+  txBytesTotal: 0,
+  rxBytesTotal: 0,
+  txSince: 0,
+  rxSince: 0,
+  lastSample: performance.now(),
+  txRate: 0,
+  rxRate: 0,
+  latencyEMA: null,   // ms
+  timer: null
+};
+
+let lastSendTs = null; 
+
+let heaterUnlocked = JSON.parse(localStorage.getItem('heaterUnlocked') || 'false');
+
+//Filament
+let spools = [];
+let activeSpoolId = null;
+let editingId = null;
+let _pendingFilament = null;
+
+//UI and State flags
+let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
+let criticalDepth = 0;
+let pidActiveHotend = false;
+let pidActiveBed    = false;
+let pidTarget = null; // 'hotend', 'bed', or null
+let isHomed = false;
+
+// Leveling / Probing flow control
+let probeLatch = null; // resolved when G29 T finishes (grid header or DWIN “Settings Stored”)
+
+//Mesh and Temps
+let meshScratch    = Array.from({ length: 4 }, () => Array(4).fill(null));
+let temps          = { hot: null, hotTarget: null, bed: null, bedTarget: null };
+
+//Connection lifecycle
+let connKind = 'none'; // 'none' | 'virtual' | 'real'
+let isConnecting = false;
+let isDisconnecting = false;
+
+//Serial — device handles
+let port           = null;
+let reader         = null;
+let writer         = null;
+let textDecoder    = null;
+
+//Comms - I/O state, buffers, timers
+let reading        = false;
+let rxBuffer       = '';
+let cancelStream   = false;
+let captureMode    = null; // null | 'config' | 'diag'
+let tempTimer      = null;
+let postPrintTimer = null;
+
+//Read and Telemetry
+let waitingResolvers = []; // (kept for compatibility)
+let isBusyProcessing  = false;
+let lastOkAt          = 0;
+let pendingOk      = []; // queue for waitForOk()
+
+//Virtual printer
+let virtualMode = false;
+let vSimTimer = null;
+
+//Easter Egg
+let streak = 0;
 
 const BEEP_BROWSER_ON = true;   // browser chime via Web Audio
 const BEEP_PRINTER_ON = false;  // send M300 to the printer (off by default)
@@ -737,6 +855,7 @@ const clearLogBtn     = document.getElementById('clearLogBtn');
 
 //Log/UI text
 const printerLog      = document.getElementById('printerLog');
+window.logBox = printerLog;
 const lastUpdated     = document.getElementById('lastUpdated');
 const lastCmd         = document.getElementById('lastCmd');
 const activityBadge   = document.getElementById('activityBadge');
@@ -801,13 +920,10 @@ const posYEl          = document.getElementById('posY');
 const posZEl          = document.getElementById('posZ');
 
 //eeprom and Config
-const readCfg         = document.getElementById('readCfg');
-const saveCfg         = document.getElementById('saveCfg');
 const configBox       = document.getElementById('configBox');
 
 //Diagnostics
 const fwInfo          = document.getElementById('fwInfo');
-const tmcDiag         = document.getElementById('tmcDiag');
 const diagBox         = document.getElementById('diagBox');
 
 //Sender
@@ -837,7 +953,7 @@ const unloadFil       = document.getElementById('unloadFil');
 
 const HOME_SIG_DEFAULT = { x: 117, y: 117, z: 10.0, tolX: 2.0, tolY: 2.0, tolZ: 4.0 };
 
-
+connectBtn?.addEventListener('click', () => connectPrinter());
 
 //Mesh and screws map
 const screwAffects = {
@@ -853,6 +969,808 @@ const screwAffects = {
   C3: [[2,2],[2,3],[3,2],[3,3]],
   C4: [[3,3]]
 };
+
+document.getElementById('parseM503Btn')?.addEventListener('click', async () => {
+  try {
+    const raw = await readFullBlock('M503');
+    if (!raw.trim()) throw new Error('empty');
+    const cfg = parseM503Response(raw);
+    renderM503Table('#m503Table', cfg);
+    window._lastParsedCfg = cfg;
+  } catch (err) {
+    console.error('Failed to read M503:', err);
+    const fallback = prompt('No M503 received.\nPaste M503 output to parse:') || '';
+    const cfg = parseM503Response(fallback);
+    renderM503Table('#m503Table', cfg);
+    window._lastParsedCfg = cfg;
+  }
+});
+
+document.getElementById('parseM115Btn')?.addEventListener('click', async () => {
+  try {
+    stopTempPolling?.(); // optional, avoids temperature spam while capturing
+    const raw = await readFullBlock('M115'); // waits until full banner and 'ok' received
+
+    if (!raw || !raw.trim()) {
+      // If no reply, ask the user
+      const fallback = prompt('No M115 received.\nPaste firmware banner to parse:');
+      if (!fallback) return; // user cancelled
+      renderM115Table('#m115Table', parseM115Response(fallback));
+      return;
+    }
+
+    renderM115Table('#m115Table', parseM115Response(raw));
+  } catch (err) {
+    console.error('Failed to read M115:', err);
+    const fallback = prompt('No M115 received.\nPaste firmware banner to parse:');
+    if (!fallback) return;
+    renderM115Table('#m115Table', parseM115Response(fallback));
+  }
+});
+function renderM122Fields(ax) {
+  const put = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = (v ?? '—'); };
+  for (const a of ['X','Y','Z','E']) {
+    const d = ax[a] || {};
+    put(`tmc_${a}_drv`, d.driver ?? '—');
+    put(`tmc_${a}_rms`, d.rms ?? '—');
+    put(`tmc_${a}_ms`,  d.msteps ?? '—');
+    put(`tmc_${a}_sc`,  d.stealth ?? '—');
+    put(`tmc_${a}_sp`,  d.spread ?? '—');
+    put(`tmc_${a}_ot`,  d.otpw ?? '—');
+    put(`tmc_${a}_er`,  d.error ?? '—');
+  }
+}
+
+document.getElementById('parseM122Btn')?.addEventListener('click', async () => {
+  try {
+    stopTempPolling?.();
+    const raw = await sendCmd('M122');   // real or virtual returns the full block
+    const tmc = parseM122(raw || '');
+    renderM122Fields(tmc);
+  } catch (err) {
+    // Optional offline fallback (remove if you truly never want prompts):
+    // const raw = prompt('No M122 received.\nPaste M122 output to parse:') || '';
+    // const tmc = parseM122(raw);
+    // renderM122Fields(tmc);
+  }
+});
+
+// Robust block reader: works in virtual or real serial, with diagnostics.
+// Drop-in replacement: do NOT start capture here; rely on sendCmd's own capture
+async function readFullBlock(cmd, timeoutMs = 7000) {
+  try { stopTempPolling?.(); } catch {}
+  // clean up any stale capture, just in case
+  if (typeof oneShotCapture !== 'undefined' && oneShotCapture) {
+    try { oneShotCapture.resolve(oneShotCapture.buf?.join('\n') || ''); } catch {}
+    oneShotCapture = null;
+  }
+  let result;
+  try {
+    const direct = sendCmd(cmd); // string or promise
+    result = await Promise.race([
+      Promise.resolve(direct),
+      new Promise(res => setTimeout(() => res(''), timeoutMs)),
+    ]);
+  } finally {
+    try { startTempPolling?.(); } catch {}
+  }
+  return String(result || '');
+}
+
+
+
+function renderM115Table(containerSelector, parsed) {
+  const el = document.querySelector(containerSelector);
+  if (!el) return;
+  const tbody = el.querySelector('tbody');
+  if (!tbody) return;
+
+  const { info = {}, caps = {}, area = null } = parsed || {};
+  const rows = [];
+
+  // Primary info
+  const order = [
+    ['FIRMWARE_NAME','Firmware'],
+    ['SOURCE_CODE_URL','Source code URL'],
+    ['PROTOCOL_VERSION','Protocol version'],
+    ['MACHINE_TYPE','Machine type'],
+    ['EXTRUDER_COUNT','Extruder count'],
+    ['UUID','UUID'],
+  ];
+  order.forEach(([key, label]) => {
+    if (info[key] != null) rows.push([label, escapeHtml(String(info[key]))]);
+  });
+
+  // Add any extra keys we didn't list above
+  Object.keys(info).sort().forEach(k => {
+    if (order.find(x => x[0] === k)) return; // already added
+    rows.push([k.replace(/_/g,' '), escapeHtml(String(info[k]))]);
+  });
+
+  // Separator
+  if (Object.keys(caps).length) rows.push(['', '', true]);
+
+  // Capabilities (sorted)
+  if (Object.keys(caps).length) {
+    rows.push(['Capabilities', '']);
+    Object.keys(caps).sort().forEach(name => {
+      rows.push([`• ${name}`, caps[name] ? 'Yes' : 'No']);
+    });
+  }
+
+  // Separator
+  if (area) rows.push(['', '', true]);
+
+  // Area (pretty)
+  if (area) {
+    const full = area.full || {};
+    const work = area.work || {};
+    const fmin = full.min || {}, fmax = full.max || {};
+    const wmin = work.min || {}, wmax = work.max || {};
+    rows.push(['Area (full)', `min x:${fmin.x}, y:${fmin.y}, z:${fmin.z} &nbsp; | &nbsp; max x:${fmax.x}, y:${fmax.y}, z:${fmax.z}`]);
+    rows.push(['Area (work)', `min x:${wmin.x}, y:${wmin.y}, z:${wmin.z} &nbsp; | &nbsp; max x:${wmax.x}, y:${wmax.y}, z:${wmax.z}`]);
+  }
+
+  putTableRows(tbody, rows);
+}
+
+function renderM503Table(containerSelector, cfg) {
+  const el = document.querySelector(containerSelector);
+  if (!el) return;
+  const tbody = el.querySelector('tbody');
+  if (!tbody) return;
+
+  const rows = [];
+  const yesno = v => v == null ? '—' : (v ? 'On' : 'Off');
+
+  // General
+  rows.push(['Units', cfg.units || '—']);
+  rows.push(['Filament settings', cfg.filament?.enabled == null ? '—' : (cfg.filament.enabled ? 'Enabled' : 'Disabled')]);
+  rows.push(['Filament (M200)', cfg.filament?.M200 ? `S=${cfg.filament.M200.S} D=${cfg.filament.M200.D}` : '—']);
+  rows.push(['Home offset (M206)', cfg.homeOffset ? `X=${cfg.homeOffset.X} Y=${cfg.homeOffset.Y} Z=${cfg.homeOffset.Z}` : '—']);
+  rows.push(['Power-loss recovery (M413)', yesno(cfg.powerLossRecovery)]);
+  rows.push(['Runout sensor (M412)', yesno(cfg.runout)]);
+
+  rows.push(['', '', true]);
+
+  // Motion
+  rows.push(['Steps/mm (M92)', cfg.stepsPerUnit ? `X=${cfg.stepsPerUnit.X} Y=${cfg.stepsPerUnit.Y} Z=${cfg.stepsPerUnit.Z} E=${cfg.stepsPerUnit.E}` : '—']);
+  rows.push(['Max feedrate (M203)', cfg.maxFeedrate ? `X=${cfg.maxFeedrate.X} Y=${cfg.maxFeedrate.Y} Z=${cfg.maxFeedrate.Z} E=${cfg.maxFeedrate.E}` : '—']);
+  rows.push(['Max acceleration (M201)', cfg.maxAccel ? `X=${cfg.maxAccel.X} Y=${cfg.maxAccel.Y} Z=${cfg.maxAccel.Z} E=${cfg.maxAccel.E}` : '—']);
+  rows.push(['Acceleration (M204)', cfg.accel ? `P=${cfg.accel.P} R=${cfg.accel.R} T=${cfg.accel.T}` : '—']);
+  rows.push(['Advanced (M205)', cfg.advanced ? `B=${cfg.advanced.B} S=${cfg.advanced.S} T=${cfg.advanced.T} X=${cfg.advanced.X} Y=${cfg.advanced.Y} Z=${cfg.advanced.Z} E=${cfg.advanced.E}` : '—']);
+  rows.push(['Linear advance (M900)', (cfg.linearAdvance ?? '—')]);
+
+  rows.push(['', '', true]);
+
+  // Temperatures / PID / Presets
+  rows.push(['PID hotend (M301)', cfg.pid?.hotend ? `P=${cfg.pid.hotend.P} I=${cfg.pid.hotend.I} D=${cfg.pid.hotend.D}` : '—']);
+  rows.push(['PID bed (M304)', cfg.pid?.bed ? `P=${cfg.pid.bed.P} I=${cfg.pid.bed.I} D=${cfg.pid.bed.D}` : '—']);
+  rows.push(['Presets (M145)', (cfg.presets && cfg.presets.length)
+    ? cfg.presets.map(p => `S${p.S}: H${p.H}/B${p.B}/F${p.F}`).join(', ')
+    : '—']);
+  rows.push(['Probe heaters off (C001)', cfg.probeHeatersOff
+    ? `S=${cfg.probeHeatersOff.S ? 'On' : 'Off'} H=${cfg.probeHeatersOff.H} B=${cfg.probeHeatersOff.B} W=${cfg.probeHeatersOff.W}`
+    : '—']);
+
+  rows.push(['', '', true]);
+
+  // Retract / Recover / Auto-retract / Z-probe
+  rows.push(['Retract (M207)', cfg.retract ? `S=${cfg.retract.S} W=${cfg.retract.W} F=${cfg.retract.F} Z=${cfg.retract.Z}` : '—']);
+  rows.push(['Recover (M208)', cfg.recover ? `S=${cfg.recover.S} W=${cfg.recover.W} F=${cfg.recover.F}` : '—']);
+  rows.push(['Auto-retract (M209)', yesno(cfg.autoRetract)]);
+  rows.push(['Z-probe offset (M851)', cfg.zProbeOffset ? `X=${cfg.zProbeOffset.X} Y=${cfg.zProbeOffset.Y} Z=${cfg.zProbeOffset.Z}` : '—']);
+
+  rows.push(['', '', true]);
+
+  // ABL
+  const ablStr = cfg.abl ? `Enabled=${cfg.abl.enabled ? 'Yes' : 'No'}${cfg.abl.fade != null ? `, Fade Z=${cfg.abl.fade}` : ''}` : '—';
+  rows.push(['Auto Bed Leveling (M420)', ablStr]);
+
+  // Mesh (embed a colored table)
+  if (cfg.mesh && cfg.mesh.nx && cfg.mesh.ny) {
+    const { nx, ny, values } = cfg.mesh;
+    const flat = values.flat().filter(v => typeof v === 'number');
+    const min = Math.min(...flat), max = Math.max(...flat);
+    const range = max - min || 1;
+
+    const td = (z) => {
+      let bg = '#eee';
+      if (typeof z === 'number') {
+        const t = (z - min) / range;
+        let r,g,b;
+        if (t < 0.5) { const k = t/0.5; r=0; g=Math.round(255*k); b=Math.round(255*(1-k)); }
+        else { const k=(t-0.5)/0.5; r=Math.round(255*k); g=Math.round(255*(1-k)); b=0; }
+        bg = `rgb(${r},${g},${b})`;
+      }
+      return `<td style="padding:6px;text-align:center;background:${bg};border:1px solid #ddd">${(z==null)?'':Number(z).toFixed(5)}</td>`;
+    };
+
+    const stats = `<div><strong>Mesh:</strong> ${nx}×${ny}
+      &nbsp;|&nbsp;<strong>Min:</strong> ${min.toFixed(5)}
+      &nbsp;|&nbsp;<strong>Max:</strong> ${max.toFixed(5)}
+      &nbsp;|&nbsp;<strong>Avg:</strong> ${(flat.reduce((a,b)=>a+b,0)/flat.length).toFixed(5)}
+      &nbsp;|&nbsp;<strong>Range:</strong> ${(max-min).toFixed(5)}</div>`;
+
+    const table = `<div style="margin-top:6px">${stats}</div>
+      <table style="border-collapse:collapse;margin-top:6px">
+        <tbody>
+          ${values.map(row => `<tr>${row.map(td).join('')}</tr>`).join('')}
+        </tbody>
+      </table>`;
+
+    rows.push(['G29 Mesh', table]);
+  } else {
+    rows.push(['G29 Mesh', '<em>No mesh data</em>']);
+  }
+
+  putTableRows(tbody, rows);
+}
+
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;')
+    .replace(/'/g,'&#39;');
+}
+
+function putTableRows(tbody, rows) {
+  tbody.innerHTML = rows.map(([k, v, isSeparator]) => {
+    if (isSeparator) {
+      return `<tr><td colspan="2" style="padding:8px 0"><hr/></td></tr>`;
+    }
+    return `<tr>
+      <th style="border:1px solid #ddd;padding:6px;text-align:left;background:#fafafa">${escapeHtml(k)}</th>
+      <td style="border:1px solid #ddd;padding:6px;text-align:left">${v}</td>
+    </tr>`;
+  }).join('');
+}
+
+function parseM122(text) {
+  const axes = { X:{}, Y:{}, Z:{}, E:{} };
+  const boolify = v => /^(enabled|true|yes|1)$/i.test(v) ? 'enabled'
+                    : /^(disabled|false|no|0)$/i.test(v) ? 'disabled' : String(v);
+
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map(s => s.replace(/^echo:\s*/i, '').trim())
+    .filter(s => s && !/^>>\s*M122\b/i.test(s) && !/^ok\b/i.test(s));
+
+  for (const ln of lines) {
+    // Axis-prefixed key-value style lines
+    // Examples: "X driver: TMC2209", "Y RMS current: 850", "E microsteps: 16",
+    //           "Z stealthChop: enabled", "X spreadCycle: disabled", "E otpw: false", "Y error: false"
+    let m = ln.match(/^([XYZE])\s+driver:\s*(.+)$/i);
+    if (m) { axes[m[1].toUpperCase()].driver = m[2].trim(); continue; }
+
+    m = ln.match(/^([XYZE]).*?\bRMS\s*current:\s*([\d.]+)/i);
+    if (m) { axes[m[1].toUpperCase()].rms = +m[2]; continue; }
+
+    m = ln.match(/^([XYZE]).*?\bmicrosteps?:\s*([\d.]+)/i);
+    if (m) { axes[m[1].toUpperCase()].msteps = +m[2]; continue; }
+
+    m = ln.match(/^([XYZE]).*?\bstealthchop:\s*(\S+)/i);
+    if (m) { axes[m[1].toUpperCase()].stealth = boolify(m[2]); continue; }
+
+    m = ln.match(/^([XYZE]).*?\bspreadcycle:\s*(\S+)/i);
+    if (m) { axes[m[1].toUpperCase()].spread = boolify(m[2]); continue; }
+
+    m = ln.match(/^([XYZE]).*?\botpw:\s*(\S+)/i);
+    if (m) { axes[m[1].toUpperCase()].otpw = boolify(m[2]); continue; }
+
+    m = ln.match(/^([XYZE]).*?\berror:\s*(\S+)/i);
+    if (m) { axes[m[1].toUpperCase()].error = boolify(m[2]); continue; }
+
+    // If you later want more, add patterns here (e.g., CS actual, SG, TSTEP).
+  }
+  return axes;
+}
+
+function _fillMissingM503Fields(cfg, cleanLines) {
+  const num = s => (s == null ? null : Number(s));
+
+  // M200 S<mode> D<dia>
+  if (!cfg.filament?.M200) {
+    const m = cleanLines.find(l => /^M200\b/i.test(l));
+    if (m) {
+      const g = /M200(?:\s+S(?<S>-?\d+(?:\.\d+)?))?(?:\s+D(?<D>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.filament = cfg.filament || {};
+      cfg.filament.M200 = { S: num(g.S), D: num(g.D) };
+    }
+  }
+
+  // M206 X Y Z
+  if (!cfg.homeOffset) {
+    const m = cleanLines.find(l => /^M206\b/i.test(l));
+    if (m) {
+      const g = /M206(?:\s+X(?<X>-?\d+(?:\.\d+)?))?(?:\s+Y(?<Y>-?\d+(?:\.\d+)?))?(?:\s+Z(?<Z>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.homeOffset = { X: num(g.X), Y: num(g.Y), Z: num(g.Z) };
+    }
+  }
+
+  // M145 S H B F   (can appear multiple times)
+  if (!cfg.presets || !cfg.presets.length) {
+    cfg.presets = [];
+    cleanLines.filter(l => /^M145\b/i.test(l)).forEach(l => {
+      const g = /M145(?:\s+S(?<S>\d+))?(?:\s+H(?<H>-?\d+(?:\.\d+)?))?(?:\s+B(?<B>-?\d+(?:\.\d+)?))?(?:\s+F(?<F>-?\d+(?:\.\d+)?))?/i.exec(l)?.groups || {};
+      if (g.S != null) cfg.presets.push({ S: Number(g.S), H: num(g.H), B: num(g.B), F: num(g.F) });
+    });
+  }
+
+  // M301 / M304 PID
+  if (!cfg.pid) cfg.pid = {};
+  if (!cfg.pid.hotend) {
+    const m = cleanLines.find(l => /^M301\b/i.test(l));
+    if (m) {
+      const g = /M301(?:\s+P(?<P>-?\d+(?:\.\d+)?))?(?:\s+I(?<I>-?\d+(?:\.\d+)?))?(?:\s+D(?<D>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.pid.hotend = { P: num(g.P), I: num(g.I), D: num(g.D) };
+    }
+  }
+  if (!cfg.pid.bed) {
+    const m = cleanLines.find(l => /^M304\b/i.test(l));
+    if (m) {
+      const g = /M304(?:\s+P(?<P>-?\d+(?:\.\d+)?))?(?:\s+I(?<I>-?\d+(?:\.\d+)?))?(?:\s+D(?<D>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.pid.bed = { P: num(g.P), I: num(g.I), D: num(g.D) };
+    }
+  }
+
+  // M413 S
+  if (cfg.powerLossRecovery == null) {
+    const m = cleanLines.find(l => /^M413\b/i.test(l));
+    if (m) cfg.powerLossRecovery = /S1\b/.test(m);
+  }
+
+  // M207 S W F Z
+  if (!cfg.retract) {
+    const m = cleanLines.find(l => /^M207\b/i.test(l));
+    if (m) {
+      const g = /M207(?:\s+S(?<S>-?\d+(?:\.\d+)?))?(?:\s+W(?<W>-?\d+(?:\.\d+)?))?(?:\s+F(?<F>-?\d+(?:\.\d+)?))?(?:\s+Z(?<Z>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.retract = { S: num(g.S), W: num(g.W), F: num(g.F), Z: num(g.Z) };
+    }
+  }
+
+  // M208 S W F
+  if (!cfg.recover) {
+    const m = cleanLines.find(l => /^M208\b/i.test(l));
+    if (m) {
+      const g = /M208(?:\s+S(?<S>-?\d+(?:\.\d+)?))?(?:\s+W(?<W>-?\d+(?:\.\d+)?))?(?:\s+F(?<F>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.recover = { S: num(g.S), W: num(g.W), F: num(g.F) };
+    }
+  }
+
+  // M209 S
+  if (cfg.autoRetract == null) {
+    const m = cleanLines.find(l => /^M209\b/i.test(l));
+    if (m) cfg.autoRetract = /S1\b/.test(m);
+  }
+
+  // M851 X Y Z (X/Y may be integers in your dump)
+  if (!cfg.zProbeOffset) {
+    const m = cleanLines.find(l => /^M851\b/i.test(l));
+    if (m) {
+      const g = /M851(?:\s+X(?<X>-?\d+(?:\.\d+)?))?(?:\s+Y(?<Y>-?\d+(?:\.\d+)?))?(?:\s+Z(?<Z>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.zProbeOffset = { X: num(g.X), Y: num(g.Y), Z: num(g.Z) };
+    }
+  }
+
+  // M900 K
+  if (cfg.linearAdvance == null) {
+    const m = cleanLines.find(l => /^M900\b/i.test(l));
+    if (m) {
+      const g = /M900(?:\s+K(?<K>-?\d+(?:\.\d+)?))?/i.exec(m)?.groups || {};
+      cfg.linearAdvance = num(g.K);
+    }
+  }
+
+  // M412 S
+  if (cfg.runout == null) {
+    const m = cleanLines.find(l => /^M412\b/i.test(l));
+    if (m) cfg.runout = /S1\b/.test(m);
+  }
+
+  // C001 S H B W  (CR-6 helper)
+  if (!cfg.probeHeatersOff) {
+    const m = cleanLines.find(l => /^C001\b/i.test(l));
+    if (m) {
+      const g = /C001(?:\s+S(?<S>[01]))?(?:\s+H(?<H>-?\d+(?:\.\d+)?))?(?:\s+B(?<B>-?\d+(?:\.\d+)?))?(?:\s+W(?<W>-?\d+))?/i.exec(m)?.groups || {};
+      cfg.probeHeatersOff = { S: g.S === '1', H: num(g.H), B: num(g.B), W: g.W != null ? Number(g.W) : null };
+    }
+  }
+}
+
+// ---------- PARSER FOR M503 ----------
+function parseM503Response(raw) {
+  const lines = raw.replace(/\r/g, '').split('\n').map(s => s.trim()).filter(Boolean);
+
+  const cfg = {
+    filament: {},
+    pid: {},
+    abl: {},
+    presets: []
+  };
+
+  const num = s => (s == null ? null : Number(s));
+  const grab = (re, line) => (re.exec(line) || {}).groups || null;
+
+  const clean = lines.map(l => l.replace(/^echo:\s*/, '').trim());
+
+  for (const line of clean) {
+    if (/^G21\b/.test(line)) cfg.units = 'mm';
+    if (/^G20\b/.test(line)) cfg.units = 'in';
+
+    if (/^; Filament settings:\s*(Enabled|Disabled)/i.test(line))
+      cfg.filament.enabled = /Enabled/i.test(line);
+
+    if (/^M92\b/.test(line)) {
+      const g = grab(/M92\s+X(?<X>\S+)\s+Y(?<Y>\S+)\s+Z(?<Z>\S+)\s+E(?<E>\S+)/, line);
+      if (g) cfg.stepsPerUnit = { X: num(g.X), Y: num(g.Y), Z: num(g.Z), E: num(g.E) };
+    }
+
+    if (/^M203\b/.test(line)) {
+      const g = grab(/M203\s+X(?<X>\S+)\s+Y(?<Y>\S+)\s+Z(?<Z>\S+)\s+E(?<E>\S+)/, line);
+      if (g) cfg.maxFeedrate = { X: num(g.X), Y: num(g.Y), Z: num(g.Z), E: num(g.E) };
+    }
+
+    if (/^M201\b/.test(line)) {
+      const g = grab(/M201\s+X(?<X>\S+)\s+Y(?<Y>\S+)\s+Z(?<Z>\S+)\s+E(?<E>\S+)/, line);
+      if (g) cfg.maxAccel = { X: num(g.X), Y: num(g.Y), Z: num(g.Z), E: num(g.E) };
+    }
+
+    if (/^M204\b/.test(line)) {
+      const g = grab(/M204\s+P(?<P>\S+)\s+R(?<R>\S+)\s+T(?<T>\S+)/, line);
+      if (g) cfg.accel = { P: num(g.P), R: num(g.R), T: num(g.T) };
+    }
+
+    if (/^M205\b/.test(line)) {
+      const g = grab(/M205.*X(?<X>\S+).*Y(?<Y>\S+).*Z(?<Z>\S+).*E(?<E>\S+)/, line);
+      if (g) cfg.advanced = { X: num(g.X), Y: num(g.Y), Z: num(g.Z), E: num(g.E) };
+    }
+
+    if (/^M420\b/.test(line)) {
+      const g = grab(/M420\s+S(?<S>[01])(?:\s+Z(?<Z>\S+))?/, line);
+      if (g) { cfg.abl.enabled = g.S === '1'; cfg.abl.fade = num(g.Z); }
+    }
+
+    if (/^G29\s+W\b/.test(line)) {
+      const g = grab(/I(?<I>\d+)\s+J(?<J>\d+)\s+Z(?<Z>\S+)/, line);
+      if (g) {
+        const I = Number(g.I), J = Number(g.J), Z = num(g.Z);
+        if (!cfg.mesh) cfg.mesh = { nx: 0, ny: 0, values: [] };
+        cfg.mesh.nx = Math.max(cfg.mesh.nx, I + 1);
+        cfg.mesh.ny = Math.max(cfg.mesh.ny, J + 1);
+        cfg.mesh.values[J] = cfg.mesh.values[J] || [];
+        cfg.mesh.values[J][I] = Z;
+      }
+    }
+  }
+_fillMissingM503Fields(cfg, clean);
+  return cfg;
+}
+
+
+function putRows(tbodySel, rows) {
+  const tbody = document.querySelector(tbodySel);
+  if (!tbody) return;
+  tbody.innerHTML = rows
+    .map(([k, v]) => `<tr><th style="text-align:left">${k}</th><td style="text-align:left">${v ?? ''}</td></tr>`)
+    .join('');
+}
+
+function renderM503Fields(cfg) {
+  // General
+  putRows('#m503General tbody', [
+    ['Units', cfg.units || '—'],
+    ['Filament Settings', cfg.filament.enabled == null ? '—' : (cfg.filament.enabled ? 'Enabled' : 'Disabled')],
+    ['Filament (M200)', cfg.filament.M200 ? `S=${cfg.filament.M200.S} D=${cfg.filament.M200.D}` : '—'],
+    ['Home Offset (M206)', cfg.homeOffset ? `X=${cfg.homeOffset.X} Y=${cfg.homeOffset.Y} Z=${cfg.homeOffset.Z}` : '—'],
+    ['Power-loss Recovery (M413)', cfg.powerLossRecovery == null ? '—' : (cfg.powerLossRecovery ? 'On' : 'Off')],
+    ['Runout Sensor (M412)', cfg.runout == null ? '—' : (cfg.runout ? 'On' : 'Off')],
+  ]);
+
+  // Motion
+  putRows('#m503Motion tbody', [
+    ['Steps/mm (M92)', cfg.stepsPerUnit ? `X=${cfg.stepsPerUnit.X} Y=${cfg.stepsPerUnit.Y} Z=${cfg.stepsPerUnit.Z} E=${cfg.stepsPerUnit.E}` : '—'],
+    ['Max Feedrate (M203)', cfg.maxFeedrate ? `X=${cfg.maxFeedrate.X} Y=${cfg.maxFeedrate.Y} Z=${cfg.maxFeedrate.Z} E=${cfg.maxFeedrate.E}` : '—'],
+    ['Max Accel (M201)', cfg.maxAccel ? `X=${cfg.maxAccel.X} Y=${cfg.maxAccel.Y} Z=${cfg.maxAccel.Z} E=${cfg.maxAccel.E}` : '—'],
+    ['Accel (M204)', cfg.accel ? `P=${cfg.accel.P} R=${cfg.accel.R} T=${cfg.accel.T}` : '—'],
+    ['Advanced (M205)', cfg.advanced ? `B=${cfg.advanced.B} S=${cfg.advanced.S} T=${cfg.advanced.T} X=${cfg.advanced.X} Y=${cfg.advanced.Y} Z=${cfg.advanced.Z} E=${cfg.advanced.E}` : '—'],
+    ['Linear Advance (M900)', cfg.linearAdvance ?? '—'],
+  ]);
+
+  // Temperatures / PID / Presets
+  putRows('#m503Temps tbody', [
+    ['PID Hotend (M301)', cfg.pid.hotend ? `P=${cfg.pid.hotend.P} I=${cfg.pid.hotend.I} D=${cfg.pid.hotend.D}` : '—'],
+    ['PID Bed (M304)', cfg.pid.bed ? `P=${cfg.pid.bed.P} I=${cfg.pid.bed.I} D=${cfg.pid.bed.D}` : '—'],
+    ['Presets (M145)', cfg.presets.length ? cfg.presets.map(p => `S${p.S}: H${p.H}/B${p.B}/F${p.F}`).join(', ') : '—'],
+    ['Probe Heaters Off (C001)', cfg.probeHeatersOff ? `S=${cfg.probeHeatersOff.S ? 'On' : 'Off'} H=${cfg.probeHeatersOff.H} B=${cfg.probeHeatersOff.B} W=${cfg.probeHeatersOff.W}` : '—'],
+  ]);
+
+  // Retract
+  putRows('#m503Retract tbody', [
+    ['Retract (M207)', cfg.retract ? `S=${cfg.retract.S} W=${cfg.retract.W} F=${cfg.retract.F} Z=${cfg.retract.Z}` : '—'],
+    ['Recover (M208)', cfg.recover ? `S=${cfg.recover.S} W=${cfg.recover.W} F=${cfg.recover.F}` : '—'],
+    ['Auto-Retract (M209)', cfg.autoRetract == null ? '—' : (cfg.autoRetract ? 'On' : 'Off')],
+    ['Z Probe Offset (M851)', cfg.zProbeOffset ? `X=${cfg.zProbeOffset.X} Y=${cfg.zProbeOffset.Y} Z=${cfg.zProbeOffset.Z}` : '—'],
+  ]);
+
+  // ABL + Mesh
+  const ablStr = `Enabled=${cfg.abl.enabled ? 'Yes' : 'No'}${cfg.abl.fade != null ? `, Fade Z=${cfg.abl.fade}` : ''}`;
+  putRows('#m503ABL tbody', [['ABL (M420)', ablStr]]);
+
+  renderMesh('#m503Mesh', cfg.mesh);
+}
+
+function renderMesh(containerSel, mesh) {
+  const container = document.querySelector(containerSel);
+  if (!container) return;
+  if (!mesh) { container.innerHTML = '<em>No mesh</em>'; return; }
+
+  // Stats
+  const vals = mesh.values.flat().filter(v => typeof v === 'number');
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const avg = vals.reduce((a,b)=>a+b,0) / vals.length;
+  const range = max - min;
+
+  // Simple color mapping (green ~ median, blue = low, red = high)
+  const tdFor = (z) => {
+    let bg = '#eee';
+    if (typeof z === 'number') {
+      const t = range > 1e-9 ? (z - min) / range : 0.5;
+      // interpolate blue(0) -> green(0.5) -> red(1)
+      let r,g,b;
+      if (t < 0.5) { // blue to green
+        const k = t/0.5; r = 0; g = Math.round(255*k); b = Math.round(255*(1-k));
+      } else { // green to red
+        const k = (t-0.5)/0.5; r = Math.round(255*k); g = Math.round(255*(1-k)); b = 0;
+      }
+      bg = `rgb(${r},${g},${b})`;
+    }
+    const text = (z==null) ? '' : z.toFixed(5);
+    return `<td style="padding:6px; text-align:center; background:${bg}; color:#000;">${text}</td>`;
+  };
+
+  const header = `<div style="margin:6px 0;">
+    <strong>Mesh:</strong> ${mesh.nx}×${mesh.ny}
+    &nbsp;|&nbsp; <strong>Min:</strong> ${min.toFixed(5)}
+    &nbsp;|&nbsp; <strong>Max:</strong> ${max.toFixed(5)}
+    &nbsp;|&nbsp; <strong>Avg:</strong> ${avg.toFixed(5)}
+    &nbsp;|&nbsp; <strong>Range:</strong> ${range.toFixed(5)}
+  </div>`;
+
+  const rows = mesh.values.map(row => `<tr>${row.map(tdFor).join('')}</tr>`).join('');
+  container.innerHTML = header + `<table style="border-collapse:collapse;"><tbody>${rows}</tbody></table>`;
+}
+
+function renderM115Fields(parsed) {
+  const { info, caps, area } = parsed;
+  const tbody = document.querySelector('#m115Table tbody');
+  if (!tbody) return;
+
+  const rows = [];
+
+  // Top-level info (show common keys nicely)
+  const mapKeys = [
+    ['FIRMWARE_NAME', 'Firmware'],
+    ['SOURCE_CODE_URL', 'Source'],
+    ['PROTOCOL_VERSION', 'Protocol'],
+    ['MACHINE_TYPE', 'Machine'],
+    ['EXTRUDER_COUNT', 'Extruders'],
+    ['UUID', 'UUID'],
+  ];
+
+  for (const [k, label] of mapKeys) {
+    if (info[k]) rows.push([label, info[k]]);
+  }
+
+  // Caps (only show ones present)
+  const capEntries = Object.keys(caps).sort().map(name => [name, caps[name] ? 'Yes' : 'No']);
+  if (capEntries.length) {
+    rows.push(['—', '—']);
+    rows.push(['Capabilities', '']);
+    for (const [k, v] of capEntries) rows.push(['• ' + k, v]);
+  }
+
+  // Area (pretty print if available)
+  if (area) {
+    rows.push(['—', '—']);
+    rows.push(['Area (full)', `min x:${area.full?.min?.x}, y:${area.full?.min?.y}, z:${area.full?.min?.z} | max x:${area.full?.max?.x}, y:${area.full?.max?.y}, z:${area.full?.max?.z}`]);
+    rows.push(['Area (work)', `min x:${area.work?.min?.x}, y:${area.work?.min?.y}, z:${area.work?.min?.z} | max x:${area.work?.max?.x}, y:${area.work?.max?.y}, z:${area.work?.max?.z}`]);
+  }
+
+  // Render
+  tbody.innerHTML = rows.map(([k, v]) => `<tr><th style="text-align:left">${k}</th><td style="text-align:left">${v ?? ''}</td></tr>`).join('');
+}
+
+
+function parseM115(text) {
+  const cfg = {};
+  String(text || '')
+    .split(/\r?\n/)
+    .map(s => s.replace(/^echo:\s*/i, '').trim())
+    .filter(s => s && !/^ok\b/i.test(s))
+    .forEach(line => {
+      if (/^FIRMWARE_NAME:/i.test(line))   cfg.name      = line.split(':')[1]?.trim();
+      else if (/^FIRMWARE_URL:/i.test(line)) cfg.url     = line.split(':')[1]?.trim();
+      else if (/^PROTOCOL_VERSION:/i.test(line)) cfg.protocol = line.split(':')[1]?.trim();
+      else if (/^MACHINE_TYPE:/i.test(line)) cfg.machine = line.split(':')[1]?.trim();
+      else if (/^EXTRUDER_COUNT:/i.test(line)) cfg.extruders = line.split(':')[1]?.trim();
+      else if (/^UUID:/i.test(line))       cfg.uuid      = line.split(':')[1]?.trim();
+    });
+  return cfg;
+}
+
+function parseM115Response(raw) {
+  const info = {};
+  const caps = {};
+  let area = null;
+
+  const lines = raw
+    .replace(/\r/g, '')
+    .split('\n')
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  const mainLine = lines.find(l => /FIRMWARE_NAME:/.test(l));
+  if (mainLine) {
+    const re = /([A-Z_]+):(.*?)(?=\s[A-Z_]+:|$)/g;
+    let m;
+    while ((m = re.exec(mainLine)) !== null) {
+      info[m[1]] = m[2].trim();
+    }
+  }
+
+  for (const line of lines) {
+    const capMatch = /^Cap:([A-Z_]+):([01])$/.exec(line);
+    if (capMatch) caps[capMatch[1]] = capMatch[2] === '1';
+  }
+
+  const areaLine = lines.find(l => /^area:\{/.test(l));
+  if (areaLine) {
+    try {
+      const jsonish = areaLine
+        .replace(/^area:/, '')
+        .replace(/([a-zA-Z_]+)\s*:/g, '"$1":');
+      area = JSON.parse(jsonish);
+    } catch (e) { console.warn('Failed to parse area:', e); }
+  }
+
+  return { info, caps, area };
+}
+
+function parseM503(text) {
+  const out = {};
+
+  // Normalize lines: strip comments like echo:, trim
+  const lines = String(text || '')
+    .replace(/^echo:\s*/gmi, '')
+    .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+
+  const grab = (re, parseFn = (m)=>m) => {
+    for (const ln of lines) {
+      const m = ln.match(re);
+      if (m) return parseFn(m);
+    }
+    return null;
+  };
+
+  // M92: Steps/mm
+  // e.g. "M92 X80.00 Y80.00 Z400.00 E420.00"
+  out.M92 = grab(/\bM92\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([EXYZA])\s*([-+]?\d*\.?\d+)/gi, (_, ax, v) => (obj[ax.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M203: Max feedrate mm/s
+  out.M203 = grab(/\bM203\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([EXYZA])\s*([-+]?\d*\.?\d+)/gi, (_, ax, v) => (obj[ax.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M201: Acceleration mm/s²
+  out.M201 = grab(/\bM201\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([EXYZA])\s*([-+]?\d*\.?\d+)/gi, (_, ax, v) => (obj[ax.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M204: Accel presets (P/R/T)
+  // e.g. "M204 P500.00 R1000.00 T500.00" OR Marlin variants A/T
+  out.M204 = grab(/\bM204\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([PRTA])\s*([-+]?\d*\.?\d+)/gi, (_, k, v) => (obj[k.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M205: Jerk/junction settings (X/Y/Z/E, J, S, T etc.)
+  out.M205 = grab(/\bM205\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([A-Z])\s*([-+]?\d*\.?\d+)/gi, (_, k, v) => (obj[k.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M851: Z probe offset
+  out.M851 = grab(/\bM851\s+Z\s*([-+]?\d*\.?\d+)/i, m => ({ Z: +m[1] }));
+
+  // M301: Hotend PID "M301 P22.20 I1.08 D114.00"
+  out.M301 = grab(/\bM301\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([PID])\s*([-+]?\d*\.?\d+)/gi, (_, k, v) => (obj[k.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M304: Bed PID
+  out.M304 = grab(/\bM304\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([PID])\s*([-+]?\d*\.?\d+)/gi, (_, k, v) => (obj[k.toUpperCase()] = +v));
+    return obj;
+  });
+
+  // M420: Bed leveling state
+  // e.g. "M420 S1 Z0.00" (S=on/off, Z=fade)
+  out.M420 = grab(/\bM420\s+(.*)/i, m => {
+    const obj = {};
+    m[1].replace(/([A-Z])\s*([-+]?\d*\.?\d+)/gi, (_, k, v) => (obj[k.toUpperCase()] = isNaN(v) ? v : +v));
+    return obj;
+  });
+
+  // M404: Filament diameter
+  out.M404 = grab(/\bM404\s+(?:DN?\s*)?([-+]?\d*\.?\d+)/i, m => ({ D: +m[1] }));
+
+  return out;
+}
+
+function fmtKV(obj, order) {
+  if (!obj) return '—';
+  const keys = order && order.length ? order : Object.keys(obj);
+  return keys.filter(k => obj[k] != null)
+             .map(k => `${k}:${obj[k]}`)
+             .join(' · ') || '—';
+}
+
+const isVirtual = () => virtualToggle?.checked === true;
+
+function renderM503Fields(cfg) {
+  const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text || '—'; };
+
+  set('f_M92',  fmtKV(cfg.M92,  ['X','Y','Z','E']));
+  set('f_M203', fmtKV(cfg.M203, ['X','Y','Z','E']));
+  set('f_M201', fmtKV(cfg.M201, ['X','Y','Z','E']));
+  set('f_M204', fmtKV(cfg.M204, ['P','R','T','A']));
+  set('f_M205', fmtKV(cfg.M205));
+  set('f_M851', cfg.M851 && typeof cfg.M851.Z === 'number' ? `Z:${cfg.M851.Z}` : '—');
+  set('f_M301', fmtKV(cfg.M301, ['P','I','D']));
+  set('f_M304', fmtKV(cfg.M304, ['P','I','D']));
+  set('f_M420', fmtKV(cfg.M420, ['S','Z']));
+  set('f_M404', cfg.M404 && cfg.M404.D ? `D:${cfg.M404.D}` : '—');
+}
+
+
+// Wire buttons
+
+document.getElementById('exportCfgBtn')?.addEventListener('click', () => {
+  const cfg = window._lastParsedCfg || {};
+  const blob = new Blob([JSON.stringify(cfg, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'm503_parsed.json'; a.click();
+  URL.revokeObjectURL(url);
+});
+
+// Optional: auto-parse on paste/changes to the textarea
+configBox?.addEventListener('input', () => {
+  // lightweight debounce
+  clearTimeout(configBox._deb);
+  configBox._deb = setTimeout(() => {
+    const cfg = parseM503(configBox.value || '');
+    renderM503Fields(cfg);
+    window._lastParsedCfg = cfg;
+  }, 250);
+});
 
 
 // ===== Maintenance Logbook =====
@@ -1038,80 +1956,7 @@ const vState = {
 
 
 
-let lastHomeHintAt = 0;  // when we last saw a "homing-ish" line
 
-let _audioCtx = null;
-
-let _preflightFile = null;
-
-let net = {
-  txBytesTotal: 0,
-  rxBytesTotal: 0,
-  txSince: 0,
-  rxSince: 0,
-  lastSample: performance.now(),
-  txRate: 0,
-  rxRate: 0,
-  latencyEMA: null,   // ms
-  timer: null
-};
-
-let lastSendTs = null; 
-
-let heaterUnlocked = JSON.parse(localStorage.getItem('heaterUnlocked') || 'false');
-
-//Filament
-let spools = [];
-let activeSpoolId = null;
-let editingId = null;
-let _pendingFilament = null;
-
-//UI and State flags
-let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
-let criticalDepth = 0;
-let pidActiveHotend = false;
-let pidActiveBed    = false;
-let pidTarget = null; // 'hotend', 'bed', or null
-let isHomed = false;
-
-// Leveling / Probing flow control
-let probeLatch = null; // resolved when G29 T finishes (grid header or DWIN “Settings Stored”)
-
-//Mesh and Temps
-let meshScratch    = Array.from({ length: 4 }, () => Array(4).fill(null));
-let temps          = { hot: null, hotTarget: null, bed: null, bedTarget: null };
-
-//Connection lifecycle
-let connKind = 'none'; // 'none' | 'virtual' | 'real'
-let isConnecting = false;
-let isDisconnecting = false;
-
-//Serial — device handles
-let port           = null;
-let reader         = null;
-let writer         = null;
-let textDecoder    = null;
-
-//Comms - I/O state, buffers, timers
-let reading        = false;
-let rxBuffer       = '';
-let cancelStream   = false;
-let captureMode    = null; // null | 'config' | 'diag'
-let tempTimer      = null;
-let postPrintTimer = null;
-
-//Read and Telemetry
-let waitingResolvers = []; // (kept for compatibility)
-let isBusyProcessing  = false;
-let lastOkAt          = 0;
-let pendingOk      = []; // queue for waitForOk()
-
-//Virtual printer
-let virtualMode = false;
-let vSimTimer = null;
-
-//Easter Egg
-let streak = 0;
 
 /* =========================================================
    4) TABS BOOTSTRAP (runs once)
@@ -2556,23 +3401,20 @@ function _logBase(msg) {
   printerLog.scrollTop = printerLog.scrollHeight;
 }
 
-function logMsg(msg) {
-  const lines = String(msg).split(/\r?\n/);
-  for (let line of lines) {
-    if (!line) continue;
-    line = normalizeLine(line);
-
-    if (!debugMode && (isSetNewScreenLine(line) || isNoisyLine(line))) continue;
-    if (!debugMode && TELEMETRY_REGEX.test(line)) continue;
-
-    if (captureMode === 'config') {
-      configBox.value += line + '\n';
-      configBox.scrollTop = configBox.scrollHeight;
-    } else if (captureMode === 'diag') {
-      diagBox.value += line + '\n';
-      diagBox.scrollTop = diagBox.scrollHeight;
+function logMsg(msg, kind = 'info') {
+  const el = window.logBox || document.getElementById('logBox');
+  if (el) {
+    // if it's a <textarea>, use .value; otherwise append textContent
+    if ('value' in el) {
+      el.value += (el.value ? '\n' : '') + String(msg);
+      // keep scrolled to bottom
+      el.scrollTop = el.scrollHeight;
+    } else {
+      el.textContent += (el.textContent ? '\n' : '') + String(msg);
     }
-    _logBase(line);
+  } else {
+    // fallback to console so we still see output
+    (kind === 'bad' ? console.error : console.log)(msg);
   }
 }
 
@@ -2583,6 +3425,8 @@ function setActivity(text, cls='') {
 }
 
 function setConnected(connected) {
+    if (connectBtn) connectBtn.disabled = connected;
+  if (disconnectBtn) disconnectBtn.disabled = !connected;
   if (connected) {
     connBadge.textContent = 'Connected';
     connBadge.className = 'pill ok';
@@ -2632,15 +3476,10 @@ function setConnected(connected) {
   zMinus.disabled = zPlus.disabled = !connected;
   parkHead.disabled     = !connected;
 
-  readCfg.disabled      = !connected;
-  saveCfg.disabled      = !connected;
-
   preheatPLA.disabled = preheatPETG.disabled =
   preheatABS.disabled = cooldown.disabled =
   loadFil.disabled = unloadFil.disabled = !connected;
 primeLine.disabled = !connected;
-
-  fwInfo.disabled = tmcDiag.disabled = !connected;
 
   sendGcode.disabled   = !connected || !gcodeFile.files.length;
   cancelSend.disabled  = true;
@@ -2654,8 +3493,14 @@ function updateLastUpdated(){
 function setLastCmd(cmd){ lastCmd.textContent = 'Last Cmd: ' + cmd; }
 
 //Polling
-function startTempPolling(){
-  if (!tempTimer) tempTimer = setInterval(() => sendCmd('M105', true), 3000);
+function startTempPolling(periodMs = 1000) {
+  if (tempTimer) return;              // already polling
+  tempTimer = setInterval(() => {
+    // quiet=true is fine; we just need the inbound line
+    try { sendCmd('M105', /*quiet*/ true); } catch (e) { /* ignore */ }
+  }, Math.max(250, periodMs));
+  // optional UI cue
+  if (typeof showTempPill === 'function') showTempPill('Polling temps', 'good');
 }
 
 function stopTempPolling(){
@@ -3047,6 +3892,11 @@ function promptNumber(message, def) {
    7) SERIAL / COMMS (connect, read loop, send, waits)
 ========================================================= */
 
+async function requestPortSafe() {
+  if (isVirtual()) throw new Error('virtual-mode'); // never open picker in virtual
+  return await navigator.serial.requestPort();
+}
+
 //Real Connection
 //Real Connection
 async function connectPrinter() {
@@ -3055,12 +3905,11 @@ async function connectPrinter() {
 
   try {
     // Virtual path
-    if (virtualMode) {
-      await connectVirtual();
-      connKind = 'virtual';
-      return;
-    }
-
+if (virtualMode) {
+  await connectVirtual();
+  connKind = 'virtual';
+  return;
+}
     // Real serial path
     if (!('serial' in navigator)) {
       setConnected(false);
@@ -3075,7 +3924,7 @@ async function connectPrinter() {
 
     if (!port) {
       const granted = await navigator.serial.getPorts();
-      port = granted[0] || await navigator.serial.requestPort();
+      port = granted[0] || await requestPortSafe();
     }
 
     const sel = baudSelection();
@@ -3192,6 +4041,25 @@ async function disconnectPrinter(reason = 'user') {
   }
 }
 
+const VIRT_REPLIES = {
+  M115: [
+    'FIRMWARE_NAME:Marlin 2.1.2.1 (Github)',
+    'FIRMWARE_URL:https://github.com/MarlinFirmware/Marlin',
+    'PROTOCOL_VERSION:1.0',
+    'MACHINE_TYPE:Ender-3 Pro',
+    'EXTRUDER_COUNT:1',
+    'UUID:00000000-0000-0000-0000-000000000000',
+    'ok'
+  ].join('\n'),
+
+  M503: [
+    'echo:  Steps per unit: M92 X80.00 Y80.00 Z400.00 E93.00',
+    'echo:  Maximum feedrates: M203 X500.00 Y500.00 Z12.00 E25.00',
+    'echo:  Acceleration: M201 X1000.00 Y1000.00 Z100.00 E5000.00',
+    'echo:  Advanced: M205 X10.00 Y10.00 Z0.30 E5.00 J0.10',
+    'ok'
+  ].join('\n')
+};
 
 //Virtual Connection
 async function connectVirtual() {
@@ -3253,60 +4121,60 @@ function stopVirtualSim() {
   if (vSimTimer) { clearInterval(vSimTimer); vSimTimer = null; }
 }
 
-//Send paths
+// Send paths — virtual and real separated cleanly
 async function sendCmd(cmd, quiet = false) {
-  // Route to virtual path if active
+  const line = String(cmd).trim();
+  const id = line.split(/\s+/)[0].toUpperCase(); // e.g. "M503", "M115"
+
+  const isM503 = id === 'M503';
+  const isM115 = id === 'M115';
+  const isM122 = id === 'M122';
+
+  // ---------------- VIRTUAL PATH ----------------
   if (connKind === 'virtual') {
-    return sendCmdVirtual(cmd, quiet);
+    // canned replies by id
+    const canned = VIRT_REPLIES && VIRT_REPLIES[id];
+    if (!quiet) logMsg('>> ' + line);
+
+    if (canned) {
+      // stream lines into the log and return the full block
+      canned.split('\n').forEach(l => logMsg(l));
+      return canned; // IMPORTANT: tables/parsers rely on this
+    }
+
+    // No canned reply — simulate a simple ok
+    logMsg('ok');
+    return 'ok';
   }
 
-  // Heater guardrail (blocks M104/M109 or M140/M190 over limits unless unlocked)
-  if (!guardHeaterFromCmd(cmd)) {
+  // ---------------- REAL SERIAL PATH ----------------
+  // Heater guardrail
+  if (!guardHeaterFromCmd(line)) {
     throw new Error('Heater guardrail blocked high temperature command');
   }
-
   if (!writer) {
     setActivity('Not connected', 'bad');
     throw new Error('Not connected');
   }
 
-  const line = String(cmd).trim();
-
   setLastCmd(line);
   setActivity('Sending…', 'warn');
 
-  // --- Live graph taps: fan (M106/M107) + progress (M73) -------------------
-  // Fan set
-  if (/^M106\b/i.test(line)) {
-    const m = line.match(/\bS\s*([0-9.]+)/i);
-    if (m) {
-      const s = Math.max(0, Math.min(255, parseInt(m[1], 10) || 0));
-      if (typeof live !== 'undefined') live.lastFan255 = s;
-      if (typeof queueLiveDraw === 'function') queueLiveDraw();
+  // Prepare optional capture for commands that dump multi-line blocks
+  let replyPromise = null;
+  if (isM503 || isM115 || isM122) {
+    // ensure no stale capture is active
+    if (typeof oneShotCapture !== 'undefined' && oneShotCapture) {
+      try { oneShotCapture.resolve(oneShotCapture.buf?.join('\n') || ''); } catch {}
+      oneShotCapture = null;
     }
+    beginCritical?.();
+    stopTempPolling?.();
+    replyPromise = captureReplyOnce({ doneOnOk: true });
   }
-  if (/^M107\b/i.test(line)) {
-    if (typeof live !== 'undefined') live.lastFan255 = 0;
-    if (typeof queueLiveDraw === 'function') queueLiveDraw();
-  }
-  // M73 progress (Prusa/Marlin)
-  if (/^M73\b/i.test(line)) {
-    const p = line.match(/\bP\s*([0-9]+)/i);
-    if (p && typeof live !== 'undefined') {
-      live.lastProg = Math.max(0, Math.min(100, parseInt(p[1], 10) || 0));
-      if (typeof queueLiveDraw === 'function') queueLiveDraw();
-    }
-    const r = line.match(/\bR\s*([0-9]+)/i); // optional ETA minutes
-    if (r) {
-      const mins = Math.max(0, parseInt(r[1], 10) || 0);
-      showEtaPill('ETA: ' + formatETA(mins * 60), 'warn');
-    }
-  }
-  // -------------------------------------------------------------------------
 
+  // Write to serial
   const payload = new TextEncoder().encode(line + '\n');
-
-  // Stamp send time so "ok" without a waiter can update latency
   lastSendTs = performance.now();
 
   await writer.write(payload);
@@ -3318,8 +4186,42 @@ async function sendCmd(cmd, quiet = false) {
 
   updateLastUpdated();
   setActivity('Waiting…', 'warn');
+
+  // If we started a capture, return it; make sure we endCritical/start polling after it finishes
+  if (replyPromise) {
+    return replyPromise.finally(() => {
+      try { startTempPolling?.(); } catch {}
+      endCritical?.();
+    });
+  }
+
+  // Commands that don't produce a block reply just return empty string
+  return '';
 }
 
+function updateTempsUI({ hotend, hotendSet, bed, bedSet }) {
+  // Example spans – change selectors to your IDs/classes
+  const elH = document.getElementById('tempHotend');
+  const elHS = document.getElementById('tempHotendSet');
+  const elB = document.getElementById('tempBed');
+  const elBS = document.getElementById('tempBedSet');
+
+  if (elH)  elH.textContent  = isFinite(hotend)    ? hotend.toFixed(1) : '—';
+  if (elHS) elHS.textContent = isFinite(hotendSet) ? hotendSet.toFixed(0) : '—';
+  if (elB)  elB.textContent  = isFinite(bed)       ? bed.toFixed(1) : '—';
+  if (elBS) elBS.textContent = isFinite(bedSet)    ? bedSet.toFixed(0) : '—';
+
+  // If you have a live chart, enqueue a point here too
+  if (typeof queueLiveDraw === 'function') {
+    try {
+      live.lastHotend = hotend;
+      live.lastHotendSet = hotendSet;
+      live.lastBed = bed;
+      live.lastBedSet = bedSet;
+      queueLiveDraw();
+    } catch {}
+  }
+}
 
 async function sendCmdVirtual(cmd, quiet = false) {
   const line = String(cmd).trim();
@@ -3370,6 +4272,9 @@ async function sendCmdVirtual(cmd, quiet = false) {
       showEtaPill('ETA: ' + formatETA(mins * 60), 'warn');
     }
   }
+
+
+
   // -------------------------------------------------------------------------
 
   const ok = () => {
@@ -3392,6 +4297,45 @@ async function sendCmdVirtual(cmd, quiet = false) {
   };
 
   switch (true) {
+
+      case /^M122\b/i.test(line): {
+    const lines = [
+      'echo:  Testing TMC drivers...',
+      'echo:  X driver: TMC2209',
+      'echo:  X RMS current: 800',
+      'echo:  X microsteps: 16',
+      'echo:  X stealthChop: enabled',
+      'echo:  X spreadCycle: disabled',
+      'echo:  X otpw: false',
+      'echo:  X error: false',
+      'echo:  Y driver: TMC2209',
+      'echo:  Y RMS current: 850',
+      'echo:  Y microsteps: 16',
+      'echo:  Y stealthChop: enabled',
+      'echo:  Y spreadCycle: disabled',
+      'echo:  Y otpw: false',
+      'echo:  Y error: false',
+      'echo:  Z driver: TMC2209',
+      'echo:  Z RMS current: 900',
+      'echo:  Z microsteps: 16',
+      'echo:  Z stealthChop: enabled',
+      'echo:  Z spreadCycle: disabled',
+      'echo:  Z otpw: false',
+      'echo:  Z error: false',
+      'echo:  E driver: TMC2209',
+      'echo:  E RMS current: 700',
+      'echo:  E microsteps: 16',
+      'echo:  E stealthChop: enabled',
+      'echo:  E spreadCycle: disabled',
+      'echo:  E otpw: false',
+      'echo:  E error: false',
+      'ok'
+    ];
+    lines.forEach(l => logMsg(l));
+    if (typeof ok === 'function') ok();
+    return lines.join('\n'); // returning ends the switch branch
+  }
+
     // --- Telemetry ---
     case /^M105\b/i.test(line): {
       emitTelemetry();
@@ -3486,22 +4430,40 @@ async function sendCmdVirtual(cmd, quiet = false) {
     }
 
     // --- Info / diagnostics ---
-    case /^M115\b/i.test(line): {
-      logMsg('FIRMWARE_NAME:VirtualPrinter PROTOCOL_VERSION:1.0 MACHINE_TYPE:Simulated EXTRUDER_COUNT:1');
-      ok();
-      break;
-    }
+case /^M115\b/i.test(line): {
+  const lines = [
+    'FIRMWARE_NAME:Marlin 2.1.2.1 (Github)',
+    'FIRMWARE_URL:https://github.com/MarlinFirmware/Marlin',
+    'PROTOCOL_VERSION:1.0',
+    'MACHINE_TYPE:Ender-3 Pro',
+    'EXTRUDER_COUNT:1',
+    'UUID:00000000-0000-0000-0000-000000000000',
+    'ok'
+  ];
+  lines.forEach(l => logMsg(l));
+  if (typeof ok === 'function') ok();
+  return lines.join('\n');
+}
     case /^M122\b/i.test(line): {
       logMsg('Driver diag (virtual): all good.');
       ok();
       break;
     }
-    case /^M503\b/i.test(line): {
-      logMsg('echo:  Steps per unit: M92 X80.00 Y80.00 Z400.00 E93.00');
-      logMsg('echo:  Maximum feedrates: M203 X500.00 Y500.00 Z12.00 E25.00');
-      ok();
-      break;
-    }
+case /^M503\b/i.test(line): {
+  const lines = [
+    'echo:  Steps per unit: M92 X80.00 Y80.00 Z400.00 E93.00',
+    'echo:  Maximum feedrates: M203 X500.00 Y500.00 Z12.00 E25.00',
+    'echo:  Acceleration: M201 X1000.00 Y1000.00 Z100.00 E5000.00',
+    'echo:  Advanced: M205 X10.00 Y10.00 Z0.30 E5.00 J0.10',
+    'ok'
+  ];
+  lines.forEach(l => logMsg(l));
+  // if your flow expects an “ok”, keep this
+  if (typeof ok === 'function') ok();
+  // IMPORTANT: return the text so parseM503 receives it
+  return lines.join('\n');
+}
+
 
     // --- UI cancel hook ---
     case /^\/\/action:cancel/i.test(line): {
@@ -3577,7 +4539,11 @@ async function readLoop() {
             setTempPill(topBedPill, topBedText, temps.bed, temps.bedTarget, 'bed');
           }
         }
-        if (tMatch || bMatch) updateTempPanel();
+                if (tMatch || bMatch) {
+          updateTempPanel();
+          // NEW: push a point into the live chart whenever we ingest temps
+          if (typeof recordLiveSample === 'function') recordLiveSample();
+        }
 
         // --- positions (e.g., "X:.. Y:.. Z:..") ---
         const posMatch = line.match(POS_REGEX);
@@ -3595,6 +4561,13 @@ async function readLoop() {
         // --- logging (respect noisy/telemetry filters & debug) ---
         const isTelemetry = TELEMETRY_REGEX.test(line);
         const out = normalizeLine(line);
+
+        // ---- FEED CAPTURE (non-ok lines only)  --------------------
+        // CHANGED: only push here; don't resolve here.
+        if (oneShotCapture && out && !/^ok\b/i.test(out)) {
+          oneShotCapture.buf.push(out);
+        }
+        // -----------------------------------------------------------
 
         // track “homing-ish” hints for printer-panel homes
         maybeMarkHomingHint(out);
@@ -3659,8 +4632,14 @@ async function readLoop() {
           clearAllPidUi();
         }
 
-        // --- ok resolver ---
+        // --- ok resolver (single source of truth) ---
         if (/^ok\b/i.test(out)) {
+          // Resolve capture first so callers get full text
+          if (oneShotCapture && oneShotCapture.doneOnOk) {
+            try { oneShotCapture.resolve(oneShotCapture.buf.join('\n')); }
+            finally { oneShotCapture = null; }
+          }
+
           updateLastUpdated();
           if (captureMode) { captureMode = null; startTempPolling(); }
           _resolveNextOk();
@@ -3674,6 +4653,7 @@ async function readLoop() {
     reading = false;
   }
 }
+
 
 
 
@@ -4171,28 +5151,6 @@ parkHead.addEventListener('click', () =>sendCmdsSequential('G90', 'G1 X0 Y0 Z10 
 );
 
 //EEPROM and Diag
-readCfg.addEventListener('click', async () => {
-  configBox.value = '';
-  captureMode = 'config';
-  stopTempPolling();
-  await sendCmd('M503');
-});
-
-saveCfg.addEventListener('click', async () => { await sendCmd('M500'); });
-
-fwInfo.addEventListener('click', () => {
-  diagBox.value = '';
-  captureMode = 'diag';
-  stopTempPolling();
-  sendCmd('M115');
-});
-
-tmcDiag.addEventListener('click', () => {
-  diagBox.value = '';
-  captureMode = 'diag';
-  stopTempPolling();
-  sendCmd('M122');
-});
 
 
 // Maintenance
@@ -4376,12 +5334,9 @@ if (debugToggle) {
 if (virtualToggle) {
   virtualMode = JSON.parse(localStorage.getItem('virtualMode') || 'false');
   virtualToggle.checked = virtualMode;
-
   virtualToggle.addEventListener('change', () => {
     virtualMode = virtualToggle.checked;
     localStorage.setItem('virtualMode', JSON.stringify(virtualMode));
-    // If user flips on while connected to real printer, we keep the current connection
-    // The "Connect" button will use virtual when not already connected.
   });
 }
 
