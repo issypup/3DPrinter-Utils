@@ -1,12 +1,4 @@
-
-Notification service (email/Slack/Discord/Pushover) with rules (job done, error, temp reached). but via webpage only
-
 G-code sender & job control:
-Layer-aware preview: quick 2D G-code renderer with scrubber and live “now printing layer” highlight.
+Layer-aware preview: quick 2D G-code renderer with scrubber and live “now printing layer” highlight. (needs testing)
 
-Theming support (light/dark/Custom).
-
-Per-tab “help” drawer with mini docs.
-
-
-
+Per-tab “help” drawer with mini docs with f1 / ? key. (needs testing)
