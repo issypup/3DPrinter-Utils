@@ -1,23 +1,12 @@
-XYZ cube assistant: after you input caliper readings, it computes step/mm or flow correction suggestions.
 
-Notification service (email/Slack/Discord/Pushover) with rules (job done, error, temp reached).
+Notification service (email/Slack/Discord/Pushover) with rules (job done, error, temp reached). but via webpage only
 
 G-code sender & job control:
 Layer-aware preview: quick 2D G-code renderer with scrubber and live “now printing layer” highlight.
 
-
-EEPROM / firmware / profiles:
-Smart M503 parser to structured fields (steps/mm, accel, etc.).
-
-UI/UX & accessibility:
-Mobile-optimized header (stacked pills, bigger taps).
-
 Theming support (light/dark/Custom).
 
 Per-tab “help” drawer with mini docs.
-
-quickstart guide on first start (guided tooltips)
-
 
 
 
