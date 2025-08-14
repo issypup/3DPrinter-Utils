@@ -29,8 +29,6 @@
 .gp-dot.curr { background: var(--accent); }
 .gp-dot.travel { background: color-mix(in oklab, var(--text) 35%, transparent); }
 
-
-
   :root { --bar-h: 42px; }
   body {
     font-family: sans-serif;
@@ -354,13 +352,6 @@
 #helpModal {
   position: fixed; inset: 0; display: none; place-items: center; z-index: 10001;
 }
-#helpHead {
-  display:flex; align-items:center; gap:8px;
-  padding:12px 14px; border-bottom:1px solid var(--border); cursor: move; /* draggable handle */
-}
-#helpHead h3 { margin:0; font-size:16px; flex:1; }
-#helpActions { display:flex; gap:8px; align-items:center; }
-#helpBodyWrap { overflow:auto; padding: 12px 14px; }
 
 /* show */
 #helpOverlay.open, #helpModal.open { display: grid; }
@@ -376,49 +367,7 @@
 #helpHead { background: transparent; }
 #helpBodyWrap { background: transparent; }
 
-/* Make sure overlay is clickable and above everything */
-#helpOverlay {
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,.45);
-  z-index: 10000;
-}
-#helpModal { position: fixed; inset: 0; display: none; place-items: center; z-index: 10001; }
-#helpOverlay.open, #helpModal.open { display: grid; }
-
-#helpOverlay {
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,.45);
-  display: none;
-  z-index: 10000;
-}
-#helpModal {
-  position: fixed; inset: 0;
-  display: none;           /* toggled via .open */
-  place-items: center;
-  z-index: 10001;
-}
-#helpOverlay.open, #helpModal.open { display: grid; }
-
-#helpCard {
-  width: min(780px, 92vw);
-  max-height: 82vh;
-  display: grid;
-  grid-template-rows: auto 1fr;
-  background: #fff !important;     /* force white card */
-  color: #111 !important;
-  border: 1px solid #e5e7eb !important;
-  border-radius: 12px;
-  box-shadow: 0 12px 32px rgba(0,0,0,.25);
-}
-#helpHead {
-  display:flex; align-items:center; gap:8px;
-  padding:12px 14px; border-bottom:1px solid #e5e7eb;
-  cursor: move; /* draggable handle */
-}
-#helpHead h3 { margin:0; font-size:16px; flex:1; }
-#helpActions { display:flex; gap:8px; align-items:center; }
 #helpActions input[type="search"] { width: 220px; }
-#helpBodyWrap { overflow:auto; padding: 12px 14px; }
 
 /* Reuse your help body typography */
 #helpBodyWrap .help-body h4 { margin: 1em 0 .4em; }
@@ -433,19 +382,6 @@
   border: 1px solid #e5e7eb; padding: 8px; border-radius: 8px; overflow:auto;
 }
 
-#helpOverlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;z-index:10000;}
-#helpModal{position:fixed;inset:0;display:none;place-items:center;z-index:10001;}
-#helpOverlay.open,#helpModal.open{display:grid;}
-#helpCard{
-  width:min(780px,92vw);max-height:82vh;display:grid;grid-template-rows:auto 1fr;
-  background:#fff;color:#111;border:1px solid #e5e7eb;border-radius:12px;
-  box-shadow:0 12px 32px rgba(0,0,0,.25);
-}
-#helpHead{display:flex;align-items:center;gap:8px;padding:12px 14px;border-bottom:1px solid #e5e7eb;}
-#helpHead h3{margin:0;font-size:16px;flex:1;}
-#helpActions{display:flex;gap:8px;align-items:center;}
-#helpActions input[type="search"]{width:220px;}
-#helpBodyWrap{overflow:auto;padding:12px 14px;}
 /* Doc typography */
 #helpBody code,#helpBody kbd{background:#f4f6f8;border:1px solid #e5e7eb;padding:.1em .35em;border-radius:6px;}
 #helpBody pre{background:#f4f6f8;border:1px solid #e5e7eb;padding:8px;border-radius:8px;overflow:auto;}
@@ -901,7 +837,7 @@
 <div class="gp-wrap" id="gcodePreview">
   <div class="gp-bar">
     <label>File
-      <input type="file" id="gcodeFile" accept=".gcode,.gco,.nc,.txt">
+      <input type="file" id="gcodeFilePreview" accept=".gcode,.gco,.nc,.txt">
     </label>
     <label>Layer
       <input type="range" id="layerScrub" min="0" max="0" value="0" step="1">
@@ -2895,7 +2831,6 @@ function renderActiveSel() {
       </option>`).join('');
 }
 
-
 function renderSpoolList() {
   const q      = spSearch.value.trim().toLowerCase();
   const mat    = spMatFilter.value.trim();
@@ -3527,11 +3462,12 @@ function openPreflight(file) {
   document.getElementById('preSkip').checked = false;
 
   // wire buttons
-  document.getElementById('preStart').onclick = async () => {
-    if (document.getElementById('preSkip').checked) sessionStorage.setItem('skipPreflight','1');
-    closePreflight();
-    await streamGcode(_preflightFile);
-  };
+document.getElementById('preStart').onclick = async () => {
+  if (document.getElementById('preSkip').checked) sessionStorage.setItem('skipPreflight','1');
+  const f = _preflightFile;     // capture first
+  closePreflight();             // then close (which clears _preflightFile)
+  if (f) await streamGcode(f);  // safe
+};
   document.getElementById('preCancel').onclick = closePreflight;
   document.getElementById('preClose').onclick  = closePreflight;
 
@@ -5466,52 +5402,76 @@ async function jog(axis, dir) {
 }
 
 //Sender
+// Sender
 async function streamGcode(file) {
+  // --- Guards ---
   if (!(connKind === 'virtual' || writer)) {
     alert('Not connected.');
     return;
   }
+  if (!file) {
+    if (sendStatus) sendStatus.textContent = 'No file selected';
+    logMsg?.('⚠️ streamGcode called without a file');
+    return;
+  }
 
   cancelStream = false;
-  cancelSend.disabled = true;
-  hideEtaPill();
+  if (cancelSend) cancelSend.disabled = true;
+  hideEtaPill?.();
 
   if (sendProgress) sendProgress.style.width = '0%';
   if (sendStatus)   sendStatus.textContent   = 'Homing…';
 
   try {
-    beep('start');
-printerBeep('start');
-    const text  = await file.text();
-    const lines = text
-      .split(/\r?\n/)
-      .map(l => l.replace(/;.*/, '').trim())
-      .filter(Boolean);
+    beep?.('start');
+    printerBeep?.('start');
 
-    if (!lines.length) { sendStatus.textContent = 'No G-code lines found'; return; }
+    // Read the file text we will send
+    const text = await file.text();
 
-    // Precompute "counting" stats for ETA
+    // Keep the preview in sync with exactly what we're sending
+    // (parses and prepares the scrubber/layers)
+    window.GCodePreview?.loadFromText(text);
+
+    // Build sendable lines + map to original source line numbers for tracking
+    const rawLines = text.split(/\r?\n/);
+    const lines = [];
+    const srcNos = []; // 1-based original line numbers
+    for (let i = 0; i < rawLines.length; i++) {
+      const stripped = rawLines[i].replace(/;.*/, '').trim();
+      if (!stripped) continue;
+      lines.push(stripped);
+      srcNos.push(i + 1);
+    }
+
+    if (!lines.length) {
+      if (sendStatus) sendStatus.textContent = 'No G-code lines found';
+      return;
+    }
+
+    // ---- ETA precomputation (unchanged from your logic) ----
     const countingMask   = lines.map(isCountingLine);
     const countingTotal  = countingMask.reduce((a,b)=>a+(b?1:0),0);
     const warmupCount    = Math.min(400, Math.max(50, Math.floor(countingTotal * 0.01))); // 1% (50–400)
 
     // EMA for time/line (s), starts after first counting line
-    let emaSecPerLine    = 0;
-    const alpha          = 0.15;  // smoothing
-    let sentCounting     = 0;
-    let lastCountTs      = 0;
-    let startedETA       = false;
+    let emaSecPerLine = 0;
+    const alpha       = 0.15;  // smoothing
+    let sentCounting  = 0;
+    let lastCountTs   = 0;
+    let startedETA    = false;
 
     // Home before sending
-    logMsg('🏠 Homing all axes (G28)…');
-    await sendCmd('G28'); await waitForOk();
+    logMsg?.('🏠 Homing all axes (G28)…');
+    await sendCmd('G28');
+    await waitForOk();
 
     let sent = 0;
     const total = lines.length;
 
-    cancelSend.disabled = false;
-    sendStatus.textContent = 'Sending…';
-    showEtaPill('ETA: heating/preamble…', 'warn');
+    if (cancelSend) cancelSend.disabled = false;
+    if (sendStatus) sendStatus.textContent = 'Sending…';
+    showEtaPill?.('ETA: heating/preamble…', 'warn');
 
     for (let i = 0; i < lines.length; i++) {
       if (cancelStream) break;
@@ -5524,12 +5484,17 @@ printerBeep('start');
       await waitForOk();
       const t1 = Date.now();
 
+      // Advance the preview to reflect this command's original line
+      if (window.GCodePreview?.updateByGcodeLine) {
+        window.GCodePreview.updateByGcodeLine(srcNos[i]);
+      }
+
       sent++;
 
       // Progress bar remains based on all lines
       const pct = Math.round((sent / total) * 100);
-      sendProgress.style.width = pct + '%';
-      sendStatus.textContent = `Sent ${sent}/${total} (${pct}%)`;
+      if (sendProgress) sendProgress.style.width = pct + '%';
+      if (sendStatus)   sendStatus.textContent = `Sent ${sent}/${total} (${pct}%)`;
 
       // ---- ETA: count only real "print" lines ----
       if (countingMask[i]) {
@@ -5541,57 +5506,57 @@ printerBeep('start');
           startedETA = true;
           emaSecPerLine = Math.max(0.001, deltaSec);
           sentCounting = 1;
-          showEtaPill('ETA: estimating…', 'warn');
+          showEtaPill?.('ETA: estimating…', 'warn');
         } else {
           sentCounting++;
-          // Skip warmup lines from ETA display (but keep training EMA)
+          // Train EMA continuously
           emaSecPerLine = alpha * deltaSec + (1 - alpha) * emaSecPerLine;
 
-          if (sentCounting >= warmupCount) {
+          if (sentCounting >= warmupCount && countingTotal > 0) {
             const remaining = Math.max(0, countingTotal - sentCounting);
             const remainingSec = emaSecPerLine * remaining;
-            showEtaPill('ETA: ' + formatETA(remainingSec), 'warn');
+            showEtaPill?.('ETA: ' + formatETA(remainingSec), 'warn');
           } else {
-            showEtaPill(`ETA: stabilising… (${sentCounting}/${warmupCount})`, 'warn');
+            showEtaPill?.(`ETA: stabilising… (${sentCounting}/${warmupCount})`, 'warn');
           }
         }
       } else {
         // While still in setup/heating, keep the pill clear and honest
-        if (!startedETA) showEtaPill('ETA: heating/preamble…', 'warn');
+        if (!startedETA) showEtaPill?.('ETA: heating/preamble…', 'warn');
       }
 
       // Small pacing delay to avoid flooding slower boards
       await new Promise(r => setTimeout(r, 10));
     }
 
-    cancelSend.disabled = true;
+    if (cancelSend) cancelSend.disabled = true;
 
     if (cancelStream) {
-      sendStatus.textContent = 'Cancelled';
-      showEtaPill('ETA: —', 'bad');
-      beep('cancel');
-printerBeep('cancel');
-      exitPrintScreen(0, { tellHost: false }); 
-      hideEtaPill();
-      clearAllPidUi();
+      if (sendStatus) sendStatus.textContent = 'Cancelled';
+      showEtaPill?.('ETA: —', 'bad');
+      beep?.('cancel');
+      printerBeep?.('cancel');
+      exitPrintScreen?.(0, { tellHost: false });
+      hideEtaPill?.();
+      clearAllPidUi?.();
     } else {
-      sendProgress.style.width = '100%';
-      sendStatus.textContent = 'Done';
-      showEtaPill('Complete', 'ok');
-      beep('done');
-printerBeep('done');
-      exitPrintScreen(0, { tellHost: false }); 
+      if (sendProgress) sendProgress.style.width = '100%';
+      if (sendStatus)   sendStatus.textContent = 'Done';
+      showEtaPill?.('Complete', 'ok');
+      beep?.('done');
+      printerBeep?.('done');
+      exitPrintScreen?.(0, { tellHost: false });
     }
 
-    setTimeout(hideEtaPill, 2500);
+    setTimeout(() => hideEtaPill?.(), 2500);
   } catch (err) {
-    cancelSend.disabled = true;
-    sendStatus.textContent = 'Error during send';
-    showEtaPill('Error', 'bad');
-    beep('error');
-printerBeep('cancel');
-    logMsg('❌ Send error: ' + (err?.message || err));
-    setTimeout(hideEtaPill, 2500);
+    if (cancelSend) cancelSend.disabled = true;
+    if (sendStatus) sendStatus.textContent = 'Error during send';
+    showEtaPill?.('Error', 'bad');
+    beep?.('error');
+    printerBeep?.('cancel');
+    logMsg?.('❌ Send error: ' + (err?.message || err));
+    setTimeout(() => hideEtaPill?.(), 2500);
   }
 }
 
