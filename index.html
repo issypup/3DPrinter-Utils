@@ -5402,6 +5402,7 @@ async function jog(axis, dir) {
 }
 
 //Sender
+// Sender
 async function streamGcode(file) {
   // --- Guards ---
   if (!(connKind === 'virtual' || writer)) {
@@ -5425,18 +5426,30 @@ async function streamGcode(file) {
     beep?.('start');
     printerBeep?.('start');
 
-    const text  = await file.text(); // ← was throwing when file was null
-    const lines = text
-      .split(/\r?\n/)
-      .map(l => l.replace(/;.*/, '').trim())
-      .filter(Boolean);
+    // Read the file text we will send
+    const text = await file.text();
 
-    if (!lines.length) { 
-      if (sendStatus) sendStatus.textContent = 'No G-code lines found'; 
-      return; 
+    // Keep the preview in sync with exactly what we're sending
+    // (parses and prepares the scrubber/layers)
+    window.GCodePreview?.loadFromText(text);
+
+    // Build sendable lines + map to original source line numbers for tracking
+    const rawLines = text.split(/\r?\n/);
+    const lines = [];
+    const srcNos = []; // 1-based original line numbers
+    for (let i = 0; i < rawLines.length; i++) {
+      const stripped = rawLines[i].replace(/;.*/, '').trim();
+      if (!stripped) continue;
+      lines.push(stripped);
+      srcNos.push(i + 1);
     }
 
-    // Precompute "counting" stats for ETA
+    if (!lines.length) {
+      if (sendStatus) sendStatus.textContent = 'No G-code lines found';
+      return;
+    }
+
+    // ---- ETA precomputation (unchanged from your logic) ----
     const countingMask   = lines.map(isCountingLine);
     const countingTotal  = countingMask.reduce((a,b)=>a+(b?1:0),0);
     const warmupCount    = Math.min(400, Math.max(50, Math.floor(countingTotal * 0.01))); // 1% (50–400)
@@ -5450,7 +5463,7 @@ async function streamGcode(file) {
 
     // Home before sending
     logMsg?.('🏠 Homing all axes (G28)…');
-    await sendCmd('G28'); 
+    await sendCmd('G28');
     await waitForOk();
 
     let sent = 0;
@@ -5470,6 +5483,11 @@ async function streamGcode(file) {
       const t0 = Date.now();
       await waitForOk();
       const t1 = Date.now();
+
+      // Advance the preview to reflect this command's original line
+      if (window.GCodePreview?.updateByGcodeLine) {
+        window.GCodePreview.updateByGcodeLine(srcNos[i]);
+      }
 
       sent++;
 
@@ -5491,7 +5509,7 @@ async function streamGcode(file) {
           showEtaPill?.('ETA: estimating…', 'warn');
         } else {
           sentCounting++;
-          // Skip warmup lines from ETA display (but keep training EMA)
+          // Train EMA continuously
           emaSecPerLine = alpha * deltaSec + (1 - alpha) * emaSecPerLine;
 
           if (sentCounting >= warmupCount && countingTotal > 0) {
@@ -5518,7 +5536,7 @@ async function streamGcode(file) {
       showEtaPill?.('ETA: —', 'bad');
       beep?.('cancel');
       printerBeep?.('cancel');
-      exitPrintScreen?.(0, { tellHost: false }); 
+      exitPrintScreen?.(0, { tellHost: false });
       hideEtaPill?.();
       clearAllPidUi?.();
     } else {
@@ -5527,7 +5545,7 @@ async function streamGcode(file) {
       showEtaPill?.('Complete', 'ok');
       beep?.('done');
       printerBeep?.('done');
-      exitPrintScreen?.(0, { tellHost: false }); 
+      exitPrintScreen?.(0, { tellHost: false });
     }
 
     setTimeout(() => hideEtaPill?.(), 2500);
@@ -5541,7 +5559,7 @@ async function streamGcode(file) {
     setTimeout(() => hideEtaPill?.(), 2500);
   }
 }
-
+  
 //Quick helpers
 async function coolToIdle(opts = {}) {
   const { force = false, postSync = false } = opts;
