@@ -1,4 +1,0 @@
-G-code sender & job control:
-Layer-aware preview: quick 2D G-code renderer with scrubber and live “now printing layer” highlight. (needs testing)
-
-Per-tab “help” drawer with mini docs with f1 / ? key. (needs testing)
