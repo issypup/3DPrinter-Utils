@@ -67,6 +67,16 @@
 #statusBar .pill.offline { background:#444; color:#fff; }
 #statusBar .pill.pid { background:#f39c12; } /* orange */
 
+#pidUi .progress > div.pulse {
+  animation: pillPulse 1.0s ease-in-out infinite;
+}
+
+.tabButton[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none; /* belt & braces */
+}
+
 /* pulse effect (used for heating/cooling) */
 .pulse { animation: pillPulse 1.0s ease-in-out infinite; }
 @keyframes pillPulse {
@@ -527,6 +537,36 @@
     <button id="hotendPidBtn" disabled>PID Nozzle (M303 E0)</button>
   </div>
   <p>Runs <code>M303</code> autotune with a temperature you choose. After it completes, send <code>M500</code> if your firmware needs it to save to EEPROM.</p>
+  <div class="box" id="pidUi">
+  <div class="label" style="margin-bottom:6px">PID Autotune Progress</div>
+
+  <!-- Hotend -->
+  <div class="col" style="gap:6px; margin-bottom:10px">
+    <div class="row" style="align-items:center; gap:10px">
+      <strong>Nozzle</strong>
+      <span id="pidHotStatus" class="muted">Idle</span>
+    </div>
+    <div class="progress" style="width:360px">
+      <div id="pidHotBar" style="width:0%"></div>
+    </div>
+    <div class="muted" id="pidHotInfo">T: — / Target: — (Δ —)</div>
+    <div class="muted" id="pidHotResult">Kp: — · Ki: — · Kd: —</div>
+  </div>
+
+  <!-- Bed -->
+  <div class="col" style="gap:6px">
+    <div class="row" style="align-items:center; gap:10px">
+      <strong>Bed</strong>
+      <span id="pidBedStatus" class="muted">Idle</span>
+    </div>
+    <div class="progress" style="width:360px">
+      <div id="pidBedBar" style="width:0%"></div>
+    </div>
+    <div class="muted" id="pidBedInfo">T: — / Target: — (Δ —)</div>
+    <div class="muted" id="pidBedResult">Kp: — · Ki: — · Kd: —</div>
+  </div>
+</div>
+
 </div>
 
 <!-- TAB 4: Temperature & Fan -->
@@ -658,6 +698,13 @@
       <button id="unloadFil" disabled>Unload (200°C)</button>
     </div>
         <div class="col">
+<div class="row" style="gap:12px; align-items:center; margin:6px 0 10px">
+  <label>
+    <input type="checkbox" id="autoProbeAging">
+    Auto-probe bed before print if last mesh &gt; 30 days
+  </label>
+  <span id="meshAgeHint" class="muted"></span>
+</div>
       <div class="label">Nozzle Prep</div>
       <button id="primeLine" disabled>Wipe + Prime Line</button>
     </div>
@@ -835,10 +882,8 @@
 
 
 <div class="gp-wrap" id="gcodePreview">
+  <div id="previewBusy" class="muted" style="display:none">Building preview…</div>
   <div class="gp-bar">
-    <label>File
-      <input type="file" id="gcodeFilePreview" accept=".gcode,.gco,.nc,.txt">
-    </label>
     <label>Layer
       <input type="range" id="layerScrub" min="0" max="0" value="0" step="1">
       <span id="layerInfo">—</span>
@@ -984,6 +1029,7 @@ let _pendingFilament = null;
 //UI and State flags
 let debugMode      = JSON.parse(localStorage.getItem('debugMode') || 'false');
 let criticalDepth = 0;
+let pidTargetTemp = null;  
 let pidActiveHotend = false;
 let pidActiveBed    = false;
 let pidTarget = null; // 'hotend', 'bed', or null
@@ -1027,6 +1073,9 @@ let vSimTimer = null;
 
 //Easter Egg
 let streak = 0;
+
+let previewWorkerUrl = null;
+let previewWorker = null;
 
 const BEEP_BROWSER_ON = true;   // browser chime via Web Audio
 const BEEP_PRINTER_ON = false;  // send M300 to the printer (off by default)
@@ -1168,9 +1217,26 @@ const unloadFil       = document.getElementById('unloadFil');
   const eeClose   = document.getElementById('eeClose');
   const eeBody    = document.getElementById('eeBody');
 
+const pidEls = {
+  hot: {
+    status: document.getElementById('pidHotStatus'),
+    bar:    document.getElementById('pidHotBar'),
+    info:   document.getElementById('pidHotInfo'),
+    res:    document.getElementById('pidHotResult')
+  },
+  bed: {
+    status: document.getElementById('pidBedStatus'),
+    bar:    document.getElementById('pidBedBar'),
+    info:   document.getElementById('pidBedInfo'),
+    res:    document.getElementById('pidBedResult')
+  }
+};
+
 /* =========================================================
    2) CONSTANTS (maps, regex, fixed values)
 ========================================================= */
+
+const isDebug = () => !!window.debugMode;
 
 const HOME_SIG_DEFAULT = { x: 117, y: 117, z: 10.0, tolX: 2.0, tolY: 2.0, tolZ: 4.0 };
 
@@ -1861,6 +1927,80 @@ function parseM115Response(raw) {
   return { info, caps, area };
 }
 
+function createPreviewWorker() {
+  if (previewWorker) return previewWorker;
+
+  const workerSrc = `
+  self.onmessage = (e) => {
+    const { id, text } = e.data;
+    try {
+      // Parse lines (lightweight): strip comments, collect G1/G0 with XYZE and layer by Z
+      const lines = text.split(/\\r?\\n/);
+      let eAbs = true; // M82/M83
+      let curZ = 0, lastZ = 0;
+      let lastX = 0, lastY = 0, lastE = 0;
+      let currentLayer = 0;
+
+      const layers = []; // each: { z: number, segs: [ [x1,y1,x2,y2,extruding(bool)] ] }
+      function ensureLayer(z) {
+        if (!layers.length || layers[layers.length-1].z !== z) {
+          layers.push({ z, segs: [] });
+        }
+        return layers[layers.length-1];
+      }
+
+      for (let raw of lines) {
+        let line = raw.replace(/;.*$/, '').trim();
+        if (!line) continue;
+
+        if (/^M82\\b/i.test(line)) { eAbs = true;  continue; }
+        if (/^M83\\b/i.test(line)) { eAbs = false; continue; }
+
+        // Z changes define layers
+        const zTok = line.match(/\\bZ(-?\\d+(?:\\.\\d+)?)/i);
+        if (zTok) { curZ = parseFloat(zTok[1]); }
+
+        if (/^G0?1\\b/i.test(line)) {
+          const xTok = line.match(/\\bX(-?\\d+(?:\\.\\d+)?)/i);
+          const yTok = line.match(/\\bY(-?\\d+(?:\\.\\d+)?)/i);
+          const eTok = line.match(/\\bE(-?\\d+(?:\\.\\d+)?)/i);
+
+          const x = xTok ? parseFloat(xTok[1]) : lastX;
+          const y = yTok ? parseFloat(yTok[1]) : lastY;
+
+          let eDelta = 0;
+          if (eTok) {
+            const eVal = parseFloat(eTok[1]);
+            eDelta = eAbs ? (eVal - lastE) : eVal;
+            if (eAbs) lastE = eVal;
+          }
+
+          if (x !== lastX || y !== lastY) {
+            // new layer when Z changed (simple heuristic)
+            if (curZ !== lastZ) {
+              ensureLayer(curZ);
+              lastZ = curZ;
+            }
+            const layer = ensureLayer(curZ);
+            layer.segs.push([lastX, lastY, x, y, eDelta > 0 ? 1 : 0]);
+            lastX = x; lastY = y;
+          }
+        }
+      }
+
+      // Compact transfer
+      self.postMessage({ id, ok: true, layers }, { transfer: [] });
+    } catch (err) {
+      self.postMessage({ id, ok: false, error: String(err?.message || err) });
+    }
+  };`;
+
+  const blob = new Blob([workerSrc], { type: 'application/javascript' });
+  previewWorkerUrl = URL.createObjectURL(blob);
+  previewWorker = new Worker(previewWorkerUrl);
+  return previewWorker;
+}
+
 function parseM503(text) {
   const out = {};
 
@@ -2119,7 +2259,28 @@ maintClearAll?.addEventListener('click', () => {
   loadMaint();
   clearMaintForm();
   renderMaint();
+
+  // --- Auto-probe toggle + last mesh age hint ---
+  const autoProbeEl = document.getElementById('autoProbeAging');
+  const ageHintEl   = document.getElementById('meshAgeHint');
+  if (autoProbeEl) {
+    const saved = localStorage.getItem('autoProbeAging');
+    autoProbeEl.checked = saved === '1';
+    autoProbeEl.addEventListener('change', () => {
+      localStorage.setItem('autoProbeAging', autoProbeEl.checked ? '1' : '0');
+    });
+  }
+  if (ageHintEl) {
+    const ts = parseInt(localStorage.getItem('levelsLastAt')||'0',10);
+    if (ts) {
+      const days = Math.floor((Date.now() - ts) / (1000*60*60*24));
+      ageHintEl.textContent = `Last mesh: ${days} day${days===1?'':'s'} ago`;
+    } else {
+      ageHintEl.textContent = 'Last mesh: —';
+    }
+  }
 })();
+
 
 
 //Filament
@@ -2221,6 +2382,87 @@ const vState = {
     resetPan: document.getElementById('resetPan'),
     wrap: document.getElementById('gcodePreview')
   };
+
+  (function(){
+  let reqId = 0;
+
+  // Call from streamGcode instead of the sync load
+  window.GCodePreview = window.GCodePreview || {};
+
+  window.GCodePreview.loadFromTextAsync = function(text) {
+    return new Promise((resolve, reject) => {
+      try {
+        if (!('Worker' in window)) {
+          // fallback: use your existing sync method
+          window.GCodePreview.loadFromText?.(text);
+          return resolve();
+        }
+        const w = createPreviewWorker();
+        const id = ++reqId;
+
+        const onmessage = (e) => {
+          const { id: got, ok, layers, error } = e.data || {};
+          if (got !== id) return;
+          w.removeEventListener('message', onmessage);
+
+          if (!ok) { reject(new Error(error || 'Preview worker failed')); return; }
+
+          // Store/replace parsed model on preview object
+          window.GCodePreviewModel = { layers, version: Date.now() };
+
+          // Draw in chunks (avoid long blocking)
+          chunkedRenderPreview(layers).then(resolve, reject);
+        };
+
+        w.addEventListener('message', onmessage);
+        w.postMessage({ id, text });
+      } catch (err) {
+        reject(err);
+      }
+    });
+  };
+
+  async function chunkedRenderPreview(layers) {
+    const canvas = document.getElementById('gcodeCanvas');
+    const ctx = canvas?.getContext?.('2d');
+    if (!ctx) return;
+
+    // Clear + prepare
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // you may want to recompute bounds & scale here; stubbed as 1:1 for brevity
+    const toPx = (v) => v; // replace with your scaling
+
+    let layerIndex = 0;
+    const LAYERS_PER_FRAME = 4; // tune to your liking
+    return new Promise((resolve) => {
+      function step() {
+        let count = 0;
+        while (layerIndex < layers.length && count < LAYERS_PER_FRAME) {
+          const layer = layers[layerIndex++];
+          for (const seg of layer.segs) {
+            const [x1, y1, x2, y2, extr] = seg;
+            ctx.beginPath();
+            ctx.moveTo(toPx(x1), toPx(y1));
+            ctx.lineTo(toPx(x2), toPx(y2));
+            ctx.globalAlpha = extr ? 1.0 : 0.25;
+            ctx.lineWidth = extr ? 1.5 : 1.0;
+            ctx.stroke();
+          }
+          count++;
+        }
+        if (layerIndex < layers.length) {
+          requestAnimationFrame(step);
+        } else {
+          // finished
+          ctx.globalAlpha = 1.0;
+          resolve();
+        }
+      }
+      requestAnimationFrame(step);
+    });
+  }
+})();
+
   const ctx = els.canvas.getContext('2d', { alpha: false });
 
   // ----- Model -----
@@ -2239,6 +2481,25 @@ const vState = {
   function token(name, fallback){
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
   }
+
+let previewBusy = typeof window.previewBusy !== 'undefined' ? window.previewBusy : null;
+
+// Async preview builder with busy indicator
+async function buildPreviewAsync(text) {
+  // Ensure we have the element
+  if (!previewBusy) previewBusy = document.getElementById('previewBusy');
+
+  try {
+    if (previewBusy) previewBusy.style.display = '';   // show
+    if (window.GCodePreview?.loadFromTextAsync) {
+      await window.GCodePreview.loadFromTextAsync(text);
+    } else {
+      window.GCodePreview?.loadFromText?.(text);
+    }
+  } finally {
+    if (previewBusy) previewBusy.style.display = 'none'; // hide
+  }
+}
 
   // ----- Parser -----
   function parseGCode(text){
@@ -2551,22 +2812,69 @@ function genSpoolId() {
   return `S-${t}${r}`.toUpperCase();
 }
 
-function saveSpools() {
-  localStorage.setItem(LS_SPOOLS, JSON.stringify(spools));
+function saveSpools(nextSpools) {
+  if (Array.isArray(nextSpools)) spools = nextSpools;
+  localStorage.setItem(LS_SPOOLS, JSON.stringify(spools || []));
+  return spools;
 }
 
 
 function loadSpools() {
   try {
     spools = JSON.parse(localStorage.getItem(LS_SPOOLS) || '[]');
+    if (!Array.isArray(spools)) spools = [];
   } catch {
     spools = [];
   }
+  return spools;
 }
+
+function getActiveSpool() {
+  if (!Array.isArray(spools) || !spools.length) loadSpools();
+  const id = getActiveSpoolId();
+  return spools.find(s => s.id === id) || null;
+}
+
+// Ensure an active spool is selected (pick first if missing)
+function ensureActiveSpool() {
+  if (!Array.isArray(spools) || !spools.length) loadSpools();
+  let id = getActiveSpoolId();
+  if (!id && spools.length) {
+    id = spools[0].id;
+    saveActive(id);
+  }
+  return getActiveSpool();
+}
+
+function updateActiveSpool(mutator) {
+  if (typeof mutator !== 'function') return null;
+  if (!Array.isArray(spools) || !spools.length) loadSpools();
+  const id = getActiveSpoolId();
+  const idx = spools.findIndex(s => s.id === id);
+  if (idx === -1) return null;
+  const updated = { ...spools[idx] };
+  const next = mutator(updated) || updated;
+  spools[idx] = next;
+  saveSpools(spools);
+  // optional UI hook if you have one:
+  renderSpoolUi?.(next);
+  return next;
+}
+
+function getActiveSpoolId() {
+  // prefer in-memory; fall back to LS
+  if (activeSpoolId) return activeSpoolId;
+  const fromLS = localStorage.getItem(LS_ACTIVE) || '';
+  activeSpoolId = fromLS || null;
+  return activeSpoolId;
+}
+
+
 
 function saveActive(id) {
   activeSpoolId = id || null;
   localStorage.setItem(LS_ACTIVE, activeSpoolId || '');
+  return activeSpoolId;
 }
 
 function materialDensityGuess(mat) {
@@ -2644,6 +2952,110 @@ function openPrintLabel(s) {
 
   w.document.write(html);
   w.document.close();
+}
+
+function reserveFilamentForJob(mmNeeded) {
+  const spool = getActiveSpool();
+  if (!spool) {
+    setActivity?.('No active spool selected', 'bad');
+    return null;
+  }
+  const before = spool.remainingMm ?? 0;
+  if (before <= 0) {
+    setActivity?.('Active spool is empty', 'bad');
+    return null;
+  }
+  if (mmNeeded > before) {
+    // still allow reservation, but warn
+    setActivity?.('Warning: estimated usage exceeds remaining on active spool', 'warn');
+  }
+  const ticket = {
+    id: 'job-' + Date.now(),
+    spoolId: spool.id,
+    reservedMm: Math.max(0, mmNeeded)
+  };
+  // deduct
+  updateActiveSpool(s => ({ ...s, remainingMm: Math.max(0, (s.remainingMm ?? 0) - ticket.reservedMm) }));
+  sessionStorage.setItem('filamentJobTicket', JSON.stringify(ticket));
+  return ticket;
+}
+
+function refundFilamentReservation(ticket) {
+  try {
+    if (!ticket) {
+      const t = sessionStorage.getItem('filamentJobTicket');
+      if (!t) return;
+      ticket = JSON.parse(t);
+    }
+    if (!ticket || !ticket.spoolId) return;
+    const spools = loadSpools();
+    const idx = spools.findIndex(s => s.id === ticket.spoolId);
+    if (idx === -1) return;
+    spools[idx] = { ...spools[idx], remainingMm: (spools[idx].remainingMm ?? 0) + (ticket.reservedMm ?? 0) };
+    saveSpools(spools);
+  } finally {
+    sessionStorage.removeItem('filamentJobTicket');
+    renderSpoolUi?.(getActiveSpool());
+  }
+}
+
+function estimateFilamentUsage(gcodeText) {
+  let units = 'mm';     // 'mm' or 'in'
+  let eAbs  = true;     // true=M82 absolute E, false=M83 relative
+  let posAbs = true;    // G90/G91 (we only need this if you later compute times/paths)
+
+  let eLast = 0;
+  let lengthMm = 0;
+  const notes = [];
+
+  const lines = gcodeText.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+    // strip comments
+    line = line.replace(/;.*$/, '').trim();
+    if (!line) continue;
+
+    // mode switches
+    if (/^G20\b/i.test(line)) { units = 'in'; continue; }
+    if (/^G21\b/i.test(line)) { units = 'mm'; continue; }
+    if (/^G90\b/i.test(line)) { posAbs = true;  continue; }
+    if (/^G91\b/i.test(line)) { posAbs = false; continue; }
+    if (/^M82\b/i.test(line)) { eAbs = true;    continue; }
+    if (/^M83\b/i.test(line)) { eAbs = false;   continue; }
+
+    // E axis resets
+    const g92 = line.match(/^G92\b/i);
+    if (g92) {
+      const eTok = line.match(/\bE(-?\d+(?:\.\d+)?)/i);
+      if (eTok) eLast = parseFloat(eTok[1]) || 0;
+      continue;
+    }
+
+    // Only consider motion lines with E
+    if (/^G0?1\b/i.test(line)) {
+      const eTok = line.match(/\bE(-?\d+(?:\.\d+)?)/i);
+      if (!eTok) continue;
+      let eVal = parseFloat(eTok[1]);
+      if (!Number.isFinite(eVal)) continue;
+
+      // convert inches to mm for E if needed (rare, but valid)
+      let eDelta;
+      if (eAbs) {
+        eDelta = eVal - eLast;
+        eLast = eVal;
+      } else {
+        eDelta = eVal;
+      }
+
+      // Only count positive extrusion
+      if (eDelta > 0) {
+        if (units === 'in') eDelta *= 25.4;
+        lengthMm += eDelta;
+      }
+    }
+  }
+
+  return { lengthMm, mode: { units, eMode: eAbs ? 'absolute' : 'relative' }, notes };
 }
 
 function loadActive() {
@@ -3463,11 +3875,15 @@ function openPreflight(file) {
 
   // wire buttons
 document.getElementById('preStart').onclick = async () => {
-  if (document.getElementById('preSkip').checked) sessionStorage.setItem('skipPreflight','1');
-  const f = _preflightFile;     // capture first
-  closePreflight();             // then close (which clears _preflightFile)
-  if (f) await streamGcode(f);  // safe
+  if (document.getElementById('preSkip').checked) {
+    sessionStorage.setItem('skipPreflight','1');
+  }
+  const f = _preflightFile; // capture file first
+  closePreflight();
+  await maybeAutoProbeBeforePrint(); // check mesh age & optionally run probe
+  if (f) await streamGcode(f);
 };
+
   document.getElementById('preCancel').onclick = closePreflight;
   document.getElementById('preClose').onclick  = closePreflight;
 
@@ -3726,7 +4142,26 @@ async function probeAtBaud(baud, timeoutMs = 5000) {
 
 
 
+async function maybeAutoProbeBeforePrint() {
+  try {
+    const enabled = localStorage.getItem('autoProbeAging') === '1';
+    if (!enabled) return;
 
+    const lastTs = parseInt(localStorage.getItem('levelsLastAt')||'0',10);
+    if (!lastTs) return; // no mesh stored yet
+
+    const THRESH_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+    if ((Date.now() - lastTs) >= THRESH_MS) {
+      const go = typeof safeConfirm === 'function'
+        ? safeConfirm('Your last bed mesh is over 30 days old.\nRun Home & Probe now (G28 → G29 T)?')
+        : confirm('Your last bed mesh is over 30 days old.\nRun Home & Probe now (G28 → G29 T)?');
+      if (!go) return;
+      await homeAndProbe(); // will save mesh and update timestamp
+    }
+  } catch (e) {
+    console.warn('[auto-probe] skipped due to error:', e);
+  }
+}
 
 
 
@@ -3820,26 +4255,122 @@ function getPidCycles(tool) {
   return Number.isFinite(saved) && saved >= 1 && saved <= 20 ? saved : 5; // default 5
 }
 
+function pidUiReset(kind) {
+  const k = kind === 'bed' ? 'bed' : 'hot';
+  pidEls[k].status.textContent = 'Idle';
+  pidEls[k].bar.style.width = '0%';
+  pidEls[k].bar.classList.remove('pulse');
+  pidEls[k].info.textContent = 'T: — / Target: — (Δ —)';
+  pidEls[k].res.textContent  = 'Kp: — · Ki: — · Kd: —';
+}
+
+function pidUiStart(kind, targetTemp) {
+  const k = kind === 'bed' ? 'bed' : 'hot';
+  pidEls[k].status.textContent = `Tuning… (${targetTemp}°C)`;
+  pidEls[k].bar.style.width = '10%';
+  pidEls[k].bar.classList.add('pulse'); // animated via your .pulse keyframes
+  pidEls[k].info.textContent = `T: — / Target: ${targetTemp} (Δ —)`;
+}
+
+function pidUiUpdate(kind, currentTemp, targetTemp) {
+  const k = kind === 'bed' ? 'bed' : 'hot';
+  const delta = (Number.isFinite(currentTemp) && Number.isFinite(targetTemp))
+    ? (currentTemp - targetTemp) : NaN;
+  pidEls[k].info.textContent = `T: ${fmt1(currentTemp)} / Target: ${fmt1(targetTemp)} (Δ ${fmt1(delta)})`;
+
+  // progress is indicative: map |Δ| → progress (closer == more progress)
+  if (Number.isFinite(currentTemp) && Number.isFinite(targetTemp)) {
+    const diff = Math.abs(currentTemp - targetTemp);
+    // crude mapping: >30° → 15%, 15° → 35%, 5° → 65%, 2° → 85%, <1° → 95%
+    let pct = 15;
+    if (diff < 30) pct = 35;
+    if (diff < 15) pct = 55;
+    if (diff < 5)  pct = 75;
+    if (diff < 2)  pct = 90;
+    if (diff < 1)  pct = 96;
+    pidEls[k].bar.style.width = pct + '%';
+  }
+}
+
+function pidUiFinish(kind, ok, params) {
+  const k = kind === 'bed' ? 'bed' : 'hot';
+  pidEls[k].bar.classList.remove('pulse');
+  pidEls[k].bar.style.width = ok ? '100%' : '0%';
+  pidEls[k].status.textContent = ok ? 'Done' : 'Failed';
+  if (ok && params && (params.Kp!=null || params.Ki!=null || params.Kd!=null)) {
+    pidEls[k].res.textContent = `Kp: ${fmt2(params.Kp)} · Ki: ${fmt2(params.Ki)} · Kd: ${fmt2(params.Kd)}`;
+  }
+}
+
+function fmt1(n){ return Number.isFinite(n) ? n.toFixed(1) : '—'; }
+function fmt2(n){ return Number.isFinite(n) ? (+n).toFixed(2) : '—'; }
+
 function setPidActive(tool, on = true) {
-  if (on && pidTarget && pidTarget !== tool) return; // don't flip mid-run
+  // ---- guard: don't switch tools mid-run ----
+  if (on && pidTarget && pidTarget !== tool) return;
+
+  // ---- flags ----
   if (tool === 'hotend') pidActiveHotend = !!on;
   if (tool === 'bed')    pidActiveBed    = !!on;
   pidTarget = on ? tool : null;
-  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
-  setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget, 'bed');
+
+  // ---- refresh top pills (your original behavior) ----
+  setTempPill?.(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
+  setTempPill?.(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget,  'bed');
+
+  // ---- integrate with PID progress UI (safe if not present) ----
+  // When disabling a target, clear its progress/status lines.
+  if (!on) {
+    if (tool === 'hotend' && typeof pidUiReset === 'function') {
+      pidUiReset('hotend');
+    }
+    if (tool === 'bed' && typeof pidUiReset === 'function') {
+      pidUiReset('bed');
+    }
+    // also clear target temp if we track it
+    if (typeof pidTargetTemp !== 'undefined') pidTargetTemp = null;
+  }
 }
 
 function clearAllPidUi() {
+  // ---- core flags ----
   pidActiveHotend = false;
-  pidActiveBed = false;
-  pidTarget = null; // <- ensure the orange pulse stops
+  pidActiveBed    = false;
+  pidTarget       = null;         // ensure any “tuning” state is cleared
+  if (typeof pidTargetTemp !== 'undefined') pidTargetTemp = null;
 
-  topHotendPill.classList.remove('warn', 'pulse');
-  topBedPill.classList.remove('warn', 'pulse');
+  // ---- top pills (your original behavior) ----
+  try {
+    topHotendPill?.classList.remove('warn', 'pulse');
+    topBedPill?.classList.remove('warn', 'pulse');
+    setTempPill?.(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
+    setTempPill?.(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget,  'bed');
+  } catch (_) {}
 
-  setTempPill(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
-  setTempPill(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget, 'bed');
+  // ---- PID progress UI (new bits; safe if not present) ----
+  // Hotend
+  if (pidEls?.hot) {
+    pidEls.hot.status && (pidEls.hot.status.textContent = 'Idle');
+    if (pidEls.hot.bar) {
+      pidEls.hot.bar.classList.remove('pulse');
+      pidEls.hot.bar.style.width = '0%';
+    }
+    pidEls.hot.info && (pidEls.hot.info.textContent = 'T: — / Target: — (Δ —)');
+    pidEls.hot.res  && (pidEls.hot.res.textContent  = 'Kp: — · Ki: — · Kd: —');
+  }
+
+  // Bed
+  if (pidEls?.bed) {
+    pidEls.bed.status && (pidEls.bed.status.textContent = 'Idle');
+    if (pidEls.bed.bar) {
+      pidEls.bed.bar.classList.remove('pulse');
+      pidEls.bed.bar.style.width = '0%';
+    }
+    pidEls.bed.info && (pidEls.bed.info.textContent = 'T: — / Target: — (Δ —)');
+    pidEls.bed.res  && (pidEls.bed.res.textContent  = 'Kp: — · Ki: — · Kd: —');
+  }
 }
+
 
 function setPidCycles(tool, c) {
   const key = `pidCycles:${tool}`;
@@ -4051,18 +4582,14 @@ function updateLastUpdated(){
 function setLastCmd(cmd){ lastCmd.textContent = 'Last Cmd: ' + cmd; }
 
 //Polling
-function startTempPolling(periodMs = 1000) {
-  if (tempTimer) return;              // already polling
-  tempTimer = setInterval(() => {
-    // quiet=true is fine; we just need the inbound line
-    try { sendCmd('M105', /*quiet*/ true); } catch (e) { /* ignore */ }
-  }, Math.max(250, periodMs));
-  // optional UI cue
-  if (typeof showTempPill === 'function') showTempPill('Polling temps', 'good');
+function startTempPolling(periodMs) {
+  const ms = Number.isFinite(periodMs) ? periodMs : (window.debugMode ? 3000 : 7000);
+  if (window.tempTimer) return;
+  window.tempTimer = setInterval(() => { try { sendCmd('M105', true); } catch {} }, Math.max(750, ms));
 }
 
-function stopTempPolling(){
-  if (tempTimer){ clearInterval(tempTimer); tempTimer = null; }
+function stopTempPolling() {
+  if (window.tempTimer) { clearInterval(window.tempTimer); window.tempTimer = null; }
 }
 
 //Printer Name
@@ -4368,7 +4895,10 @@ function saveMeshLS(mesh) {
   hist.push(mesh);
   while (hist.length > 10) hist.shift();  // keep last 10
   localStorage.setItem('levels', JSON.stringify(hist));
+  // Remember when the latest mesh was saved
+  localStorage.setItem('levelsLastAt', String(Date.now()));
 }
+
 
 //Presentation
 function getScrewData(mesh) {
@@ -5038,29 +5568,58 @@ case /^M503\b/i.test(line): {
 
 
 //Read and parse loop
+// Read and parse loop (drop-in)
 async function readLoop() {
+  // ---- helpers ---------------------------------------------------
+  let _processed = 0;
+  const yieldToUI = async (every = 60) => {
+    if ((++_processed % every) === 0) {
+      await new Promise(requestAnimationFrame);
+    }
+  };
+
+  const throttle = (fn, windowMs) => {
+    let last = 0;
+    return (...args) => {
+      const now = performance.now();
+      if (now - last >= windowMs) { last = now; fn(...args); }
+    };
+  };
+
+  const updateTempsThrottled = throttle(() => {
+    updateTempPanel?.();
+    if (pidActiveHotend) pidUiUpdate?.('hotend', temps.hot, pidTargetTemp ?? temps.hotTarget ?? null);
+    if (pidActiveBed)    pidUiUpdate?.('bed',    temps.bed, pidTargetTemp ?? temps.bedTarget ?? null);
+  }, 250); // ~4x/sec
+
+  const logTempsThrottled = throttle(() => {
+    const hotStr = (temps.hot != null)
+      ? `${temps.hot.toFixed(1)}${Number.isFinite(temps.hotTarget) ? ' / ' + Math.round(temps.hotTarget) : ''}`
+      : '--';
+    const bedStr = (temps.bed != null)
+      ? `${temps.bed.toFixed(1)}${Number.isFinite(temps.bedTarget) ? ' / ' + Math.round(temps.bedTarget) : ''}`
+      : '--';
+    logMsg?.(`🌡 Hotend ${hotStr} · Bed ${bedStr}`);
+  }, 500);
+  // ---------------------------------------------------------------
+
   reading = true;
   try {
     while (true) {
       const { value, done } = await reader.read();
 
-      // stream closed -> treat as lost connection
       if (done) {
         if (!isDisconnecting) await disconnectPrinter('lost');
         break;
       }
       if (value == null) continue;
 
-      // --- RX metering ---
-      if (value instanceof Uint8Array) {
-        net.rxBytesTotal += value.length;
-        net.rxSince      += value.length;
-      } else if (typeof value === 'string') {
-        net.rxBytesTotal += value.length;
-        net.rxSince      += value.length;
-      }
+      // RX metering
+      const len = (value instanceof Uint8Array) ? value.length
+                : (typeof value === 'string' ? value.length : 0);
+      if (len) { net.rxBytesTotal += len; net.rxSince += len; }
 
-      // normalize to string
+      // Normalize chunk
       const chunk = (value instanceof Uint8Array)
         ? textDecoder.decode(value, { stream: true })
         : value;
@@ -5071,11 +5630,12 @@ async function readLoop() {
 
       for (const raw of parts) {
         const line = raw.trim();
-        if (!line) continue;
+        if (!line) { await yieldToUI(); continue; }
 
-        // --- temps (M105-style) ---
-        const tMatch = !captureMode && line.match(TEMP_T);
-        const bMatch = !captureMode && line.match(TEMP_B);
+        // ===== TEMPERATURES (M105-style) =====
+        // Expect globals: TEMP_T, TEMP_B
+        const tMatch = !captureMode && TEMP_T?.test ? line.match(TEMP_T) : null;
+        const bMatch = !captureMode && TEMP_B?.test ? line.match(TEMP_B) : null;
 
         if (tMatch) {
           const tCur = parseFloat(tMatch[1]);
@@ -5083,8 +5643,8 @@ async function readLoop() {
           if (Number.isFinite(tCur)) {
             temps.hot = tCur;
             temps.hotTarget = Number.isFinite(tTar) ? tTar : null;
-            _pushAmbientSample('hot', temps.hot ?? 0, temps.hotTarget);
-            setTempPill(topHotendPill, topHotendText, temps.hot, temps.hotTarget, 'hotend');
+            _pushAmbientSample?.('hot', temps.hot ?? 0, temps.hotTarget);
+            setTempPill?.(topHotendPill, topHotendText, temps.hot, temps.hotTarget, 'hotend');
           }
         }
         if (bMatch) {
@@ -5093,124 +5653,146 @@ async function readLoop() {
           if (Number.isFinite(bCur)) {
             temps.bed = bCur;
             temps.bedTarget = Number.isFinite(bTar) ? bTar : null;
-            _pushAmbientSample('bed', temps.bed ?? 0, temps.bedTarget);
-            setTempPill(topBedPill, topBedText, temps.bed, temps.bedTarget, 'bed');
+            _pushAmbientSample?.('bed', temps.bed ?? 0, temps.bedTarget);
+            setTempPill?.(topBedPill, topBedText, temps.bed, temps.bedTarget, 'bed');
           }
         }
-                if (tMatch || bMatch) {
-          updateTempPanel();
-          // NEW: push a point into the live chart whenever we ingest temps
-          if (typeof recordLiveSample === 'function') recordLiveSample();
+        if (tMatch || bMatch) {
+          updateTempsThrottled(); // updates pills regardless of Debug
         }
 
-        // --- positions (e.g., "X:.. Y:.. Z:..") ---
-        const posMatch = line.match(POS_REGEX);
-        if (posMatch) {
-          const x = parseFloat(posMatch[1]);
-          const y = parseFloat(posMatch[2]);
-          const z = parseFloat(posMatch[3]);
-          if ([x, y, z].every(Number.isFinite)) {
-            updateAxisPanel(x, y, z);
-            // NEW: infer homed if it looks like the post-home coordinates
-            maybeMarkHomedFromPos(x, y, z);
+        // ===== LIVE Z TRACKING =====
+        if (!captureMode) {
+          const zMatch = line.match(/\bZ\s*[:=]\s*(-?\d+(?:\.\d+)?)/i);
+          if (zMatch) {
+            const z = parseFloat(zMatch[1]);
+            if (Number.isFinite(z)) window.GCodePreview?.updateCurrentZ?.(z);
           }
         }
 
-        // --- logging (respect noisy/telemetry filters & debug) ---
-        const isTelemetry = TELEMETRY_REGEX.test(line);
-        const out = normalizeLine(line);
+        // ===== CAPTURE / LOGGING =====
+        const out = (typeof normalizeLine === 'function') ? normalizeLine(line) : line;
 
-        // ---- FEED CAPTURE (non-ok lines only)  --------------------
-        // CHANGED: only push here; don't resolve here.
+        // Telemetry if we parsed temps OR see T:/B: prefix in raw or normalized text
+        const looksTelemetry = !!(tMatch || bMatch || /^T:|^B:/i.test(line) || /^T:|^B:/i.test(out));
+
+        // Capture non-ok lines
         if (oneShotCapture && out && !/^ok\b/i.test(out)) {
           oneShotCapture.buf.push(out);
         }
-        // -----------------------------------------------------------
 
-        // track “homing-ish” hints for printer-panel homes
-        maybeMarkHomingHint(out);
+        // Homing-ish hints
+        maybeMarkHomingHint?.(out);
 
-        if (!debugMode && (isSetNewScreenLine(out) || isNoisyLine(out))) {
-          // skip
-        } else if (debugMode) {
-          if (tMatch || bMatch) {
-            const hotStr = temps.hot != null
-              ? `${temps.hot.toFixed(1)}${temps.hotTarget != null ? ' / ' + Math.round(temps.hotTarget) : ''}`
-              : '--';
-            const bedStr = temps.bed != null
-              ? `${temps.bed.toFixed(1)}${temps.bedTarget != null ? ' / ' + Math.round(temps.bedTarget) : ''}`
-              : '--';
-            logMsg(`🌡 Hotend ${hotStr} · Bed ${bedStr}`);
-          } else {
-            logMsg(out);
-          }
+        // Noisy filters
+        const noisy = (typeof isSetNewScreenLine === 'function' && isSetNewScreenLine(out)) ||
+                      (typeof isNoisyLine        === 'function' && isNoisyLine(out));
+
+        // Final logging rules
+        if (!window.debugMode) {
+          // Normal mode: suppress telemetry & noisy entirely
+          if (!looksTelemetry && !noisy) logMsg?.(out);
         } else {
-          if (!isTelemetry) logMsg(out);
+          // Debug mode: pretty temps (throttled), otherwise log
+          if (looksTelemetry) logTempsThrottled();
+          else                logMsg?.(out);
         }
 
-        // --- mesh ingestion (G29 T variants) ---
-        const meshCompleted = ingestMeshLine(out);
+        // ===== MESH INGESTION =====
+        const meshCompleted = ingestMeshLine?.(out);
         if (meshCompleted) {
           const meshForUi = meshScratch.map(r => r.slice()); // already Y-flipped
-          setActivity('Mesh parsed', 'ok');
-          saveMeshLS(meshForUi);
-          renderMeshInputs(meshForUi);
-          renderSuggestions(meshForUi);
-          updateLastUpdated();
-          resetMeshScratch();
+          setActivity?.('Mesh parsed', 'ok');
+          saveMeshLS?.(meshForUi);
+          renderMeshInputs?.(meshForUi);
+          renderSuggestions?.(meshForUi);
+          updateLastUpdated?.();
+          resetMeshScratch?.();
         }
 
-        // --- probe completion latch ---
+        // ===== PROBE COMPLETION LATCH =====
         if (probeLatch) {
           if (
-            out.includes('//action:notification Settings Stored') ||  // DWIN save event
-            /Bilinear Leveling Grid:/i.test(out)                      // fallback
+            out.includes('//action:notification Settings Stored') ||
+            /Bilinear Leveling Grid:/i.test(out)
           ) {
-            try { probeLatch.resolve(); } finally { probeLatch = null; }
+            try { probeLatch.resolve?.(); } finally { probeLatch = null; }
           }
         }
 
-        // --- PID hints ---
+        // ===== PID AUTOTUNE HOOKS =====
         if (/PID Autotune start/i.test(out)) {
-          setActivity('PID tuning…', 'warn');
-          if (!pidTarget) {
-            if (/\(bed\)/i.test(out) || /\bE-?1\b/i.test(out) || /\bBED\b/i.test(out)) {
-              setPidActive('bed', true);
-            } else {
-              setPidActive('hotend', true);
-            }
-          }
+          const isBed = /\(bed\)|\bE-?1\b|\bBED\b/i.test(out) || pidTarget === 'bed';
+          const kind  = isBed ? 'bed' : 'hotend';
+          setPidActive?.(kind, true);
+          const t = pidTargetTemp ?? (isBed ? temps.bedTarget : temps.hotTarget) ?? '—';
+          pidUiStart?.(kind, t);
+          setActivity?.('PID tuning…', 'warn');
         }
         if (/PID Autotune finished/i.test(out)) {
-          setActivity('PID tuning complete', 'ok');
-          clearAllPidUi();
+          const isBed = /\(bed\)|\bE-?1\b|\bBED\b/i.test(out) || pidTarget === 'bed';
+          const kind  = isBed ? 'bed' : 'hotend';
+          setActivity?.('PID tuning complete', 'ok');
+          pidUiFinish?.(kind, true, null);
+          setPidActive?.(kind, false);
         }
         if (/PID Autotune failed/i.test(out)) {
-          setActivity('PID tuning failed', 'bad');
-          clearAllPidUi();
+          const isBed = /\(bed\)|\bE-?1\b|\bBED\b/i.test(out) || pidTarget === 'bed';
+          const kind  = isBed ? 'bed' : 'hotend';
+          setActivity?.('PID tuning failed', 'bad');
+          pidUiFinish?.(kind, false, null);
+          setPidActive?.(kind, false);
         }
 
-        // --- ok resolver (single source of truth) ---
+        // PID constants line  "Kp: .. Ki: .. Kd: .."
+        const kpki = out.match(/\bKp:\s*([0-9.+-]+)\s*Ki:\s*([0-9.+-]+)\s*Kd:\s*([0-9.+-]+)/i);
+        if (kpki) {
+          const params = { Kp: +kpki[1], Ki: +kpki[2], Kd: +kpki[3] };
+          const kind = pidActiveBed ? 'bed'
+                    : (pidActiveHotend ? 'hotend'
+                    : (pidTarget || 'hotend'));
+          pidUiFinish?.(kind, true, params);
+          setPidActive?.(kind, false);
+        }
+
+        // ===== OK RESOLVER =====
         if (/^ok\b/i.test(out)) {
-          // Resolve capture first so callers get full text
           if (oneShotCapture && oneShotCapture.doneOnOk) {
-            try { oneShotCapture.resolve(oneShotCapture.buf.join('\n')); }
+            try { oneShotCapture.resolve?.(oneShotCapture.buf.join('\n')); }
             finally { oneShotCapture = null; }
           }
 
-          updateLastUpdated();
-          if (captureMode) { captureMode = null; startTempPolling(); }
-          _resolveNextOk();
+          updateLastUpdated?.();
+
+          // ALWAYS leave capture and ALWAYS restart polling (cadence based on window.debugMode)
+          if (captureMode) {
+            captureMode = null;
+            stopTempPolling?.();
+            startTempPolling?.(); // picks 3s when Debug ON, slower when OFF
+          }
+
+          _resolveNextOk?.();
         }
+
+        // ===== WAIT/BUSY =====
+        if (/^\s*wait\s*$/i.test(out) || /\bbusy:\b/i.test(out)) {
+          setActivity?.('Printer busy…', 'warn');
+        }
+
+        await yieldToUI();
       }
     }
   } catch (err) {
-    logMsg('⚠️ Read error: ' + (err?.message || err));
+    logMsg?.('⚠️ Read error: ' + (err?.message || err));
     if (!isDisconnecting) await disconnectPrinter('lost');
   } finally {
     reading = false;
   }
 }
+
+
+
+
 
 
 
@@ -5401,7 +5983,9 @@ async function jog(axis, dir) {
   }
 }
 
-//Sender
+// Full, integrated sender with: async preview build (worker + chunked render via buildPreviewAsync),
+// layer tracking, ETA, connection-tab lock, filament estimate + reservation,
+// and robust UI guards.
 async function streamGcode(file) {
   // --- Guards ---
   if (!(connKind === 'virtual' || writer)) {
@@ -5409,37 +5993,81 @@ async function streamGcode(file) {
     return;
   }
   if (!file) {
-    if (sendStatus) sendStatus.textContent = 'No file selected';
+    sendStatus && (sendStatus.textContent = 'No file selected');
     logMsg?.('⚠️ streamGcode called without a file');
     return;
   }
 
+  // ---- Lock the "Connection & Log" tab while sending ----
+  const connectTabBtn = document.getElementById('connectTab'); // your tab button/id
+  if (connectTabBtn) {
+    if ('disabled' in connectTabBtn) connectTabBtn.disabled = true; // real <button>/<input>
+    connectTabBtn.classList?.add('locked');                        // CSS guard for non-form elts
+  }
+
   cancelStream = false;
-  if (cancelSend) cancelSend.disabled = true;
+  let _jobSucceeded = false;
+  let _filamentTicket = null;
+
+  cancelSend && (cancelSend.disabled = true);
   hideEtaPill?.();
 
-  if (sendProgress) sendProgress.style.width = '0%';
-  if (sendStatus)   sendStatus.textContent   = 'Homing…';
+  sendProgress && (sendProgress.style.width = '0%');
+  sendStatus   && (sendStatus.textContent   = 'Homing…');
 
   try {
     beep?.('start');
     printerBeep?.('start');
 
-    const text  = await file.text(); // ← was throwing when file was null
-    const lines = text
-      .split(/\r?\n/)
-      .map(l => l.replace(/;.*/, '').trim())
-      .filter(Boolean);
+    // ---- Read the file text we will send ----
+    const text = await file.text();
 
-    if (!lines.length) { 
-      if (sendStatus) sendStatus.textContent = 'No G-code lines found'; 
-      return; 
+    // ---- Build the preview asynchronously (non-blocking UI) ----
+    if (typeof buildPreviewAsync === 'function') {
+      await buildPreviewAsync(text);
+    } else if (window.GCodePreview?.loadFromTextAsync) {
+      await window.GCodePreview.loadFromTextAsync(text);
+    } else {
+      window.GCodePreview?.loadFromText?.(text);
     }
 
-    // Precompute "counting" stats for ETA
-    const countingMask   = lines.map(isCountingLine);
-    const countingTotal  = countingMask.reduce((a,b)=>a+(b?1:0),0);
-    const warmupCount    = Math.min(400, Math.max(50, Math.floor(countingTotal * 0.01))); // 1% (50–400)
+    // ---- Filament estimate & reservation ----
+    if (typeof estimateFilamentUsage === 'function') {
+      const est = estimateFilamentUsage(text);  // { lengthMm }
+      const mm  = Math.round(est.lengthMm || 0);
+      if (mm > 0) {
+        logMsg?.(`🧵 Estimated filament: ${mm} mm from file`);
+        const estEl = document.getElementById('preEstFilament');
+        if (estEl) estEl.textContent = `${mm} mm`;
+        // Reserve from active spool; will refund on cancel/error in finally
+        _filamentTicket = reserveFilamentForJob?.(mm) || null;
+      } else {
+        setActivity?.('Estimated filament: 0 mm (no extrusion detected)', 'warn');
+      }
+    } else {
+      setActivity?.('Filament estimator unavailable', 'warn');
+    }
+
+    // ---- Build sendable lines + map to original source line numbers for tracking ----
+    const rawLines = text.split(/\r?\n/);
+    const lines = [];
+    const srcNos = []; // 1-based original line numbers
+    for (let i = 0; i < rawLines.length; i++) {
+      const stripped = rawLines[i].replace(/;.*/, '').trim();
+      if (!stripped) continue;
+      lines.push(stripped);
+      srcNos.push(i + 1);
+    }
+
+    if (!lines.length) {
+      sendStatus && (sendStatus.textContent = 'No G-code lines found');
+      return;
+    }
+
+    // ---- ETA precomputation ----
+    const countingMask  = lines.map(isCountingLine);
+    const countingTotal = countingMask.reduce((a,b)=>a+(b?1:0),0);
+    const warmupCount   = Math.min(400, Math.max(50, Math.floor(countingTotal * 0.01))); // 1% (50–400)
 
     // EMA for time/line (s), starts after first counting line
     let emaSecPerLine = 0;
@@ -5448,16 +6076,16 @@ async function streamGcode(file) {
     let lastCountTs   = 0;
     let startedETA    = false;
 
-    // Home before sending
+    // ---- Home before sending ----
     logMsg?.('🏠 Homing all axes (G28)…');
-    await sendCmd('G28'); 
+    await sendCmd('G28');
     await waitForOk();
 
     let sent = 0;
     const total = lines.length;
 
-    if (cancelSend) cancelSend.disabled = false;
-    if (sendStatus) sendStatus.textContent = 'Sending…';
+    cancelSend && (cancelSend.disabled = false);
+    sendStatus && (sendStatus.textContent = 'Sending…');
     showEtaPill?.('ETA: heating/preamble…', 'warn');
 
     for (let i = 0; i < lines.length; i++) {
@@ -5471,12 +6099,14 @@ async function streamGcode(file) {
       await waitForOk();
       const t1 = Date.now();
 
-      sent++;
+      // ---- Advance preview to reflect this command's original line ----
+      window.GCodePreview?.updateByGcodeLine?.(srcNos[i]);
 
-      // Progress bar remains based on all lines
+      // ---- Progress ----
+      sent++;
       const pct = Math.round((sent / total) * 100);
-      if (sendProgress) sendProgress.style.width = pct + '%';
-      if (sendStatus)   sendStatus.textContent = `Sent ${sent}/${total} (${pct}%)`;
+      sendProgress && (sendProgress.style.width = pct + '%');
+      sendStatus   && (sendStatus.textContent = `Sent ${sent}/${total} (${pct}%)`);
 
       // ---- ETA: count only real "print" lines ----
       if (countingMask[i]) {
@@ -5484,18 +6114,17 @@ async function streamGcode(file) {
         lastCountTs = t1;
 
         if (!startedETA) {
-          // First counting line establishes the clock
           startedETA = true;
           emaSecPerLine = Math.max(0.001, deltaSec);
           sentCounting = 1;
           showEtaPill?.('ETA: estimating…', 'warn');
         } else {
           sentCounting++;
-          // Skip warmup lines from ETA display (but keep training EMA)
+          // Train EMA continuously
           emaSecPerLine = alpha * deltaSec + (1 - alpha) * emaSecPerLine;
 
           if (sentCounting >= warmupCount && countingTotal > 0) {
-            const remaining = Math.max(0, countingTotal - sentCounting);
+            const remaining    = Math.max(0, countingTotal - sentCounting);
             const remainingSec = emaSecPerLine * remaining;
             showEtaPill?.('ETA: ' + formatETA(remainingSec), 'warn');
           } else {
@@ -5511,36 +6140,54 @@ async function streamGcode(file) {
       await new Promise(r => setTimeout(r, 10));
     }
 
-    if (cancelSend) cancelSend.disabled = true;
+    cancelSend && (cancelSend.disabled = true);
 
     if (cancelStream) {
-      if (sendStatus) sendStatus.textContent = 'Cancelled';
+      sendStatus && (sendStatus.textContent = 'Cancelled');
       showEtaPill?.('ETA: —', 'bad');
       beep?.('cancel');
       printerBeep?.('cancel');
-      exitPrintScreen?.(0, { tellHost: false }); 
+      exitPrintScreen?.(0, { tellHost: false });
       hideEtaPill?.();
       clearAllPidUi?.();
     } else {
-      if (sendProgress) sendProgress.style.width = '100%';
-      if (sendStatus)   sendStatus.textContent = 'Done';
+      sendProgress && (sendProgress.style.width = '100%');
+      sendStatus   && (sendStatus.textContent = 'Done');
       showEtaPill?.('Complete', 'ok');
       beep?.('done');
       printerBeep?.('done');
-      exitPrintScreen?.(0, { tellHost: false }); 
+      exitPrintScreen?.(0, { tellHost: false });
+      _jobSucceeded = true; // mark success so we don't refund reservation
     }
 
     setTimeout(() => hideEtaPill?.(), 2500);
   } catch (err) {
-    if (cancelSend) cancelSend.disabled = true;
-    if (sendStatus) sendStatus.textContent = 'Error during send';
+    cancelSend && (cancelSend.disabled = true);
+    sendStatus && (sendStatus.textContent = 'Error during send');
     showEtaPill?.('Error', 'bad');
     beep?.('error');
     printerBeep?.('cancel');
     logMsg?.('❌ Send error: ' + (err?.message || err));
     setTimeout(() => hideEtaPill?.(), 2500);
+  } finally {
+    // ---- Unlock the "Connection & Log" tab ----
+    if (connectTabBtn) {
+      if ('disabled' in connectTabBtn) connectTabBtn.disabled = false;
+      connectTabBtn.classList?.remove('locked');
+    }
+
+    // ---- Refund filament reservation on cancel/error; keep deduction on success ----
+    try {
+      if (!_jobSucceeded && _filamentTicket && typeof refundFilamentReservation === 'function') {
+        refundFilamentReservation(_filamentTicket);
+      }
+    } catch (_) {}
   }
 }
+
+
+
+
 
 //Quick helpers
 async function coolToIdle(opts = {}) {
@@ -5892,12 +6539,17 @@ if (levelPrinterSelect) {
   });
 }
 
+
+
 if (debugToggle) {
-  debugToggle.checked = !!debugMode;
-  debugToggle.addEventListener('change', () => {
-    debugMode = debugToggle.checked;
-    localStorage.setItem('debugMode', JSON.stringify(debugMode));
-  });
+  debugToggle.checked = !!window.debugMode;
+debugToggle.addEventListener('change', () => {
+  window.debugMode = debugToggle.checked;
+  localStorage.setItem('debugMode', JSON.stringify(window.debugMode));
+  // restart poller at the appropriate interval
+  stopTempPolling();
+  startTempPolling(); // picks 3000ms when ON, 7000ms when OFF
+});
 }
 
 if (virtualToggle) {
@@ -5976,7 +6628,7 @@ if (virtualToggle) {
   (function wireTabs(){
     const bar=document.getElementById('tabButtons');
     if(!bar) return;
-    const tabs=[...bar.querySelectorAll('button[data-tab]')];
+    const tabs = Array.from(bar.querySelectorAll('button[data-tab]'));
     function current(){ const btn=tabs.find(b=>b.classList.contains('active'))||tabs[0]; return btn?.dataset.tab||'connectTab'; }
     setActiveTab(current());
     tabs.forEach(b=>b.addEventListener('click',()=>requestAnimationFrame(()=>setActiveTab(current()))));
@@ -6269,6 +6921,7 @@ Help.register('senderTab', {
    10) INIT (runs once)
 ========================================================= */
 (function init() {
+  window.debugMode = JSON.parse(localStorage.getItem('debugMode') ?? 'false');
   const mesh = loadMeshLS();
   renderMeshInputs(mesh);
   renderSuggestions(mesh);

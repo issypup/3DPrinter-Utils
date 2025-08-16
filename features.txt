@@ -1,0 +1,42 @@
+# Features to add first
+
+A) Enhancements to Existing Tabs (27 ideas)
+
+# estimate filament usage from gcode file and subtract from active spool
+
+# Add auto-bed-level trigger before a print if last mesh is older than 30 days (let user decide via checkbox if they want this active, put checkbox under maintance)
+
+# Show PID autotune progress visually for bed and nozzle
+
+
+B) New Tab / Tool Ideas (25 ideas)
+
+# Job History tab — log start/end time, result, notes, filament used, errors
+
+# Remote Control tab — mobile-friendly controls over LAN/WAN.
+
+Webcam tab — live MJPEG or WebRTC camera stream / Timelapse options.
+
+
+C) Fixes / Stability Improvements (18 ideas)
+
+Add safe-guards for missing DOM elements on tab switch.
+
+# Improve error messages for serial disconnects.
+
+# Make ETA pill clear on error or cancel.
+
+# Avoid UI freeze during large file parsing (use Web Worker).
+
+# Make preview rendering async to avoid UI jank.
+
+# Ensure temp polling resumes after manual capture commands.
+
+Handle “printer busy” (wait) responses gracefully.
+
+
+D) Quality-of-Life Additions (15 ideas)
+
+# Show progress notification in browser tab title.
+
+# Show printer name in window title.
