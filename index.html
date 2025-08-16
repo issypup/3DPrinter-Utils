@@ -618,7 +618,10 @@
     </div>
     <div class="muted" id="pidHotInfo">T: — / Target: — (Δ —)</div>
     <div class="muted" id="pidHotResult">Kp: — · Ki: — · Kd: —</div>
-    <p class="muted" id="pidHotPrev">Prev — Kp: — · Ki: — · Kd: — (Δ —)</p>
+    <div class="pid-prev-row">
+  <p class="muted" id="pidHotPrev">Prev — Kp: — · Ki: — · Kd: — (Δ —)</p>
+  <button id="pidHotRevertBtn" class="btn btn--sm" title="Revert Nozzle PID (M301 + M500)">Revert</button>
+</div>
     <details class="muted" id="pidHotDbgBox">
   <summary>PID Debug</summary>
   <pre id="pidHotDbg" class="pidDebug"></pre>
@@ -636,7 +639,10 @@
     </div>
     <div class="muted" id="pidBedInfo">T: — / Target: — (Δ —)</div>
     <div class="muted" id="pidBedResult">Kp: — · Ki: — · Kd: —</div>
-    <p class="muted" id="pidBedPrev">Prev — Kp: — · Ki: — · Kd: — (Δ —)</p>
+    <div class="pid-prev-row">
+  <p class="muted" id="pidBedPrev">Prev — Kp: — · Ki: — · Kd: — (Δ —)</p>
+  <button id="pidBedRevertBtn" class="btn btn--sm" title="Revert Bed PID (M304 + M500)">Revert</button>
+</div>
     <details class="muted" id="pidBedDbgBox">
   <summary>PID Debug</summary>
   <pre id="pidBedDbg" class="pidDebug"></pre>
@@ -1065,6 +1071,102 @@
 ========================================================= */
 
 let oneShotCapture = null;
+
+
+
+
+
+
+
+
+
+// --- Helpers to read previous PID from storage ---
+function _getPrevPid(which) {
+  try {
+    const raw = localStorage.getItem('pidPrev:' + which);
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    if (Number.isFinite(j?.Kp) && Number.isFinite(j?.Ki) && Number.isFinite(j?.Kd)) return j;
+  } catch {}
+  return null;
+}
+
+// Tiny UI updater that ONLY touches the current <div>, not the stored "Prev"
+function _writePidResultDiv(which, Kp, Ki, Kd) {
+  const id = (which === 'bed') ? 'pidBedResult' : 'pidHotResult';
+  const el = document.getElementById(id);
+  const fmt = n => Number.isFinite(n) ? (+n).toFixed(2) : '—';
+  if (el) el.textContent = `Kp: ${fmt(Kp)} · Ki: ${fmt(Ki)} · Kd: ${fmt(Kd)}`;
+}
+
+// --- Main action: revert and save ---
+async function revertPid(which) {
+  which = (which === 'bed') ? 'bed' : 'hotend';
+
+  const prev = _getPrevPid(which);
+  if (!prev) { logMsg?.(`⚠ No previous PID stored for ${which}.`); return; }
+
+  // busy guard
+  if (which === 'bed'   && (window.pidActiveBed   || window.pidActiveHotend)) { logMsg?.('⚠ Busy: PID is running.'); return; }
+  if (which === 'hotend'&& (window.pidActiveHotend|| window.pidActiveBed))    { logMsg?.('⚠ Busy: PID is running.'); return; }
+
+  const P = +prev.Kp, I = +prev.Ki, D = +prev.Kd;
+  const line = (which === 'bed')
+    ? `M304 P${P.toFixed(4)} I${I.toFixed(4)} D${D.toFixed(4)}`
+    : `M301 P${P.toFixed(4)} I${I.toFixed(4)} D${D.toFixed(4)}`;
+
+  try {
+    const statusEl = document.getElementById((which === 'bed' ? 'pidBedStatus' : 'pidHotStatus'));
+    statusEl && (statusEl.textContent = 'Reverting…');
+
+    logMsg?.(`↩️ Reverting ${which} PID → ${line}; then M500`);
+
+    // send via your app’s pipeline
+    await sendCmd(line);
+    if (typeof waitForOk === 'function') await waitForOk();
+
+    await sendCmd('M500');
+    if (typeof waitForOk === 'function') await waitForOk();
+
+    _writePidResultDiv(which, P, I, D);  // update current result line
+    statusEl && (statusEl.textContent = 'Saved');
+    queueLiveDraw?.();
+  } catch (e) {
+    logMsg?.(`⚠️ Revert failed: ${e?.message || e}`);
+  }
+}
+
+
+// --- Wire up buttons (if present) ---
+(function(){
+  const hotBtn = document.getElementById('pidHotRevertBtn');
+  const bedBtn = document.getElementById('pidBedRevertBtn');
+  if (hotBtn) {
+    hotBtn.addEventListener('click', async () => {
+      if (typeof safeConfirm === 'function') {
+        if (!safeConfirm('Revert NOZZLE to previous PID and save (M301 + M500)?')) return;
+      }
+      hotBtn.disabled = true;
+      try { await revertPid('hotend'); } finally { hotBtn.disabled = false; }
+    });
+  }
+  if (bedBtn) {
+    bedBtn.addEventListener('click', async () => {
+      if (typeof safeConfirm === 'function') {
+        if (!safeConfirm('Revert BED to previous PID and save (M304 + M500)?')) return;
+      }
+      bedBtn.disabled = true;
+      try { await revertPid('bed'); } finally { bedBtn.disabled = false; }
+    });
+  }
+})();
+
+
+
+
+
+
+
 
 function captureReplyOnce({ doneOnOk = true } = {}) {
   if (oneShotCapture) throw new Error('capture already active');
