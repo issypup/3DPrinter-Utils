@@ -1154,6 +1154,8 @@ let _tlRecorder = null;                // MediaRecorder for canvas stream
 let _tlChunks = [];
 let _tlDrawing = null;                 // interval ID while recording
 
+const pidCap = { kind: null, pending: false, kp: null, ki: null, kd: null, committed: false };
+
 const SETTINGS_KEY = 'settings'; // change if your app uses another key
 
 // Webcam DOM
@@ -1339,6 +1341,11 @@ const pidEls = {
     info:   document.getElementById('pidBedInfo'),
     res:    document.getElementById('pidBedResult')
   }
+};
+
+const pidCurr = {
+  hotend: null, // {Kp,Ki,Kd,ts} after a run
+  bed: null
 };
 
 /* =========================================================
@@ -2663,6 +2670,24 @@ const vState = {
    5) HELPERS (pure UI / formatting / state)
 ========================================================= */
 
+function pidCommitIfReady() {
+  if (!pidCap.pending || pidCap.committed) return;
+  const { kp, ki, kd, kind } = pidCap;
+  if (Number.isFinite(kp) && Number.isFinite(ki) && Number.isFinite(kd) && (kind === 'bed' || kind === 'hotend')) {
+    // 1) finish the UI with real numbers
+    pidUiFinish?.(kind, true, { Kp: kp, Ki: ki, Kd: kd });
+    // 2) stop showing as active only now
+    setPidActive?.(kind, false);
+    // 3) write current to <div> and previous to <p> (prev persists)
+    setPidResult?.(kind, kp, ki, kd);
+    // 4) latch closed
+    pidCap.committed = true;
+    pidCap.pending = false;
+    pidCap.kind = null;
+    // optional: clear target override
+    pidTargetTemp = null;
+  }
+}
 
 function clearLevelingData() {
   let cleared = false;
@@ -2729,6 +2754,8 @@ function getPidKeys(which) {
 
   (function(){
   let reqId = 0;
+
+window.pidCurr = window.pidCurr || { bed: null, hotend: null };
 
   // Call from streamGcode instead of the sync load
   window.GCodePreview = window.GCodePreview || {};
@@ -3191,67 +3218,72 @@ function ensureActiveSpool() {
 }
 
 function setPidResult(which, kp, ki, kd) {
-  const { curr, prev, elCurr, elPrev } = getPidKeys(which);
-  const settings = readSettings();
+  which = (which === 'bed') ? 'bed' : 'hotend';
+  const currEl = document.getElementById(which === 'bed' ? 'pidBedResult' : 'pidHotResult');
+  const prevEl = document.getElementById(which === 'bed' ? 'pidBedPrev'   : 'pidHotPrev');
 
-  // Shift current → previous
-  let prevObj = null;
-  try { prevObj = settings[curr] ? JSON.parse(settings[curr]) : null; } catch {}
-  if (prevObj) settings[prev] = JSON.stringify(prevObj);
+  // ensure in-memory holder exists
+  window.pidCurr = window.pidCurr || { bed: null, hotend: null };
 
-  const nowObj = { Kp: +kp, Ki: +ki, Kd: +kd, ts: Date.now() };
-  settings[curr] = JSON.stringify(nowObj);
-  writeSettings(settings);
+  // tiny local helpers
+  const fmt2   = n => Number.isFinite(n) ? (+n).toFixed(2) : '—';
+  const delta2 = (a,b) => (Number.isFinite(a)&&Number.isFinite(b))
+    ? ((a-b)===0 ? '±0.00' : ((a-b)>0?'+':'')+(a-b).toFixed(2))
+    : '—';
 
-  // --- Update current line
-  const elC = document.getElementById(elCurr);
-  if (elC) elC.textContent = `Kp: ${fmt(nowObj.Kp)} · Ki: ${fmt(nowObj.Ki)} · Kd: ${fmt(nowObj.Kd)}`;
+  // snapshot the old in-memory current BEFORE we overwrite it
+  const oldCurrent = (window.pidCurr[which] && Number.isFinite(window.pidCurr[which].Kp))
+    ? { ...window.pidCurr[which] } : null;
 
-  // --- Update previous line
-  const elP = document.getElementById(elPrev);
-  if (elP) {
-    const prevVals = prevObj;
-    if (!prevVals) {
-      elP.textContent = 'Prev — Kp: — · Ki: — · Kd: — (Δ —)';
+  // 1) NEW values -> Result <div>
+  const now = { Kp:+kp, Ki:+ki, Kd:+kd, ts: Date.now() };
+  if (currEl) {
+    currEl.textContent = `Kp: ${fmt2(now.Kp)} · Ki: ${fmt2(now.Ki)} · Kd: ${fmt2(now.Kd)}`;
+  }
+
+  // 2) Prev <p>: prefer persisted prev; else fall back to old in-memory current
+  let prev = null;
+  try {
+    const raw = localStorage.getItem('pidPrev:' + which);
+    if (raw) prev = JSON.parse(raw);
+  } catch {}
+  if (!prev) prev = oldCurrent;
+
+  if (prevEl) {
+    if (prev && Number.isFinite(prev.Kp)) {
+      prevEl.textContent =
+        `Prev — Kp: ${fmt2(prev.Kp)} · Ki: ${fmt2(prev.Ki)} · Kd: ${fmt2(prev.Kd)} ` +
+        `(Δ Kp:${delta2(now.Kp, prev.Kp)}, Ki:${delta2(now.Ki, prev.Ki)}, Kd:${delta2(now.Kd, prev.Kd)})`;
     } else {
-      const dKp = fmtDelta(nowObj.Kp - prevVals.Kp);
-      const dKi = fmtDelta(nowObj.Ki - prevVals.Ki);
-      const dKd = fmtDelta(nowObj.Kd - prevVals.Kd);
-      elP.textContent =
-        `Prev — Kp: ${fmt(prevVals.Kp)} · Ki: ${fmt(prevVals.Ki)} · Kd: ${fmt(prevVals.Kd)} ` +
-        `(Δ Kp:${dKp}, Ki:${dKi}, Kd:${dKd})`;
+      prevEl.textContent = 'Prev — Kp: — · Ki: — · Kd: — (Δ —)';
     }
+  }
+
+  // 3) update in-memory current
+  window.pidCurr[which] = now;
+
+  // 4) PERSIST: make *this run* the next "previous" so it loads after refresh
+  if (Number.isFinite(now.Kp) && Number.isFinite(now.Ki) && Number.isFinite(now.Kd)) {
+    try { localStorage.setItem('pidPrev:' + which, JSON.stringify(now)); } catch {}
   }
 }
 
-function restorePidResultsFromStorage() {
-  ['hotend','bed'].forEach(which => {
-    const { curr, prev, elCurr, elPrev } = getPidKeys(which);
-    const settings = readSettings();
-    let nowObj = null, prevObj = null;
-    try { nowObj = settings[curr] ? JSON.parse(settings[curr]) : null; } catch {}
-    try { prevObj = settings[prev] ? JSON.parse(settings[prev]) : null; } catch {}
 
-    const elC = document.getElementById(elCurr);
-    const elP = document.getElementById(elPrev);
-
-    if (nowObj && elC) {
-      elC.textContent = `Kp: ${fmt(nowObj.Kp)} · Ki: ${fmt(nowObj.Ki)} · Kd: ${fmt(nowObj.Kd)}`;
-    }
-    if (elP) {
-      if (!prevObj) {
-        elP.textContent = 'Prev — Kp: — · Ki: — · Kd: — (Δ —)';
-      } else if (nowObj) {
-        const dKp = fmtDelta(nowObj.Kp - prevObj.Kp);
-        const dKi = fmtDelta(nowObj.Ki - prevObj.Ki);
-        const dKd = fmtDelta(nowObj.Kd - prevObj.Kd);
-        elP.textContent =
-          `Prev — Kp: ${fmt(prevObj.Kp)} · Ki: ${fmt(prevObj.Ki)} · Kd: ${fmt(prevObj.Kd)} ` +
-          `(Δ Kp:${dKp}, Ki:${dKi}, Kd:${dKd})`;
+function restorePrevPidFromStorage() {
+  ['bed','hotend'].forEach(which => {
+    const prevEl = document.getElementById(which === 'bed' ? 'pidBedPrev' : 'pidHotPrev');
+    if (!prevEl) return;
+    try {
+      const raw = localStorage.getItem('pidPrev:' + which);
+      const prev = raw ? JSON.parse(raw) : null;
+      if (prev && Number.isFinite(prev.Kp)) {
+        prevEl.textContent =
+          `Prev — Kp: ${prev.Kp.toFixed(2)} · Ki: ${prev.Ki.toFixed(2)} · Kd: ${prev.Kd.toFixed(2)}`;
       } else {
-        elP.textContent =
-          `Prev — Kp: ${fmt(prevObj.Kp)} · Ki: ${fmt(prevObj.Ki)} · Kd: ${fmt(prevObj.Kd)}`;
+        prevEl.textContent = 'Prev — Kp: — · Ki: — · Kd: — (Δ —)';
       }
+    } catch {
+      prevEl.textContent = 'Prev — Kp: — · Ki: — · Kd: — (Δ —)';
     }
   });
 }
@@ -4199,6 +4231,16 @@ function fmtDelta(n) {
   return n > 0 ? `+${n.toFixed(2)}` : n.toFixed(2);
 }
 
+function prevKey(which) {
+  return which === 'bed' ? 'pidPrev:bed' : 'pidPrev:hotend';
+}
+
+function fmt2(n) { return Number.isFinite(n) ? (+n).toFixed(2) : '—'; }
+function delta2(a, b) {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return '—';
+  const d = a - b;
+  return d === 0 ? '±0.00' : (d > 0 ? `+${d.toFixed(2)}` : d.toFixed(2));
+}
 
 function recordLiveSample() {
   if (!live.ctxs.length) return;
@@ -4757,7 +4799,6 @@ function pidUiReset(kind) {
   pidEls[k].bar.style.width = '0%';
   pidEls[k].bar.classList.remove('pulse');
   pidEls[k].info.textContent = 'T: — / Target: — (Δ —)';
-  pidEls[k].res.textContent  = 'Kp: — · Ki: — · Kd: —';
 }
 
 function pidUiStart(kind, targetTemp) {
@@ -4852,7 +4893,6 @@ function clearAllPidUi() {
       pidEls.hot.bar.style.width = '0%';
     }
     pidEls.hot.info && (pidEls.hot.info.textContent = 'T: — / Target: — (Δ —)');
-    pidEls.hot.res  && (pidEls.hot.res.textContent  = 'Kp: — · Ki: — · Kd: —');
   }
 
   // Bed
@@ -4863,7 +4903,6 @@ function clearAllPidUi() {
       pidEls.bed.bar.style.width = '0%';
     }
     pidEls.bed.info && (pidEls.bed.info.textContent = 'T: — / Target: — (Δ —)');
-    pidEls.bed.res  && (pidEls.bed.res.textContent  = 'Kp: — · Ki: — · Kd: —');
   }
 }
 
@@ -6085,7 +6124,7 @@ async function readLoop() {
   const updateTempsThrottled = throttle(() => {
     updateTempPanel?.();
     if (pidActiveHotend) pidUiUpdate?.('hotend', temps.hot, pidTargetTemp ?? temps.hotTarget ?? null);
-    if (pidActiveBed)    pidUiUpdate?.('bed',    temps.bed,  pidTargetTemp ?? temps.bedTarget ?? null);
+    if (pidActiveBed)    pidUiUpdate?.('bed',    temps.bed,  pidTargetTemp ?? temps.bedTarget  ?? null);
   }, 250); // ~4x/sec
 
   const logTempsThrottled = throttle(() => {
@@ -6105,10 +6144,31 @@ async function readLoop() {
   const FAN_AT     = /@:\s*([0-9]{1,3})\b/;
 
   // PID constants styles
-  const PID_K_LINE = /\bKp:\s*([+\-]?\d+(?:\.\d+)?(?:e[+\-]?\d+)?)\s*Ki:\s*([+\-]?\d+(?:\.\d+)?(?:e[+\-]?\d+)?)\s*Kd:\s*([+\-]?\d+(?:\.\d+)?(?:e[+\-]?\d+)?)/i;
-  const DEF_KP     = /#define\s+DEFAULT_Kp\s+([+\-]?\d+(?:\.\d+)?(?:e[+\-]?\d+)?)/i;
-  const DEF_KI     = /#define\s+DEFAULT_Ki\s+([+\-]?\d+(?:\.\d+)?(?:e[+\-]?\d+)?)/i;
-  const DEF_KD     = /#define\s+DEFAULT_Kd\s+([+\-]?\d+(?:\.\d+)?(?:e[+\-]?\d+)?)/i;
+  const PID_K_LINE = /\bKp:\s*([0-9.+\-eE]+)\s*Ki:\s*([0-9.+\-eE]+)\s*Kd:\s*([0-9.+\-eE]+)/;
+  const DEF_KP     = /#define\s+DEFAULT_(bed)?Kp\s+([0-9.+\-eE]+)/i;
+  const DEF_KI     = /#define\s+DEFAULT_(bed)?Ki\s+([0-9.+\-eE]+)/i;
+  const DEF_KD     = /#define\s+DEFAULT_(bed)?Kd\s+([0-9.+\-eE]+)/i;
+
+  // --- PID capture latch (keeps attribution across 'finished' and defines)
+  const pidCap = { kind: null, pending: false, committed: false, kp: null, ki: null, kd: null };
+  const pidCommitIfReady = () => {
+    if (!pidCap.pending || pidCap.committed) return;
+    const { kind, kp, ki, kd } = pidCap;
+    if ((kind === 'bed' || kind === 'hotend')
+        && Number.isFinite(kp) && Number.isFinite(ki) && Number.isFinite(kd)) {
+      // 1) finish UI with real numbers
+      pidUiFinish?.(kind, true, { Kp: kp, Ki: ki, Kd: kd });
+      // 2) stop showing as active now that we have numbers
+      setPidActive?.(kind, false);
+      // 3) NEW → <div id="pid{Hot|Bed}Result">, PREV → <p id="pid{Hot|Bed}Prev">
+      setPidResult?.(kind, kp, ki, kd);
+      // 4) close latch
+      pidCap.committed = true;
+      pidCap.pending = false;
+      pidCap.kind = null;
+      try { pidTargetTemp = null; } catch {}
+    }
+  };
 
   reading = true;
   try {
@@ -6135,14 +6195,12 @@ async function readLoop() {
       const parts = rxBuffer.split(/\r?\n/);
       rxBuffer = parts.pop(); // keep incomplete tail
 
-      // Fallback accumulators for Style 2 defines (in case they appear split across lines)
-      let defKp, defKi, defKd;
-
       for (const raw of parts) {
         const line = raw.trim();
         if (!line) { await yieldToUI(); continue; }
 
         // ===== TEMPERATURES (M105-style) =====
+        // Expect globals: TEMP_T, TEMP_B (RegExp)
         const tMatch = !captureMode && TEMP_T?.test ? line.match(TEMP_T) : null;
         const bMatch = !captureMode && TEMP_B?.test ? line.match(TEMP_B) : null;
 
@@ -6167,8 +6225,8 @@ async function readLoop() {
           }
         }
         if (tMatch || bMatch) {
-          updateTempsThrottled();
-          recordLiveSample?.();
+          updateTempsThrottled();        // pills + PID info lines
+          recordLiveSample?.();          // feed charts
         }
 
         // ===== LIVE Z TRACKING =====
@@ -6190,7 +6248,7 @@ async function readLoop() {
           if (live) live.lastProg = p;
         }
 
-        // Fan PWM
+        // Fan PWM (prefer "@:"; fallback to M106 echoes)
         const fmAt = out.match(FAN_AT);
         if (fmAt) {
           const s = parseInt(fmAt[1], 10);
@@ -6248,65 +6306,64 @@ async function readLoop() {
           }
         }
 
-        // ===== PID AUTOTUNE HOOKS =====
+        // ===== PID AUTOTUNE HOOKS (latched) =====
         if (/PID Autotune start/i.test(out)) {
           const isBed = /\(bed\)|\bE-?1\b|\bBED\b/i.test(out) || pidTarget === 'bed';
           const kind  = isBed ? 'bed' : 'hotend';
+
           setPidActive?.(kind, true);
           const t = pidTargetTemp ?? (isBed ? temps.bedTarget : temps.hotTarget) ?? '—';
           pidUiStart?.(kind, t);
           setActivity?.('PID tuning…', 'warn');
-          // reset define accumulators at start of a tune
-          defKp = defKi = defKd = undefined;
-        }
-        if (/PID Autotune finished/i.test(out)) {
-          const isBed = /\(bed\)|\bE-?1\b|\bBED\b/i.test(out) || pidTarget === 'bed';
-          const kind  = isBed ? 'bed' : 'hotend';
-          setActivity?.('PID tuning complete', 'ok');
-          pidUiFinish?.(kind, true, null);
-          setPidActive?.(kind, false);
 
-          // If we collected defines but never saw Style 1, commit them here
-          if (Number.isFinite(defKp) || Number.isFinite(defKi) || Number.isFinite(defKd)) {
-            const kp = Number.isFinite(defKp) ? defKp : NaN;
-            const ki = Number.isFinite(defKi) ? defKi : NaN;
-            const kd = Number.isFinite(defKd) ? defKd : NaN;
-            setPidResult?.(kind, kp, ki, kd);
-          }
+          // Reset capture latch for this session
+          pidCap.kind = kind;
+          pidCap.pending = true;
+          pidCap.committed = false;
+          pidCap.kp = pidCap.ki = pidCap.kd = null;
         }
+
+        if (/PID Autotune finished/i.test(out)) {
+          // Mark complete, but DO NOT clear active or wipe UI here — constants may follow.
+          setActivity?.('PID tuning complete', 'ok');
+          // keep pidCap.pending = true; wait for Kp/Ki/Kd lines to arrive
+        }
+
         if (/PID Autotune failed/i.test(out)) {
-          const isBed = /\(bed\)|\bE-?1\b|\bBED\b/i.test(out) || pidTarget === 'bed';
-          const kind  = isBed ? 'bed' : 'hotend';
+          const kind = pidCap.kind || (/\(bed\)|\bE-?1\b|\bBED\b/i.test(out) || pidTarget === 'bed' ? 'bed' : 'hotend');
           setActivity?.('PID tuning failed', 'bad');
           pidUiFinish?.(kind, false, null);
           setPidActive?.(kind, false);
+          // cancel latch
+          pidCap.pending = false;
+          pidCap.kind = null;
         }
 
-        // ===== PID constants capture =====
+        // ===== PID constants capture (both styles) =====
         // Style 1: "Kp: .. Ki: .. Kd: .."
         let m = out.match(PID_K_LINE);
         if (m) {
-          const kp = parseFloat(m[1]), ki = parseFloat(m[2]), kd = parseFloat(m[3]);
-          const kind = pidActiveBed ? 'bed' : (pidActiveHotend ? 'hotend' : (pidTarget || 'hotend'));
-          pidUiFinish?.(kind, true, { Kp: kp, Ki: ki, Kd: kd });
-          setPidActive?.(kind, false);
-          setPidResult?.(kind, kp, ki, kd);
+          pidCap.kp = parseFloat(m[1]);
+          pidCap.ki = parseFloat(m[2]);
+          pidCap.kd = parseFloat(m[3]);
+          pidCommitIfReady();
         }
 
-        // Style 2: "#define DEFAULT_Kx …" (may appear on separate lines)
+        // Style 2: "#define DEFAULT_bedKx …" OR "#define DEFAULT_Kx …"
         let md;
-        if ((md = out.match(DEF_KP))) defKp = parseFloat(md[1]);
-        if ((md = out.match(DEF_KI))) defKi = parseFloat(md[1]);
-        if ((md = out.match(DEF_KD))) {
-          defKd = parseFloat(md[1]);
-          // If we already have Kp/Ki by now, we can commit immediately
-          if (Number.isFinite(defKp) && Number.isFinite(defKi)) {
-            const kind = pidActiveBed ? 'bed' : (pidActiveHotend ? 'hotend' : (pidTarget || 'hotend'));
-            pidUiFinish?.(kind, true, { Kp: defKp, Ki: defKi, Kd: defKd });
-            setPidActive?.(kind, false);
-            setPidResult?.(kind, defKp, defKi, defKd);
-          }
+        if ((md = out.match(DEF_KP))) {
+          if (md[1]) pidCap.kind = 'bed'; else if (!pidCap.kind) pidCap.kind = 'hotend';
+          pidCap.kp = parseFloat(md[2]);
         }
+        if ((md = out.match(DEF_KI))) {
+          if (md[1]) pidCap.kind = 'bed'; else if (!pidCap.kind) pidCap.kind = 'hotend';
+          pidCap.ki = parseFloat(md[2]);
+        }
+        if ((md = out.match(DEF_KD))) {
+          if (md[1]) pidCap.kind = 'bed'; else if (!pidCap.kind) pidCap.kind = 'hotend';
+          pidCap.kd = parseFloat(md[2]);
+        }
+        pidCommitIfReady();
 
         // ===== OK RESOLVER =====
         if (/^ok\b/i.test(out)) {
@@ -6342,6 +6399,8 @@ async function readLoop() {
     reading = false;
   }
 }
+
+
 
 
 
@@ -7510,7 +7569,7 @@ Help.register('senderTab', {
   updateLevelView();
   initPrinterName();
   updateUnlockUi();
-  restorePidResultsFromStorage();
+  restorePrevPidFromStorage();
 })();
 </script>
 </body>
