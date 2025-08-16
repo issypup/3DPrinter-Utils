@@ -112,6 +112,8 @@
     border-radius: 6px;
   }
 
+#webcamTab video, #webcamTab img, #webcamTab canvas { background:#000; }
+
 #printerName.editable {
   cursor: pointer;
 }
@@ -421,6 +423,7 @@
 <!-- Tabs -->
 <div id="tabButtons">
   <button data-tab="connectTab" class="active">Connection & Log</button>
+  <button data-tab="webcamTab">Webcam</button>
   <button data-tab="levelTab">Leveling</button>
   <button data-tab="pidTab">PID Tuning</button>
   <button data-tab="tempTab">Temperature & Fan</button>
@@ -466,6 +469,64 @@
   <h2>Printer Log</h2>
   <div id="printerLog" aria-live="polite"></div>
 </div>
+
+<!-- TAB: Webcam -->
+<div id="webcamTab" class="tabContent">
+  <div class="box" style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end">
+    <div class="col" style="gap:6px">
+      <div class="label">Source</div>
+      <label><input type="radio" name="camMode" id="camModeMjpeg" checked> MJPEG URL</label>
+      <label><input type="radio" name="camMode" id="camModeWebrtc"> Local WebRTC</label>
+    </div>
+
+    <div id="mjpegControls" class="col" style="gap:6px; min-width:320px">
+      <label class="label">MJPEG URL</label>
+      <input id="mjpegUrl" class="widen" placeholder="http://printer.local/webcam/?action=stream">
+      <div class="row">
+        <button id="mjpegStart">Start</button>
+        <button id="mjpegStop" disabled>Stop</button>
+      </div>
+      <div class="muted">Note: To record or snapshot an MJPEG stream, the server must allow CORS or the canvas will be tainted.</div>
+    </div>
+
+    <div id="webrtcControls" class="col" style="gap:6px; min-width:320px; display:none">
+      <div class="row" style="gap:8px">
+        <button id="rtcStart">Start Camera</button>
+        <button id="rtcStop"  disabled>Stop</button>
+      </div>
+      <label>Device
+        <select id="rtcDevices" style="min-width:240px"></select>
+      </label>
+      <div class="muted">Uses navigator.mediaDevices.getUserMedia()</div>
+    </div>
+
+    <div class="col" style="gap:6px; margin-left:auto">
+      <div class="label">Timelapse</div>
+      <div class="row" style="gap:8px; align-items:center">
+        <label>FPS <input id="tlFps" type="number" min="1" max="30" value="2" style="width:64px"></label>
+        <label>Scale <input id="tlScale" type="number" min="0.1" step="0.1" value="1.0" style="width:64px"></label>
+        <button id="tlStart" disabled>Start TL</button>
+        <button id="tlStop"  disabled>Stop TL</button>
+        <a id="tlDownload" download="timelapse.webm" style="display:none">Download</a>
+      </div>
+      <div class="muted" id="tlStatus">—</div>
+    </div>
+  </div>
+
+  <div class="gp-canvas" style="height:420px; margin-top:10px">
+    <!-- Render area -->
+    <img id="mjpegImg" alt="" style="max-width:100%; max-height:100%; display:none">
+    <video id="rtcVideo" playsinline autoplay muted style="max-width:100%; max-height:100%; display:none"></video>
+    <canvas id="camCanvas" width="1280" height="720" style="display:none"></canvas>
+  </div>
+
+  <div class="row" style="gap:8px; margin-top:8px">
+    <button id="snapBtn" disabled>Snapshot</button>
+    <a id="snapDownload" style="display:none">Download Snapshot</a>
+    <span class="muted" id="camHint">Idle.</span>
+  </div>
+</div>
+
 
 <!-- TAB 2: Leveling -->
 <div id="levelTab" class="tabContent">
@@ -540,6 +601,10 @@
   <div class="box" id="pidUi">
   <div class="label" style="margin-bottom:6px">PID Autotune Progress</div>
 
+<div class="label" style="margin-top:14px">Live Telemetry (last 10 min)</div>
+<canvas class="liveChart" id="liveChartPID" width="900" height="260" aria-label="Live temperatures, fan %, and M73 %"></canvas>
+<div class="muted">Left axis: °C · Right axis: % (Fan, M73)</div>
+
   <!-- Hotend -->
   <div class="col" style="gap:6px; margin-bottom:10px">
     <div class="row" style="align-items:center; gap:10px">
@@ -551,6 +616,7 @@
     </div>
     <div class="muted" id="pidHotInfo">T: — / Target: — (Δ —)</div>
     <div class="muted" id="pidHotResult">Kp: — · Ki: — · Kd: —</div>
+    <p class="muted" id="pidHotPrev">Prev — Kp: — · Ki: — · Kd: — (Δ —)</p>
   </div>
 
   <!-- Bed -->
@@ -564,6 +630,7 @@
     </div>
     <div class="muted" id="pidBedInfo">T: — / Target: — (Δ —)</div>
     <div class="muted" id="pidBedResult">Kp: — · Ki: — · Kd: —</div>
+    <p class="muted" id="pidBedPrev">Prev — Kp: — · Ki: — · Kd: — (Δ —)</p>
   </div>
 </div>
 
@@ -604,7 +671,7 @@
   </div>
   <div class="box">
   <div class="label">Live Telemetry (last 10 min)</div>
-  <canvas id="liveChart" width="900" height="260" aria-label="Live temperatures, fan %, and M73 %"></canvas>
+  <canvas id="liveChart" class="liveChart" width="900" height="260"></canvas>
   <div class="muted">Left axis: °C · Right axis: % (Fan, M73)</div>
 </div>
   <div class="row box">
@@ -1077,6 +1144,48 @@ let streak = 0;
 let previewWorkerUrl = null;
 let previewWorker = null;
 
+// State
+let _camMode = 'mjpeg';                // 'mjpeg' | 'webrtc'
+let _rtcStream = null;                 // MediaStream for WebRTC
+let _drawTimer = null;                 // canvas draw interval
+
+// Timelapse
+let _tlRecorder = null;                // MediaRecorder for canvas stream
+let _tlChunks = [];
+let _tlDrawing = null;                 // interval ID while recording
+
+const SETTINGS_KEY = 'settings'; // change if your app uses another key
+
+// Webcam DOM
+const camModeMjpeg   = document.getElementById('camModeMjpeg');
+const camModeWebrtc  = document.getElementById('camModeWebrtc');
+
+const mjpegControls  = document.getElementById('mjpegControls');
+const webrtcControls = document.getElementById('webrtcControls');
+
+const mjpegUrl   = document.getElementById('mjpegUrl');
+const mjpegStart = document.getElementById('mjpegStart');
+const mjpegStop  = document.getElementById('mjpegStop');
+
+const rtcStart   = document.getElementById('rtcStart');
+const rtcStop    = document.getElementById('rtcStop');
+const rtcDevices = document.getElementById('rtcDevices');
+
+const mjpegImg   = document.getElementById('mjpegImg');
+const rtcVideo   = document.getElementById('rtcVideo');
+const camCanvas  = document.getElementById('camCanvas');
+
+const snapBtn       = document.getElementById('snapBtn');
+const snapDownload  = document.getElementById('snapDownload');
+
+const tlFps      = document.getElementById('tlFps');
+const tlScale    = document.getElementById('tlScale');
+const tlStart    = document.getElementById('tlStart');
+const tlStop     = document.getElementById('tlStop');
+const tlDownload = document.getElementById('tlDownload');
+
+const camHint = document.getElementById('camHint');
+
 const BEEP_BROWSER_ON = true;   // browser chime via Web Audio
 const BEEP_PRINTER_ON = false;  // send M300 to the printer (off by default)
 const primeLine = document.getElementById('primeLine');
@@ -1294,6 +1403,21 @@ document.getElementById('parseM115Btn')?.addEventListener('click', async () => {
     renderM115Table('#m115Table', parseM115Response(fallback));
   }
 });
+
+async function populateRtcDevices() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const vids = devices.filter(d => d.kind === 'videoinput');
+    rtcDevices.innerHTML = '';
+    vids.forEach(v => {
+      const o = document.createElement('option');
+      o.value = v.deviceId; o.textContent = v.label || `Camera ${rtcDevices.length+1}`;
+      rtcDevices.appendChild(o);
+    });
+  } catch {}
+}
+
+
 function renderM122Fields(ax) {
   const put = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = (v ?? '—'); };
   for (const a of ['X','Y','Z','E']) {
@@ -1308,6 +1432,82 @@ function renderM122Fields(ax) {
   }
 }
 
+camModeMjpeg.addEventListener('change', () => { if (camModeMjpeg.checked) setCamMode('mjpeg'); });
+camModeWebrtc.addEventListener('change', () => { if (camModeWebrtc.checked) setCamMode('webrtc'); });
+setCamMode('mjpeg');
+if (navigator.mediaDevices?.enumerateDevices) { populateRtcDevices(); }
+
+snapBtn.addEventListener('click', () => {
+  try {
+    const blobUrl = camCanvas.toDataURL('image/png');
+    snapDownload.href = blobUrl;
+    const dt = new Date().toISOString().replace(/[:.]/g,'-');
+    snapDownload.download = `snapshot-${dt}.png`;
+    snapDownload.style.display = '';
+    snapDownload.click();
+    camHint.textContent = 'Snapshot saved.';
+  } catch {
+    camHint.textContent = 'Snapshot failed (CORS?).';
+  }
+});
+
+tlStart.addEventListener('click', () => {
+  // Canvas as the single source; we already copy MJPEG/RTC into it at ~10fps.
+  const fps = Math.min(30, Math.max(1, parseInt(tlFps.value, 10) || 2));
+  const stream = camCanvas.captureStream(fps);
+  _tlChunks = [];
+  try {
+    _tlRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+  } catch {
+    _tlRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+  }
+  _tlRecorder.ondataavailable = e => { if (e.data && e.data.size) _tlChunks.push(e.data); };
+  _tlRecorder.onstop = () => {
+    const blob = new Blob(_tlChunks, { type: _tlRecorder.mimeType || 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    tlDownload.href = url;
+    tlDownload.style.display = '';
+    tlDownload.click();
+    tlStatus.textContent = `Saved ${Math.round(blob.size/1024)} KB`;
+  };
+  _tlRecorder.start(); // start recording frames coming from canvas
+  tlStatus.textContent = `Recording… ${fps} fps`;
+  tlDownload.style.display = 'none';
+  updateCamUi();
+});
+
+tlStop.addEventListener('click', () => {
+  if (_tlRecorder && _tlRecorder.state === 'recording') {
+    _tlRecorder.stop();
+    tlStatus.textContent = 'Finalizing…';
+  }
+  updateCamUi();
+});
+
+rtcStart.addEventListener('click', async () => {
+  stopMjpeg();
+  try {
+    await navigator.mediaDevices.getUserMedia({ video: true }); // prompt
+    await populateRtcDevices();
+    const deviceId = rtcDevices.value || undefined;
+    _rtcStream = await navigator.mediaDevices.getUserMedia({
+      video: deviceId ? { deviceId: { exact: deviceId } } : true,
+      audio: false
+    });
+    rtcVideo.srcObject = _rtcStream;
+    rtcVideo.style.display = '';
+    camHint.textContent = 'Camera live.';
+    drawToCanvasFrom(rtcVideo);
+  } catch (e) {
+    camHint.textContent = 'Camera permission or device error.';
+    _rtcStream = null;
+  }
+  updateCamUi();
+});
+
+rtcStop.addEventListener('click', stopRtc);
+
+
 document.getElementById('parseM122Btn')?.addEventListener('click', async () => {
   try {
     stopTempPolling?.();
@@ -1321,6 +1521,78 @@ document.getElementById('parseM122Btn')?.addEventListener('click', async () => {
     // renderM122Fields(tmc);
   }
 });
+
+function onLeaveWebcamTab() {
+  stopMjpeg();
+  stopRtc();
+  if (_tlRecorder && _tlRecorder.state === 'recording') _tlRecorder.stop();
+}
+
+function setCamMode(mode) {
+  _camMode = mode;
+  if (mode === 'mjpeg') {
+    mjpegControls.style.display = '';
+    webrtcControls.style.display = 'none';
+  } else {
+    mjpegControls.style.display = 'none';
+    webrtcControls.style.display = '';
+  }
+  updateCamUi();
+}
+
+function stopDrawing() {
+  if (_drawTimer) { clearInterval(_drawTimer); _drawTimer = null; }
+}
+
+function stopMjpeg() {
+  stopDrawing();
+  mjpegImg.src = '';
+  mjpegImg.style.display = 'none';
+  rtcVideo.style.display = rtcVideo.style.display; // no-op
+  updateCamUi();
+  camHint.textContent = 'MJPEG stopped.';
+}
+
+function stopRtc() {
+  stopDrawing();
+  if (_rtcStream) {
+    _rtcStream.getTracks().forEach(t => t.stop());
+    _rtcStream = null;
+  }
+  rtcVideo.srcObject = null;
+  rtcVideo.style.display = 'none';
+  camHint.textContent = 'Camera stopped.';
+  updateCamUi();
+}
+
+function updateCamUi() {
+  const live = (_camMode === 'mjpeg' && mjpegImg.src) || (_camMode === 'webrtc' && _rtcStream);
+  snapBtn.disabled = !live;
+  tlStart.disabled = !live || (_tlRecorder && _tlRecorder.state === 'recording');
+  tlStop.disabled  = !live || !(_tlRecorder && _tlRecorder.state === 'recording');
+  mjpegStart.disabled = _camMode !== 'mjpeg';
+  mjpegStop.disabled  = _camMode !== 'mjpeg' || !mjpegImg.src;
+  rtcStart.disabled   = _camMode !== 'webrtc';
+  rtcStop.disabled    = _camMode !== 'webrtc' || !_rtcStream;
+}
+
+function drawToCanvasFrom(el) {
+  // Draw at ~10fps for preview; TL has its own cadence via MediaRecorder
+  stopDrawing();
+  const ctx = camCanvas.getContext('2d', { willReadFrequently: true });
+  _drawTimer = setInterval(() => {
+    const scale = Math.max(0.1, parseFloat(tlScale.value) || 1);
+    const w = Math.floor((el.videoWidth || el.naturalWidth || el.width || 1280) * scale);
+    const h = Math.floor((el.videoHeight || el.naturalHeight || el.height || 720) * scale);
+    if (w && h) {
+      if (camCanvas.width !== w || camCanvas.height !== h) {
+        camCanvas.width = w; camCanvas.height = h;
+      }
+      try { ctx.drawImage(el, 0, 0, w, h); } catch {}
+    }
+  }, 100); // ~10fps
+}
+
 
 // Robust block reader: works in virtual or real serial, with diagnostics.
 // Drop-in replacement: do NOT start capture here; rely on sendCmd's own capture
@@ -2237,6 +2509,28 @@ maintTable?.addEventListener('click', (e) => {
   if (t.matches('button[data-del]'))  deleteMaint(t.getAttribute('data-del'));
 });
 
+mjpegStart.addEventListener('click', () => {
+  const url = (mjpegUrl.value || '').trim();
+  if (!url) { camHint.textContent = 'Enter an MJPEG URL.'; return; }
+  stopRtc();
+  mjpegImg.style.display = '';
+  mjpegImg.crossOrigin = 'anonymous'; // needs CORS from server for canvas/record
+  mjpegImg.src = url;
+  mjpegImg.onload = () => {
+    camHint.textContent = 'MJPEG live.';
+    drawToCanvasFrom(mjpegImg);
+    updateCamUi();
+  };
+  mjpegImg.onerror = () => {
+    camHint.textContent = 'Failed to load MJPEG stream.';
+    stopMjpeg();
+  };
+  updateCamUi();
+});
+
+mjpegStop.addEventListener('click', stopMjpeg);
+
+
 maintExport?.addEventListener('click', () => {
   const blob = new Blob([JSON.stringify(maint, null, 2)], {type:'application/json'});
   const url = URL.createObjectURL(blob);
@@ -2369,6 +2663,56 @@ const vState = {
    5) HELPERS (pure UI / formatting / state)
 ========================================================= */
 
+
+function clearLevelingData() {
+  let cleared = false;
+
+  // individual keys
+  if (localStorage.getItem('levels') !== null) {
+    localStorage.removeItem('levels');
+    cleared = true;
+  }
+  if (localStorage.getItem('levelsLastAt') !== null) {
+    localStorage.removeItem('levelsLastAt');
+    cleared = true;
+  }
+
+  // JSON blob case
+  const candidateKeys = ['settings', 'printerState', 'config'];
+  for (const key of candidateKeys) {
+    const raw = localStorage.getItem(key);
+    if (!raw) continue;
+    try {
+      const obj = JSON.parse(raw);
+      if ('levels' in obj || 'levelsLastAt' in obj) {
+        delete obj.levels;
+        delete obj.levelsLastAt;
+        localStorage.setItem(key, JSON.stringify(obj));
+        cleared = true;
+      }
+    } catch {}
+  }
+
+  return cleared;
+}
+
+function readSettings() {
+  try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); }
+  catch { return {}; }
+}
+function writeSettings(obj) {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(obj)); } catch {}
+}
+
+function getPidKeys(which) {
+  const w = (which === 'bed') ? 'bed' : 'hotend';
+  return {
+    curr: `pidCurr:${w}`,   // JSON string: {Kp,Ki,Kd,ts}
+    prev: `pidPrev:${w}`,   // JSON string: {Kp,Ki,Kd,ts}
+    elCurr: w === 'bed' ? 'pidBedResult' : 'pidHotResult',
+    elPrev: w === 'bed' ? 'pidBedPrev'   : 'pidHotPrev'
+  };
+}
 /* ================= G-code Previewer ================= */
 (function(){
   const els = {
@@ -2844,6 +3188,72 @@ function ensureActiveSpool() {
     saveActive(id);
   }
   return getActiveSpool();
+}
+
+function setPidResult(which, kp, ki, kd) {
+  const { curr, prev, elCurr, elPrev } = getPidKeys(which);
+  const settings = readSettings();
+
+  // Shift current → previous
+  let prevObj = null;
+  try { prevObj = settings[curr] ? JSON.parse(settings[curr]) : null; } catch {}
+  if (prevObj) settings[prev] = JSON.stringify(prevObj);
+
+  const nowObj = { Kp: +kp, Ki: +ki, Kd: +kd, ts: Date.now() };
+  settings[curr] = JSON.stringify(nowObj);
+  writeSettings(settings);
+
+  // --- Update current line
+  const elC = document.getElementById(elCurr);
+  if (elC) elC.textContent = `Kp: ${fmt(nowObj.Kp)} · Ki: ${fmt(nowObj.Ki)} · Kd: ${fmt(nowObj.Kd)}`;
+
+  // --- Update previous line
+  const elP = document.getElementById(elPrev);
+  if (elP) {
+    const prevVals = prevObj;
+    if (!prevVals) {
+      elP.textContent = 'Prev — Kp: — · Ki: — · Kd: — (Δ —)';
+    } else {
+      const dKp = fmtDelta(nowObj.Kp - prevVals.Kp);
+      const dKi = fmtDelta(nowObj.Ki - prevVals.Ki);
+      const dKd = fmtDelta(nowObj.Kd - prevVals.Kd);
+      elP.textContent =
+        `Prev — Kp: ${fmt(prevVals.Kp)} · Ki: ${fmt(prevVals.Ki)} · Kd: ${fmt(prevVals.Kd)} ` +
+        `(Δ Kp:${dKp}, Ki:${dKi}, Kd:${dKd})`;
+    }
+  }
+}
+
+function restorePidResultsFromStorage() {
+  ['hotend','bed'].forEach(which => {
+    const { curr, prev, elCurr, elPrev } = getPidKeys(which);
+    const settings = readSettings();
+    let nowObj = null, prevObj = null;
+    try { nowObj = settings[curr] ? JSON.parse(settings[curr]) : null; } catch {}
+    try { prevObj = settings[prev] ? JSON.parse(settings[prev]) : null; } catch {}
+
+    const elC = document.getElementById(elCurr);
+    const elP = document.getElementById(elPrev);
+
+    if (nowObj && elC) {
+      elC.textContent = `Kp: ${fmt(nowObj.Kp)} · Ki: ${fmt(nowObj.Ki)} · Kd: ${fmt(nowObj.Kd)}`;
+    }
+    if (elP) {
+      if (!prevObj) {
+        elP.textContent = 'Prev — Kp: — · Ki: — · Kd: — (Δ —)';
+      } else if (nowObj) {
+        const dKp = fmtDelta(nowObj.Kp - prevObj.Kp);
+        const dKi = fmtDelta(nowObj.Ki - prevObj.Ki);
+        const dKd = fmtDelta(nowObj.Kd - prevObj.Kd);
+        elP.textContent =
+          `Prev — Kp: ${fmt(prevObj.Kp)} · Ki: ${fmt(prevObj.Ki)} · Kd: ${fmt(prevObj.Kd)} ` +
+          `(Δ Kp:${dKp}, Ki:${dKi}, Kd:${dKd})`;
+      } else {
+        elP.textContent =
+          `Prev — Kp: ${fmt(prevObj.Kp)} · Ki: ${fmt(prevObj.Ki)} · Kd: ${fmt(prevObj.Kd)}`;
+      }
+    }
+  });
 }
 
 function updateActiveSpool(mutator) {
@@ -3743,117 +4153,199 @@ async function printerBeep(kind='start') {
 
 /* ===== Live Telemetry Chart (temps, fan %, M73 %) ===== */
 const live = {
-  el: null, ctx: null, buf: [], maxSec: 600, // 10 minutes
-  lastFan255: 0, lastProg: null, raf: 0
+  els: [],        // canvases
+  ctxs: [],       // 2D contexts
+  buf: [],        // ring buffer of samples
+  maxSec: 600,    // 10 minutes window
+  lastFan255: 0,  // set elsewhere when fan speed is parsed (0..255)
+  lastProg: null, // set elsewhere from M73 (%) if available
+  raf: 0
 };
 
+
 (function initLiveChart(){
-  live.el = document.getElementById('liveChart');
-  if (!live.el) return;
-  live.ctx = live.el.getContext('2d');
+  // Prefer all canvases with class="liveChart"
+  live.els = Array.from(document.querySelectorAll('.liveChart'));
+  // Fallback to legacy single id="liveChart"
+  if (!live.els.length) {
+    const one = document.getElementById('liveChart');
+    if (one) live.els = [one];
+  }
+  live.ctxs = live.els.map(el => el.getContext('2d'));
 
   const resize = () => {
     const dpr = window.devicePixelRatio || 1;
-    const cssW = live.el.clientWidth || 900;
-    const cssH = live.el.clientHeight || 260;
-    live.el.width  = Math.round(cssW * dpr);
-    live.el.height = Math.round(cssH * dpr);
-    live.ctx.setTransform(dpr,0,0,dpr,0,0); // draw in CSS pixels
+    live.els.forEach((el, i) => {
+      const ctx = live.ctxs[i];
+      if (!ctx) return;
+      const cssW = el.clientWidth  || 900;
+      const cssH = el.clientHeight || 260;
+      el.width  = Math.round(cssW * dpr);
+      el.height = Math.round(cssH * dpr);
+      // draw in CSS pixels while benefiting from HiDPI backing store
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    });
     queueLiveDraw();
   };
+
   window.addEventListener('resize', resize);
   resize();
 })();
 
+function fmt(n, d=2) { return Number.isFinite(n) ? (+n).toFixed(d) : '—'; }
+function fmtDelta(n) {
+  if (!Number.isFinite(n)) return '—';
+  if (n === 0) return '±0.00';
+  return n > 0 ? `+${n.toFixed(2)}` : n.toFixed(2);
+}
+
+
 function recordLiveSample() {
-  if (!live.ctx) return;
-  const now = Date.now()/1000;
+  if (!live.ctxs.length) return;
+  const now = Date.now() / 1000;
+
+  // temps.* should already be maintained by your M105 parser
   live.buf.push({
     ts: now,
-    hot: Number.isFinite(temps.hot) ? temps.hot : null,
-    bed: Number.isFinite(temps.bed) ? temps.bed : null,
+    hot: Number.isFinite(temps?.hot) ? temps.hot : null,
+    bed: Number.isFinite(temps?.bed) ? temps.bed : null,
     fanPct: Number.isFinite(live.lastFan255) ? Math.round(live.lastFan255 * 100 / 255) : null,
     progPct: (live.lastProg != null ? live.lastProg : null)
   });
-  // drop old
+
+  // prune old samples outside window
   const cut = now - live.maxSec;
   while (live.buf.length && live.buf[0].ts < cut) live.buf.shift();
+
   queueLiveDraw();
 }
 
 function queueLiveDraw(){
   if (live.raf) return;
-  live.raf = requestAnimationFrame(() => { live.raf = 0; drawLive(); });
+  live.raf = requestAnimationFrame(() => {
+    live.raf = 0;
+    drawLive();
+  });
 }
 
 function drawLive(){
-  const el = live.el, ctx = live.ctx;
-  if (!ctx) return;
-  const W = el.clientWidth || 900, H = el.clientHeight || 260;
-  ctx.clearRect(0,0,W,H);
+  if (!live.ctxs.length) return;
 
-  // Axes and layout
-  const padL = 40, padR = 40, padT = 10, padB = 20;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
+  live.ctxs.forEach((ctx, idx) => {
+    const el = live.els[idx];
+    if (!ctx || !el) return;
 
-  // Time window
-  const now = Date.now()/1000;
-  const t0 = now - live.maxSec, t1 = now;
+    // Use canvas backing size (reliable even if hidden tab)
+    const dpr = window.devicePixelRatio || 1;
+    const W = (el.width  || (el.clientWidth  || 900) * dpr) / dpr;
+    const H = (el.height || (el.clientHeight || 260) * dpr) / dpr;
 
-  // Scales
-  const tempMin = 0, tempMax = 270;   // °C
-  const pctMin  = 0, pctMax  = 100;   // %
-  const xOf = ts => padL + ((ts - t0) / (t1 - t0)) * plotW;
-  const yTemp = v => padT + (1 - (v - tempMin) / (tempMax - tempMin)) * plotH;
-  const yPct  = v => padT + (1 - (v - pctMin)  / (pctMax  - pctMin )) * plotH;
+    // Panel + plot backgrounds (auto light/dark)
+    const bodyBg = getComputedStyle(document.body).backgroundColor || 'rgb(255,255,255)';
+    const [r,g,b] = (bodyBg.match(/\d+/g) || ['255','255','255']).slice(0,3).map(Number);
+    const isDark = (r+g+b) < 3*128;
 
-  // Grid
-  ctx.globalAlpha = 0.15;
-  ctx.strokeStyle = '#000';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let i=0;i<=5;i++){
-    const y = padT + (i/5)*plotH;
-    ctx.moveTo(padL, y); ctx.lineTo(W - padR, y);
-  }
-  ctx.stroke();
-  ctx.globalAlpha = 1;
-
-  // Labels
-  ctx.fillStyle = '#333';
-  ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Arial';
-  ctx.textAlign = 'left';  ctx.fillText('°C', 4, padT+12);
-  ctx.textAlign = 'right'; ctx.fillText('%', W-4, padT+12);
-
-  // Helper to draw a series
-  const drawSeries = (key, yFn, color, dash=[]) => {
+    // full panel background
     ctx.save();
-    ctx.strokeStyle = color;
-    ctx.setLineDash(dash);
-    ctx.lineWidth = 2;
-    let started = false;
+    ctx.setTransform(1,0,0,1,0,0); // ensure full-canvas fills align
+    ctx.clearRect(0,0,W,H);
+    ctx.fillStyle = isDark ? '#0f1115' : '#f7f7fa';
+    ctx.fillRect(0,0,W,H);
+    ctx.restore();
+
+    // layout
+    const padL = 40, padR = 40, padT = 10, padB = 20;
+    const plotW = W - padL - padR;
+    const plotH = H - padT - padB;
+
+    // plot background
+    ctx.save();
+    ctx.fillStyle = isDark ? '#151820' : '#ffffff';
+    ctx.fillRect(padL, padT, plotW, plotH);
+    ctx.restore();
+
+    // time domain
+    const now = Date.now()/1000;
+    const t0 = now - live.maxSec, t1 = now;
+
+    // scales
+    const tempMin = 0, tempMax = 270;  // °C
+    const pctMin  = 0, pctMax  = 100;  // %
+    const xOf   = ts => padL + ((ts - t0) / (t1 - t0)) * plotW;
+    const yTemp = v  => padT + (1 - (v - tempMin) / (tempMax - tempMin)) * plotH;
+    const yPct  = v  => padT + (1 - (v - pctMin)  / (pctMax  - pctMin )) * plotH;
+
+    // grid
+    ctx.globalAlpha = 0.15;
+    ctx.strokeStyle = isDark ? '#ffffff' : '#000000';
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    for (const s of live.buf) {
-      const v = s[key];
-      if (v == null || !isFinite(v)) continue;
-      const x = xOf(s.ts), y = yFn(v);
-      if (!started) { ctx.moveTo(x,y); started = true; }
-      else ctx.lineTo(x,y);
+    for (let i=0;i<=5;i++){
+      const y = padT + (i/5)*plotH;
+      ctx.moveTo(padL, y); ctx.lineTo(W - padR, y);
     }
     ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // axis labels
+    ctx.fillStyle = isDark ? '#d0d0d0' : '#333';
+    ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText('°C', 4, padT + 12);
+    ctx.textAlign = 'right';
+    ctx.fillText('%', W - 4, padT + 12);
+
+    // polyline helper
+    const drawSeries = (getY, key) => {
+      ctx.beginPath();
+      let started = false;
+      for (const s of live.buf) {
+        const v = s[key];
+        if (!Number.isFinite(v)) { started = false; continue; }
+        const x = xOf(s.ts), y = getY(v);
+        if (!started) { ctx.moveTo(x, y); started = true; }
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    };
+
+    // series styles (explicit so they’re visible on any background)
+    // Hotend (solid red)
+    ctx.save();
+    ctx.strokeStyle = '#e53935';
+    ctx.lineWidth   = 2;
+    ctx.setLineDash([]);
+    ctx.lineCap = 'round';
+    drawSeries(yTemp, 'hot');
     ctx.restore();
-  };
 
-  // Series
-  drawSeries('hot',    yTemp, '#e74c3c');        // Hotend (red)
-  drawSeries('bed',    yTemp, '#3498db', [6,4]); // Bed (blue, dashed)
-  drawSeries('fanPct', yPct,  '#7f8c8d');        // Fan % (gray)
-  drawSeries('progPct',yPct,  '#2ecc71');        // M73 % (green)
+    // Bed (dashed blue)
+    ctx.save();
+    ctx.strokeStyle = '#1e88e5';
+    ctx.lineWidth   = 2;
+    ctx.setLineDash([5,4]);
+    ctx.lineCap = 'round';
+    drawSeries(yTemp, 'bed');
+    ctx.restore();
 
-  // Frame
-  ctx.strokeStyle = '#ccc';
-  ctx.strokeRect(padL, padT, plotW, plotH);
+    // Fan % (solid grey, right axis)
+    ctx.save();
+    ctx.strokeStyle = '#6d6d6d';
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([]);
+    drawSeries(yPct, 'fanPct');
+    ctx.restore();
+
+    // M73 progress % (dotted green, right axis)
+    ctx.save();
+    ctx.strokeStyle = '#43a047';
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([2,3]);
+    drawSeries(yPct, 'progPct');
+    ctx.restore();
+  });
 }
+const drawline = drawLive;
 
 function openPreflight(file) {
   _preflightFile = file;
@@ -4023,6 +4515,10 @@ function fmtRate(v) {
   if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB/s`;
   return `${(v / 1024 / 1024).toFixed(2)} MB/s`;
 }
+
+
+
+
 
 function updateNetUi() {
   const el = document.getElementById('netPill');
@@ -5589,7 +6085,7 @@ async function readLoop() {
   const updateTempsThrottled = throttle(() => {
     updateTempPanel?.();
     if (pidActiveHotend) pidUiUpdate?.('hotend', temps.hot, pidTargetTemp ?? temps.hotTarget ?? null);
-    if (pidActiveBed)    pidUiUpdate?.('bed',    temps.bed, pidTargetTemp ?? temps.bedTarget ?? null);
+    if (pidActiveBed)    pidUiUpdate?.('bed',    temps.bed,  pidTargetTemp ?? temps.bedTarget ?? null);
   }, 250); // ~4x/sec
 
   const logTempsThrottled = throttle(() => {
@@ -5602,6 +6098,17 @@ async function readLoop() {
     logMsg?.(`🌡 Hotend ${hotStr} · Bed ${bedStr}`);
   }, 500);
   // ---------------------------------------------------------------
+
+  // Regex used below
+  const M73_RE     = /\bM73\b(?:\s+P\s*([0-9]+))?(?:\s+R\s*([0-9]+))?/i;
+  const FAN_M106   = /\bM106\b[^S]*S\s*([0-9]{1,3})\b/i;
+  const FAN_AT     = /@:\s*([0-9]{1,3})\b/;
+
+  // PID constants styles
+  const PID_K_LINE = /\bKp:\s*([+\-]?\d+(?:\.\d+)?(?:e[+\-]?\d+)?)\s*Ki:\s*([+\-]?\d+(?:\.\d+)?(?:e[+\-]?\d+)?)\s*Kd:\s*([+\-]?\d+(?:\.\d+)?(?:e[+\-]?\d+)?)/i;
+  const DEF_KP     = /#define\s+DEFAULT_Kp\s+([+\-]?\d+(?:\.\d+)?(?:e[+\-]?\d+)?)/i;
+  const DEF_KI     = /#define\s+DEFAULT_Ki\s+([+\-]?\d+(?:\.\d+)?(?:e[+\-]?\d+)?)/i;
+  const DEF_KD     = /#define\s+DEFAULT_Kd\s+([+\-]?\d+(?:\.\d+)?(?:e[+\-]?\d+)?)/i;
 
   reading = true;
   try {
@@ -5628,12 +6135,14 @@ async function readLoop() {
       const parts = rxBuffer.split(/\r?\n/);
       rxBuffer = parts.pop(); // keep incomplete tail
 
+      // Fallback accumulators for Style 2 defines (in case they appear split across lines)
+      let defKp, defKi, defKd;
+
       for (const raw of parts) {
         const line = raw.trim();
         if (!line) { await yieldToUI(); continue; }
 
         // ===== TEMPERATURES (M105-style) =====
-        // Expect globals: TEMP_T, TEMP_B
         const tMatch = !captureMode && TEMP_T?.test ? line.match(TEMP_T) : null;
         const bMatch = !captureMode && TEMP_B?.test ? line.match(TEMP_B) : null;
 
@@ -5658,7 +6167,8 @@ async function readLoop() {
           }
         }
         if (tMatch || bMatch) {
-          updateTempsThrottled(); // updates pills regardless of Debug
+          updateTempsThrottled();
+          recordLiveSample?.();
         }
 
         // ===== LIVE Z TRACKING =====
@@ -5670,10 +6180,30 @@ async function readLoop() {
           }
         }
 
-        // ===== CAPTURE / LOGGING =====
+        // ===== CAPTURE / LOGGING PREP =====
         const out = (typeof normalizeLine === 'function') ? normalizeLine(line) : line;
 
-        // Telemetry if we parsed temps OR see T:/B: prefix in raw or normalized text
+        // M73 progress (%)
+        const m73 = out.match(M73_RE);
+        if (m73 && m73[1] != null) {
+          const p = Math.max(0, Math.min(100, parseInt(m73[1], 10)));
+          if (live) live.lastProg = p;
+        }
+
+        // Fan PWM
+        const fmAt = out.match(FAN_AT);
+        if (fmAt) {
+          const s = parseInt(fmAt[1], 10);
+          if (Number.isFinite(s)) live && (live.lastFan255 = Math.max(0, Math.min(255, s)));
+        } else {
+          const fm = out.match(FAN_M106);
+          if (fm) {
+            const s = parseInt(fm[1], 10);
+            if (Number.isFinite(s)) live && (live.lastFan255 = Math.max(0, Math.min(255, s)));
+          }
+        }
+
+        // Telemetry flag
         const looksTelemetry = !!(tMatch || bMatch || /^T:|^B:/i.test(line) || /^T:|^B:/i.test(out));
 
         // Capture non-ok lines
@@ -5690,10 +6220,8 @@ async function readLoop() {
 
         // Final logging rules
         if (!window.debugMode) {
-          // Normal mode: suppress telemetry & noisy entirely
           if (!looksTelemetry && !noisy) logMsg?.(out);
         } else {
-          // Debug mode: pretty temps (throttled), otherwise log
           if (looksTelemetry) logTempsThrottled();
           else                logMsg?.(out);
         }
@@ -5728,6 +6256,8 @@ async function readLoop() {
           const t = pidTargetTemp ?? (isBed ? temps.bedTarget : temps.hotTarget) ?? '—';
           pidUiStart?.(kind, t);
           setActivity?.('PID tuning…', 'warn');
+          // reset define accumulators at start of a tune
+          defKp = defKi = defKd = undefined;
         }
         if (/PID Autotune finished/i.test(out)) {
           const isBed = /\(bed\)|\bE-?1\b|\bBED\b/i.test(out) || pidTarget === 'bed';
@@ -5735,6 +6265,14 @@ async function readLoop() {
           setActivity?.('PID tuning complete', 'ok');
           pidUiFinish?.(kind, true, null);
           setPidActive?.(kind, false);
+
+          // If we collected defines but never saw Style 1, commit them here
+          if (Number.isFinite(defKp) || Number.isFinite(defKi) || Number.isFinite(defKd)) {
+            const kp = Number.isFinite(defKp) ? defKp : NaN;
+            const ki = Number.isFinite(defKi) ? defKi : NaN;
+            const kd = Number.isFinite(defKd) ? defKd : NaN;
+            setPidResult?.(kind, kp, ki, kd);
+          }
         }
         if (/PID Autotune failed/i.test(out)) {
           const isBed = /\(bed\)|\bE-?1\b|\bBED\b/i.test(out) || pidTarget === 'bed';
@@ -5744,15 +6282,30 @@ async function readLoop() {
           setPidActive?.(kind, false);
         }
 
-        // PID constants line  "Kp: .. Ki: .. Kd: .."
-        const kpki = out.match(/\bKp:\s*([0-9.+-]+)\s*Ki:\s*([0-9.+-]+)\s*Kd:\s*([0-9.+-]+)/i);
-        if (kpki) {
-          const params = { Kp: +kpki[1], Ki: +kpki[2], Kd: +kpki[3] };
-          const kind = pidActiveBed ? 'bed'
-                    : (pidActiveHotend ? 'hotend'
-                    : (pidTarget || 'hotend'));
-          pidUiFinish?.(kind, true, params);
+        // ===== PID constants capture =====
+        // Style 1: "Kp: .. Ki: .. Kd: .."
+        let m = out.match(PID_K_LINE);
+        if (m) {
+          const kp = parseFloat(m[1]), ki = parseFloat(m[2]), kd = parseFloat(m[3]);
+          const kind = pidActiveBed ? 'bed' : (pidActiveHotend ? 'hotend' : (pidTarget || 'hotend'));
+          pidUiFinish?.(kind, true, { Kp: kp, Ki: ki, Kd: kd });
           setPidActive?.(kind, false);
+          setPidResult?.(kind, kp, ki, kd);
+        }
+
+        // Style 2: "#define DEFAULT_Kx …" (may appear on separate lines)
+        let md;
+        if ((md = out.match(DEF_KP))) defKp = parseFloat(md[1]);
+        if ((md = out.match(DEF_KI))) defKi = parseFloat(md[1]);
+        if ((md = out.match(DEF_KD))) {
+          defKd = parseFloat(md[1]);
+          // If we already have Kp/Ki by now, we can commit immediately
+          if (Number.isFinite(defKp) && Number.isFinite(defKi)) {
+            const kind = pidActiveBed ? 'bed' : (pidActiveHotend ? 'hotend' : (pidTarget || 'hotend'));
+            pidUiFinish?.(kind, true, { Kp: defKp, Ki: defKi, Kd: defKd });
+            setPidActive?.(kind, false);
+            setPidResult?.(kind, defKp, defKi, defKd);
+          }
         }
 
         // ===== OK RESOLVER =====
@@ -5789,9 +6342,6 @@ async function readLoop() {
     reading = false;
   }
 }
-
-
-
 
 
 
@@ -5903,13 +6453,21 @@ async function runBedPID() {
   const c = promptCycles('bed');
   if (c === null) return;
 
+  // NEW: remember target + start UI
+  pidTargetTemp = Math.round(t);
+  setPidActive('bed', true);
+  pidUiStart('bed', pidTargetTemp); // shows “Target: …” immediately
+
   setActivity(`PID bed @ ${t}°C (C=${c})…`, 'warn');
   pidTarget = 'bed';
   try {
     await sendCmd(`M303 C${c} E-1 S${t} U`);
     await waitForOk();
   } finally {
+    // NEW: clear UI flags when the command finishes
     pidTarget = null;
+    setPidActive('bed', false);
+    pidTargetTemp = null;
   }
   logMsg('ℹ️ PID tuning can take a few minutes. Send M500 to save if required.');
 }
@@ -5920,13 +6478,21 @@ async function runHotendPID() {
   const c = promptCycles('hotend');
   if (c === null) return;
 
+  // NEW: remember target + start UI
+  pidTargetTemp = Math.round(t);
+  setPidActive('hotend', true);
+  pidUiStart('hotend', pidTargetTemp); // shows “Target: …” immediately
+
   setActivity(`PID hotend @ ${t}°C (C=${c})…`, 'warn');
   pidTarget = 'hotend';
   try {
     await sendCmd(`M303 C${c} E0 S${t} U`);
     await waitForOk();
   } finally {
+    // NEW: clear UI flags when the command finishes
     pidTarget = null;
+    setPidActive('hotend', false);
+    pidTargetTemp = null;
   }
   logMsg('ℹ️ PID tuning can take a few minutes. Send M500 to save if required.');
 }
@@ -6273,7 +6839,20 @@ exportMeshBtn.addEventListener('click', () => {
 });
 
 resetBtn.addEventListener('click', () => {
-if (safeConfirm('Reset all saved data?')) { localStorage.clear(); location.reload(); }
+  if (!safeConfirm('Reset leveling data (grid only)?')) return;
+
+  const cleared = clearLevelingData(); // same helper from before
+
+  if (cleared) {
+    setActivity?.('Leveling data cleared', 'ok');
+    // Clear in-memory state and re-render UI
+    resetMeshScratch?.();
+    renderMeshInputs?.(null);
+    renderSuggestions?.(null);
+    updateLastUpdated?.();
+  } else {
+    setActivity?.('No leveling data found', 'warn');
+  }
 });
 
 readMeshBtn.addEventListener('click', homeAndProbe);
@@ -6931,6 +7510,7 @@ Help.register('senderTab', {
   updateLevelView();
   initPrinterName();
   updateUnlockUi();
+  restorePidResultsFromStorage();
 })();
 </script>
 </body>
