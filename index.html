@@ -218,6 +218,8 @@
   border-bottom: 1px solid #eee;
 }
 
+.pidDebug { max-height: 160px; overflow: auto; }
+
 #eeBody {
   padding: 14px 16px;
   white-space: pre-wrap;   /* preserve line breaks */
@@ -617,6 +619,10 @@
     <div class="muted" id="pidHotInfo">T: — / Target: — (Δ —)</div>
     <div class="muted" id="pidHotResult">Kp: — · Ki: — · Kd: —</div>
     <p class="muted" id="pidHotPrev">Prev — Kp: — · Ki: — · Kd: — (Δ —)</p>
+    <details class="muted" id="pidHotDbgBox">
+  <summary>PID Debug</summary>
+  <pre id="pidHotDbg" class="pidDebug"></pre>
+</details>
   </div>
 
   <!-- Bed -->
@@ -631,6 +637,10 @@
     <div class="muted" id="pidBedInfo">T: — / Target: — (Δ —)</div>
     <div class="muted" id="pidBedResult">Kp: — · Ki: — · Kd: —</div>
     <p class="muted" id="pidBedPrev">Prev — Kp: — · Ki: — · Kd: — (Δ —)</p>
+    <details class="muted" id="pidBedDbgBox">
+  <summary>PID Debug</summary>
+  <pre id="pidBedDbg" class="pidDebug"></pre>
+</details>
   </div>
 </div>
 
@@ -1063,7 +1073,37 @@ function captureReplyOnce({ doneOnOk = true } = {}) {
   });
 }
 
+const _fmt1 = v => Number.isFinite(v) ? (+v).toFixed(1) : '—';
+const _fmt0 = v => Number.isFinite(v) ? Math.round(v)    : '—';
 
+function inferKuTuFromPid(kp, ki, kd, rule /* 'classic' | 'no-overshoot' */) {
+  if (!(Number.isFinite(kp) && Number.isFinite(ki) && Number.isFinite(kd))) return null;
+
+  const fromClassic = () => {
+    const Ku = kp / 0.6;
+    const TuA = 2 * kp / ki;    // from Ki
+    const TuB = 8 * kd / kp;    // from Kd
+    const Tu = (TuA + TuB) / 2; // average; they should be nearly equal
+    return { Ku, Tu, TuA, TuB, rule: 'classic' };
+  };
+
+  const fromNoOv = () => {
+    const Ku = kp / 0.2;        // = 5*kp
+    const TuA = 2 * kp / ki;    // from Ki
+    const TuB = 3 * kd / kp;    // from Kd
+    const Tu = (TuA + TuB) / 2;
+    return { Ku, Tu, TuA, TuB, rule: 'no-overshoot' };
+  };
+
+  if (rule === 'classic') return fromClassic();
+  if (rule === 'no-overshoot') return fromNoOv();
+
+  // If rule string is unknown, guess by checking Ti and Td consistency
+  const Ti = kp / ki, Td = kd / kp;
+  const scoreClassic  = Math.abs(2*Ti - 8*Td); // should be ~0 for classic
+  const scoreNoOv     = Math.abs(2*Ti - 3*Td); // should be ~0 for no-overshoot
+  return (scoreClassic <= scoreNoOv) ? fromClassic() : fromNoOv();
+}
 
 let lastHomeHintAt = 0;  // when we last saw a "homing-ish" line
 
@@ -1157,6 +1197,9 @@ let _tlDrawing = null;                 // interval ID while recording
 const pidCap = { kind: null, pending: false, kp: null, ki: null, kd: null, committed: false };
 
 const SETTINGS_KEY = 'settings'; // change if your app uses another key
+
+
+
 
 // Webcam DOM
 const camModeMjpeg   = document.getElementById('camModeMjpeg');
@@ -1333,13 +1376,19 @@ const pidEls = {
     status: document.getElementById('pidHotStatus'),
     bar:    document.getElementById('pidHotBar'),
     info:   document.getElementById('pidHotInfo'),
-    res:    document.getElementById('pidHotResult')
+    res:    document.getElementById('pidHotResult'),
+    prev:   document.getElementById('pidHotPrev'),
+    dbgBox: document.getElementById('pidHotDbgBox'),
+    dbg:    document.getElementById('pidHotDbg')
   },
   bed: {
     status: document.getElementById('pidBedStatus'),
     bar:    document.getElementById('pidBedBar'),
     info:   document.getElementById('pidBedInfo'),
-    res:    document.getElementById('pidBedResult')
+    res:    document.getElementById('pidBedResult'),
+    prev:   document.getElementById('pidBedPrev'),
+    dbgBox: document.getElementById('pidBedDbgBox'),
+    dbg:    document.getElementById('pidBedDbg')
   }
 };
 
@@ -1351,6 +1400,80 @@ const pidCurr = {
 /* =========================================================
    2) CONSTANTS (maps, regex, fixed values)
 ========================================================= */
+
+(function () {
+  const fmt = (n, d = 4) => Number.isFinite(n) ? (+n).toFixed(d) : '—';
+
+  const ids = (which) => {
+    const bed = (which === 'bed');
+    return {
+      boxId:  bed ? 'pidBedDbgBox'  : 'pidHotDbgBox',
+      preId:  bed ? 'pidBedDbg'     : 'pidHotDbg',
+      metaId: bed ? 'pidBedDbgMeta' : 'pidHotDbgMeta',
+    };
+  };
+
+  function ensureEls(which) {
+    const { boxId, preId, metaId } = ids(which);
+    let box = document.getElementById(boxId);
+    let pre = document.getElementById(preId);
+    if (!box && pre) box = pre.closest('details') || null;
+
+    let metaEl = document.getElementById(metaId);
+    // If we have a <details> and <pre> but no meta line, create one before the <pre>
+    if (!metaEl && box && pre) {
+      metaEl = document.createElement('div');
+      metaEl.id = metaId;
+      metaEl.className = 'pidDebugMeta muted';
+      metaEl.style.margin = '6px 0';
+      box.insertBefore(metaEl, pre);
+    }
+    return { box, pre, metaEl };
+  }
+
+  // Start: clear the log and open the <details>
+  window.pidDebugStart ||= function (which) {
+    const { box, pre } = ensureEls(which);
+    if (pre) pre.textContent = '';
+    if (box) box.setAttribute('open', '');
+  };
+
+  // Append a line to the <pre>
+  window.pidDebugLine ||= function (which, line) {
+    const { pre } = ensureEls(which);
+    if (!pre || !line) return;
+    pre.textContent += (pre.textContent ? '\n' : '') + line;
+    pre.scrollTop = pre.scrollHeight;
+  };
+
+  // End marker
+  window.pidDebugEnd ||= function (which, ok) {
+    window.pidDebugLine?.(which, ok ? '— autotune finished —' : '— autotune failed —');
+  };
+
+  // Meta summary (rule, bias, d, min/max, Ku, Tu)
+  // Call site example: pidDebugMeta(kind, { rule, bias, d, min, max, Ku, Tu })
+  window.pidDebugMeta ||= function (which, meta) {
+    const { metaEl } = ensureEls(which);
+
+    const rule = (meta?.rule) ? String(meta.rule) : '—';
+    const bias = Number.isFinite(meta?.bias) ? fmt(meta.bias, 2) : '—';
+    const d    = Number.isFinite(meta?.d)    ? fmt(meta.d, 2)    : '—';
+    const vmin = Number.isFinite(meta?.min)  ? fmt(meta.min, 4)  : '—';
+    const vmax = Number.isFinite(meta?.max)  ? fmt(meta.max, 4)  : '—';
+    const ku   = Number.isFinite(meta?.Ku)   ? fmt(meta.Ku, 4)   : '—';
+    const tu   = Number.isFinite(meta?.Tu)   ? fmt(meta.Tu, 4)   : '—';
+
+    const line = `Rule: ${rule} · bias:${bias} d:${d} · min:${vmin} max:${vmax} · Ku:${ku} Tu:${tu}`;
+
+    if (metaEl) {
+      metaEl.textContent = line;
+    } else {
+      // If there's no meta container, just log it into the <pre>
+      window.pidDebugLine?.(which, line);
+    }
+  };
+})();
 
 const isDebug = () => !!window.debugMode;
 
@@ -1410,6 +1533,30 @@ document.getElementById('parseM115Btn')?.addEventListener('click', async () => {
     renderM115Table('#m115Table', parseM115Response(fallback));
   }
 });
+
+
+function pidDebugStart(which) {
+  const k = (which === 'bed') ? 'bed' : 'hot';
+  if (pidEls[k]?.dbg)  pidEls[k].dbg.textContent = '';
+  if (pidEls[k]?.dbgBox) {
+    if (isDebug?.()) pidEls[k].dbgBox.setAttribute('open', '');
+    else             pidEls[k].dbgBox.removeAttribute('open');
+  }
+}
+
+function pidDebugLine(which, line) {
+  const k = (which === 'bed') ? 'bed' : 'hot';
+  const pre = pidEls[k]?.dbg;
+  if (!pre || !line) return;
+  pre.textContent += (pre.textContent ? '\n' : '') + line;
+  pre.scrollTop = pre.scrollHeight;
+}
+
+function pidDebugEnd(which, ok) {
+  // Optional: stamp a final line
+  pidDebugLine(which, ok ? '— autotune finished —' : '— autotune failed —');
+}
+
 
 async function populateRtcDevices() {
   try {
@@ -2429,6 +2576,8 @@ const maintSummary  = document.getElementById('maintSummary');
 const maintExport   = document.getElementById('maintExport');
 const maintClearAll = document.getElementById('maintClearAll');
 
+
+
 function loadMaint() {
   try { maint = JSON.parse(localStorage.getItem(LS_MAINT) || '[]'); }
   catch { maint = []; }
@@ -2670,25 +2819,46 @@ const vState = {
    5) HELPERS (pure UI / formatting / state)
 ========================================================= */
 
-function pidCommitIfReady() {
+const pidCommitIfReady = () => {
   if (!pidCap.pending || pidCap.committed) return;
-  const { kp, ki, kd, kind } = pidCap;
-  if (Number.isFinite(kp) && Number.isFinite(ki) && Number.isFinite(kd) && (kind === 'bed' || kind === 'hotend')) {
-    // 1) finish the UI with real numbers
+  const { kind, kp, ki, kd } = pidCap;
+  if ((kind === 'bed' || kind === 'hotend')
+      && Number.isFinite(kp) && Number.isFinite(ki) && Number.isFinite(kd)) {
+
+    // Finish UI + clear active
     pidUiFinish?.(kind, true, { Kp: kp, Ki: ki, Kd: kd });
-    // 2) stop showing as active only now
     setPidActive?.(kind, false);
-    // 3) write current to <div> and previous to <p> (prev persists)
+
+    // Write NEW -> <div>, PREV -> <p> (and persist prev)
     setPidResult?.(kind, kp, ki, kd);
-    // 4) latch closed
+
+    // (Optional) derive Ku/Tu now that we have Kp/Ki/Kd:
+    const rule =
+      (pidCap?.meta?.rule && pidCap.meta.rule.toLowerCase().includes('classic'))      ? 'classic' :
+      (pidCap?.meta?.rule && pidCap.meta.rule.toLowerCase().includes('no overshoot')) ? 'no-overshoot' :
+      undefined;
+
+    const back = inferKuTuFromPid(kp, ki, kd, rule);
+    if (back) {
+      const line = `Ku≈${back.Ku.toFixed(4)}, Tu≈${back.Tu.toFixed(4)} ` +
+                   `(Tu from Ki:${back.TuA.toFixed(4)}, from Kd:${back.TuB.toFixed(4)})` +
+                   (back.rule ? ` [${back.rule}]` : '');
+      // Safely append to the correct debug box
+      (typeof pidDebugLine === 'function')
+        ? pidDebugLine(kind, line)
+        : (() => {
+            const pre = document.getElementById(kind === 'bed' ? 'pidBedDbg' : 'pidHotDbg');
+            if (pre) { pre.textContent += (pre.textContent ? '\n' : '') + line; }
+          })();
+    }
+
+    // Close latch
     pidCap.committed = true;
     pidCap.pending = false;
     pidCap.kind = null;
-    // optional: clear target override
-    pidTargetTemp = null;
+    try { pidTargetTemp = null; } catch {}
   }
-}
-
+};
 function clearLevelingData() {
   let cleared = false;
 
@@ -4277,47 +4447,44 @@ function drawLive(){
     const el = live.els[idx];
     if (!ctx || !el) return;
 
-    // Use canvas backing size (reliable even if hidden tab)
+    // Use backing size (works even on hidden tab)
     const dpr = window.devicePixelRatio || 1;
     const W = (el.width  || (el.clientWidth  || 900) * dpr) / dpr;
     const H = (el.height || (el.clientHeight || 260) * dpr) / dpr;
 
-    // Panel + plot backgrounds (auto light/dark)
+    // Panel bg (auto light/dark)
     const bodyBg = getComputedStyle(document.body).backgroundColor || 'rgb(255,255,255)';
     const [r,g,b] = (bodyBg.match(/\d+/g) || ['255','255','255']).slice(0,3).map(Number);
     const isDark = (r+g+b) < 3*128;
 
-    // full panel background
     ctx.save();
-    ctx.setTransform(1,0,0,1,0,0); // ensure full-canvas fills align
+    ctx.setTransform(1,0,0,1,0,0);
     ctx.clearRect(0,0,W,H);
     ctx.fillStyle = isDark ? '#0f1115' : '#f7f7fa';
     ctx.fillRect(0,0,W,H);
     ctx.restore();
 
-    // layout
+    // Plot rect
     const padL = 40, padR = 40, padT = 10, padB = 20;
     const plotW = W - padL - padR;
     const plotH = H - padT - padB;
-
-    // plot background
     ctx.save();
     ctx.fillStyle = isDark ? '#151820' : '#ffffff';
     ctx.fillRect(padL, padT, plotW, plotH);
     ctx.restore();
 
-    // time domain
+    // Time domain
     const now = Date.now()/1000;
     const t0 = now - live.maxSec, t1 = now;
 
-    // scales
-    const tempMin = 0, tempMax = 270;  // °C
-    const pctMin  = 0, pctMax  = 100;  // %
+    // Scales
+    const tempMin = 0, tempMax = 270;
+    const pctMin  = 0, pctMax  = 100;
     const xOf   = ts => padL + ((ts - t0) / (t1 - t0)) * plotW;
     const yTemp = v  => padT + (1 - (v - tempMin) / (tempMax - tempMin)) * plotH;
     const yPct  = v  => padT + (1 - (v - pctMin)  / (pctMax  - pctMin )) * plotH;
 
-    // grid
+    // Grid
     ctx.globalAlpha = 0.15;
     ctx.strokeStyle = isDark ? '#ffffff' : '#000000';
     ctx.lineWidth = 1;
@@ -4329,7 +4496,7 @@ function drawLive(){
     ctx.stroke();
     ctx.globalAlpha = 1;
 
-    // axis labels
+    // Axis labels
     ctx.fillStyle = isDark ? '#d0d0d0' : '#333';
     ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Arial';
     ctx.textAlign = 'left';
@@ -4337,8 +4504,9 @@ function drawLive(){
     ctx.textAlign = 'right';
     ctx.fillText('%', W - 4, padT + 12);
 
-    // polyline helper
+    // Polyline helper
     const drawSeries = (getY, key) => {
+      if (!live.buf?.length) return; // no samples yet → don't draw lines
       ctx.beginPath();
       let started = false;
       for (const s of live.buf) {
@@ -4351,43 +4519,46 @@ function drawLive(){
       ctx.stroke();
     };
 
-    // series styles (explicit so they’re visible on any background)
-    // Hotend (solid red)
-    ctx.save();
-    ctx.strokeStyle = '#e53935';
-    ctx.lineWidth   = 2;
-    ctx.setLineDash([]);
-    ctx.lineCap = 'round';
-    drawSeries(yTemp, 'hot');
-    ctx.restore();
+    // Hotend (red), Bed (blue dashed), Fan% (grey), M73% (green dotted)
+    ctx.save(); ctx.strokeStyle = '#e53935'; ctx.lineWidth = 2;   ctx.setLineDash([]);     ctx.lineCap='round'; drawSeries(yTemp,'hot');     ctx.restore();
+    ctx.save(); ctx.strokeStyle = '#1e88e5'; ctx.lineWidth = 2;   ctx.setLineDash([5,4]);  ctx.lineCap='round'; drawSeries(yTemp,'bed');     ctx.restore();
+    ctx.save(); ctx.strokeStyle = '#6d6d6d'; ctx.lineWidth = 1.5; ctx.setLineDash([]);                         drawSeries(yPct ,'fanPct');  ctx.restore();
+    ctx.save(); ctx.strokeStyle = '#43a047'; ctx.lineWidth = 1.5; ctx.setLineDash([2,3]);                      drawSeries(yPct,'progPct');  ctx.restore();
 
-    // Bed (dashed blue)
-    ctx.save();
-    ctx.strokeStyle = '#1e88e5';
-    ctx.lineWidth   = 2;
-    ctx.setLineDash([5,4]);
-    ctx.lineCap = 'round';
-    drawSeries(yTemp, 'bed');
-    ctx.restore();
+    // === PID target overlay (dashed purple) ===
+    let tPid = null;
+    if (pidActiveBed || pidActiveHotend || pidTarget) {
+      if (Number.isFinite(pidTargetTemp)) {
+        tPid = pidTargetTemp;
+      } else if ((pidActiveBed || pidTarget === 'bed') && Number.isFinite(temps.bedTarget)) {
+        tPid = temps.bedTarget;
+      } else if ((pidActiveHotend || pidTarget === 'hotend') && Number.isFinite(temps.hotTarget)) {
+        tPid = temps.hotTarget;
+      }
+    }
+    if (Number.isFinite(tPid)) {
+      // clamp to chart range in case target is outside bounds
+      const tClamped = Math.min(Math.max(tPid, tempMin), tempMax);
+      const y = yTemp(tClamped);
 
-    // Fan % (solid grey, right axis)
-    ctx.save();
-    ctx.strokeStyle = '#6d6d6d';
-    ctx.lineWidth   = 1.5;
-    ctx.setLineDash([]);
-    drawSeries(yPct, 'fanPct');
-    ctx.restore();
-
-    // M73 progress % (dotted green, right axis)
-    ctx.save();
-    ctx.strokeStyle = '#43a047';
-    ctx.lineWidth   = 1.5;
-    ctx.setLineDash([2,3]);
-    drawSeries(yPct, 'progPct');
-    ctx.restore();
+      ctx.save();
+      ctx.strokeStyle = '#8e24aa';
+      ctx.setLineDash([8,4]);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(padL, y);
+      ctx.lineTo(W - padR, y);
+      ctx.stroke();
+      ctx.fillStyle = '#8e24aa';
+      ctx.font = '11px system-ui, -apple-system, Segoe UI, Roboto, Arial';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(`PID Target ${Math.round(tPid)}°`, W - padR - 4, y - 4);
+      ctx.restore();
+    }
   });
 }
-const drawline = drawLive;
+
 
 function openPreflight(file) {
   _preflightFile = file;
@@ -4807,36 +4978,79 @@ function pidUiStart(kind, targetTemp) {
   pidEls[k].bar.style.width = '10%';
   pidEls[k].bar.classList.add('pulse'); // animated via your .pulse keyframes
   pidEls[k].info.textContent = `T: — / Target: ${targetTemp} (Δ —)`;
+  queueLiveDraw?.();
 }
 
-function pidUiUpdate(kind, currentTemp, targetTemp) {
-  const k = kind === 'bed' ? 'bed' : 'hot';
-  const delta = (Number.isFinite(currentTemp) && Number.isFinite(targetTemp))
-    ? (currentTemp - targetTemp) : NaN;
-  pidEls[k].info.textContent = `T: ${fmt1(currentTemp)} / Target: ${fmt1(targetTemp)} (Δ ${fmt1(delta)})`;
+function pidUiUpdate(which, currentTemp, targetTemp) {
+  const isBed = (which === 'bed');
+  const idStem = isBed ? 'pidBed' : 'pidHot';
 
-  // progress is indicative: map |Δ| → progress (closer == more progress)
-  if (Number.isFinite(currentTemp) && Number.isFinite(targetTemp)) {
-    const diff = Math.abs(currentTemp - targetTemp);
-    // crude mapping: >30° → 15%, 15° → 35%, 5° → 65%, 2° → 85%, <1° → 95%
-    let pct = 15;
-    if (diff < 30) pct = 35;
-    if (diff < 15) pct = 55;
-    if (diff < 5)  pct = 75;
-    if (diff < 2)  pct = 90;
-    if (diff < 1)  pct = 96;
-    pidEls[k].bar.style.width = pct + '%';
+  const infoEl   = document.getElementById(idStem + 'Info');   // e.g. "T: — / Target: — (Δ —)"
+  const statusEl = document.getElementById(idStem + 'Status'); // optional
+  const barEl    = document.getElementById(idStem + 'Bar');    // optional progress bar
+
+  // Fallbacks if caller doesn't pass temps
+  if (!Number.isFinite(currentTemp)) currentTemp = isBed ? temps?.bed : temps?.hot;
+  if (!Number.isFinite(targetTemp)) {
+    // prefer explicit PID target if present, else live tool target
+    targetTemp = Number.isFinite(pidTargetTemp)
+      ? pidTargetTemp
+      : (isBed ? temps?.bedTarget : temps?.hotTarget);
   }
+
+  // Update info line
+  if (infoEl) {
+    const d = (Number.isFinite(currentTemp) && Number.isFinite(targetTemp))
+      ? (currentTemp - targetTemp) : null;
+    infoEl.textContent =
+      `T: ${_fmt1(currentTemp)} / Target: ${_fmt0(targetTemp)} ` +
+      (Number.isFinite(d) ? `(Δ ${_fmt1(d)})` : `(Δ —)`);
+  }
+
+  // Optional UI bits
+  if (statusEl) statusEl.textContent = 'Tuning…';
+  if (barEl)    barEl.classList.add('pulse'); // keep your CSS pulse
+
+  // keep the chart overlay in sync (purple PID Target line)
+  queueLiveDraw?.();
 }
 
-function pidUiFinish(kind, ok, params) {
-  const k = kind === 'bed' ? 'bed' : 'hot';
-  pidEls[k].bar.classList.remove('pulse');
-  pidEls[k].bar.style.width = ok ? '100%' : '0%';
-  pidEls[k].status.textContent = ok ? 'Done' : 'Failed';
-  if (ok && params && (params.Kp!=null || params.Ki!=null || params.Kd!=null)) {
-    pidEls[k].res.textContent = `Kp: ${fmt2(params.Kp)} · Ki: ${fmt2(params.Ki)} · Kd: ${fmt2(params.Kd)}`;
+function pidUiFinish(which, ok, params) {
+  const isBed = (which === 'bed');
+  const idStem = isBed ? 'pidBed' : 'pidHot';
+
+  const infoEl   = document.getElementById(idStem + 'Info');
+  const statusEl = document.getElementById(idStem + 'Status');
+  const barEl    = document.getElementById(idStem + 'Bar');
+
+  // Status + bar
+  if (statusEl) statusEl.textContent = ok ? 'Complete' : 'Failed';
+  if (barEl)    barEl.classList.remove('pulse');
+
+  // Leave the Kp/Ki/Kd RESULT ALONE. (setPidResult handles that elsewhere.)
+
+  // Refresh the info line one last time with whatever temps/target we have
+  const currentTemp = isBed ? temps?.bed : temps?.hot;
+  const targetTemp  = Number.isFinite(pidTargetTemp)
+    ? pidTargetTemp
+    : (isBed ? temps?.bedTarget : temps?.hotTarget);
+
+  if (infoEl) {
+    const d = (Number.isFinite(currentTemp) && Number.isFinite(targetTemp))
+      ? (currentTemp - targetTemp) : null;
+    infoEl.textContent =
+      `T: ${_fmt1(currentTemp)} / Target: ${_fmt0(targetTemp)} ` +
+      (Number.isFinite(d) ? `(Δ ${_fmt1(d)})` : `(Δ —)`);
   }
+
+  // If you want to show the “proposed” PID values in a small note (optional):
+  // const noteEl = document.getElementById(idStem + 'Note');
+  // if (noteEl && ok && params && Number.isFinite(params.Kp)) {
+  //   noteEl.textContent = `Suggested: Kp ${params.Kp.toFixed(2)}, Ki ${params.Ki.toFixed(2)}, Kd ${params.Kd.toFixed(2)}`;
+  // }
+
+  // Redraw so the target line updates/clears depending on your setPidActive/cleanup sequence
+  queueLiveDraw?.();
 }
 
 function fmt1(n){ return Number.isFinite(n) ? n.toFixed(1) : '—'; }
@@ -4846,28 +5060,49 @@ function setPidActive(tool, on = true) {
   // ---- guard: don't switch tools mid-run ----
   if (on && pidTarget && pidTarget !== tool) return;
 
-  // ---- flags ----
-  if (tool === 'hotend') pidActiveHotend = !!on;
-  if (tool === 'bed')    pidActiveBed    = !!on;
+  // ---- flags (make them mutually exclusive when turning ON) ----
+  if (tool === 'hotend') {
+    pidActiveHotend = !!on;
+    if (on) pidActiveBed = false;
+  } else if (tool === 'bed') {
+    pidActiveBed = !!on;
+    if (on) pidActiveHotend = false;
+  }
   pidTarget = on ? tool : null;
 
-  // ---- refresh top pills (your original behavior) ----
+  // ---- refresh top pills (existing) ----
   setTempPill?.(topHotendPill, topHotendText, temps.hot ?? 0, temps.hotTarget, 'hotend');
   setTempPill?.(topBedPill,    topBedText,    temps.bed ?? 0, temps.bedTarget,  'bed');
 
-  // ---- integrate with PID progress UI (safe if not present) ----
-  // When disabling a target, clear its progress/status lines.
+  // ---- NEW: toggle opposite PID button ----
+  try {
+    const bedBtn = document.getElementById('bedPidBtn');
+    const hotBtn = document.getElementById('hotendPidBtn');
+
+    if (bedBtn) {
+      // disable Bed button when HOTEND is running; otherwise enable
+      bedBtn.disabled = !!pidActiveHotend;
+      bedBtn.setAttribute('aria-disabled', bedBtn.disabled ? 'true' : 'false');
+    }
+    if (hotBtn) {
+      // disable Hotend button when BED is running; otherwise enable
+      hotBtn.disabled = !!pidActiveBed;
+      hotBtn.setAttribute('aria-disabled', hotBtn.disabled ? 'true' : 'false');
+    }
+  } catch {}
+
+  // ---- existing cleanup when turning OFF ----
   if (!on) {
-    if (tool === 'hotend' && typeof pidUiReset === 'function') {
-      pidUiReset('hotend');
-    }
-    if (tool === 'bed' && typeof pidUiReset === 'function') {
-      pidUiReset('bed');
-    }
-    // also clear target temp if we track it
+    if (tool === 'hotend' && typeof pidUiReset === 'function') pidUiReset('hotend');
+    if (tool === 'bed'    && typeof pidUiReset === 'function') pidUiReset('bed');
     if (typeof pidTargetTemp !== 'undefined') pidTargetTemp = null;
   }
+
+  // make sure the chart overlays re-render (PID target line)
+  if (typeof queueLiveDraw === 'function') queueLiveDraw();
 }
+
+
 
 function clearAllPidUi() {
   // ---- core flags ----
@@ -6108,9 +6343,7 @@ async function readLoop() {
   // ---- helpers ---------------------------------------------------
   let _processed = 0;
   const yieldToUI = async (every = 60) => {
-    if ((++_processed % every) === 0) {
-      await new Promise(requestAnimationFrame);
-    }
+    if ((++_processed % every) === 0) await new Promise(requestAnimationFrame);
   };
 
   const throttle = (fn, windowMs) => {
@@ -6125,7 +6358,7 @@ async function readLoop() {
     updateTempPanel?.();
     if (pidActiveHotend) pidUiUpdate?.('hotend', temps.hot, pidTargetTemp ?? temps.hotTarget ?? null);
     if (pidActiveBed)    pidUiUpdate?.('bed',    temps.bed,  pidTargetTemp ?? temps.bedTarget  ?? null);
-  }, 250); // ~4x/sec
+  }, 250);
 
   const logTempsThrottled = throttle(() => {
     const hotStr = (temps.hot != null)
@@ -6139,30 +6372,42 @@ async function readLoop() {
   // ---------------------------------------------------------------
 
   // Regex used below
-  const M73_RE     = /\bM73\b(?:\s+P\s*([0-9]+))?(?:\s+R\s*([0-9]+))?/i;
-  const FAN_M106   = /\bM106\b[^S]*S\s*([0-9]{1,3})\b/i;
-  const FAN_AT     = /@:\s*([0-9]{1,3})\b/;
+  const M73_RE   = /\bM73\b(?:\s+P\s*([0-9]+))?(?:\s+R\s*([0-9]+))?/i;
+  const FAN_M106 = /\bM106\b[^S]*S\s*([0-9]{1,3})\b/i;
+  const FAN_AT   = /@:\s*([0-9]{1,3})\b/;
 
-  // PID constants styles
+  // PID constants (both styles)
   const PID_K_LINE = /\bKp:\s*([0-9.+\-eE]+)\s*Ki:\s*([0-9.+\-eE]+)\s*Kd:\s*([0-9.+\-eE]+)/;
   const DEF_KP     = /#define\s+DEFAULT_(bed)?Kp\s+([0-9.+\-eE]+)/i;
   const DEF_KI     = /#define\s+DEFAULT_(bed)?Ki\s+([0-9.+\-eE]+)/i;
   const DEF_KD     = /#define\s+DEFAULT_(bed)?Kd\s+([0-9.+\-eE]+)/i;
 
-  // --- PID capture latch (keeps attribution across 'finished' and defines)
-  const pidCap = { kind: null, pending: false, committed: false, kp: null, ki: null, kd: null };
+  // PID debug meta (tolerant token pick-up)
+  const RE_RULE  = /(Classic PID|No overshoot|Some overshoot|Pessen|Tyreus[-\s]?Luyben|Ziegler[-\s]?Nichols)/i;
+  const RE_BIAS  = /\bbias\s*:\s*([0-9.+\-eE]+)/i;
+  const RE_D     = /\bd\s*:\s*([0-9.+\-eE]+)/i;
+  const RE_MIN   = /\bmin\s*:\s*([0-9.+\-eE]+)/i;
+  const RE_MAX   = /\bmax\s*:\s*([0-9.+\-eE]+)/i;
+  const RE_KU    = /\bKu\s*:\s*([0-9.+\-eE]+)/i;
+  const RE_TU    = /\bTu\s*:\s*([0-9.+\-eE]+)/i;
+
+  // --- PID capture latch (across 'finished' + subsequent lines)
+  const pidCap = { kind: null, pending: false, committed: false, kp: null, ki: null, kd: null, meta: {} };
   const pidCommitIfReady = () => {
     if (!pidCap.pending || pidCap.committed) return;
     const { kind, kp, ki, kd } = pidCap;
     if ((kind === 'bed' || kind === 'hotend')
         && Number.isFinite(kp) && Number.isFinite(ki) && Number.isFinite(kd)) {
-      // 1) finish UI with real numbers
+      // Finish UI with real numbers
       pidUiFinish?.(kind, true, { Kp: kp, Ki: ki, Kd: kd });
-      // 2) stop showing as active now that we have numbers
+      // Clear "active" now that we have numbers
       setPidActive?.(kind, false);
-      // 3) NEW → <div id="pid{Hot|Bed}Result">, PREV → <p id="pid{Hot|Bed}Prev">
+      // Write: NEW -> <div>, PREV -> <p> (prev persists only)
       setPidResult?.(kind, kp, ki, kd);
-      // 4) close latch
+      // Optional: surface parsed meta (bias/Ku/Tu/rule, etc.)
+      pidDebugMeta?.(kind, { ...pidCap.meta });
+
+      // Close latch
       pidCap.committed = true;
       pidCap.pending = false;
       pidCap.kind = null;
@@ -6174,11 +6419,7 @@ async function readLoop() {
   try {
     while (true) {
       const { value, done } = await reader.read();
-
-      if (done) {
-        if (!isDisconnecting) await disconnectPrinter('lost');
-        break;
-      }
+      if (done) { if (!isDisconnecting) await disconnectPrinter('lost'); break; }
       if (value == null) continue;
 
       // RX metering
@@ -6200,7 +6441,6 @@ async function readLoop() {
         if (!line) { await yieldToUI(); continue; }
 
         // ===== TEMPERATURES (M105-style) =====
-        // Expect globals: TEMP_T, TEMP_B (RegExp)
         const tMatch = !captureMode && TEMP_T?.test ? line.match(TEMP_T) : null;
         const bMatch = !captureMode && TEMP_B?.test ? line.match(TEMP_B) : null;
 
@@ -6225,8 +6465,8 @@ async function readLoop() {
           }
         }
         if (tMatch || bMatch) {
-          updateTempsThrottled();        // pills + PID info lines
-          recordLiveSample?.();          // feed charts
+          updateTempsThrottled();
+          recordLiveSample?.();
         }
 
         // ===== LIVE Z TRACKING =====
@@ -6241,7 +6481,7 @@ async function readLoop() {
         // ===== CAPTURE / LOGGING PREP =====
         const out = (typeof normalizeLine === 'function') ? normalizeLine(line) : line;
 
-        // M73 progress (%)
+        // M73 progress
         const m73 = out.match(M73_RE);
         if (m73 && m73[1] != null) {
           const p = Math.max(0, Math.min(100, parseInt(m73[1], 10)));
@@ -6261,13 +6501,11 @@ async function readLoop() {
           }
         }
 
-        // Telemetry flag
+        // Telemetry flag for logging
         const looksTelemetry = !!(tMatch || bMatch || /^T:|^B:/i.test(line) || /^T:|^B:/i.test(out));
 
         // Capture non-ok lines
-        if (oneShotCapture && out && !/^ok\b/i.test(out)) {
-          oneShotCapture.buf.push(out);
-        }
+        if (oneShotCapture && out && !/^ok\b/i.test(out)) oneShotCapture.buf.push(out);
 
         // Homing-ish hints
         maybeMarkHomingHint?.(out);
@@ -6298,10 +6536,8 @@ async function readLoop() {
 
         // ===== PROBE COMPLETION LATCH =====
         if (probeLatch) {
-          if (
-            out.includes('//action:notification Settings Stored') ||
-            /Bilinear Leveling Grid:/i.test(out)
-          ) {
+          if (out.includes('//action:notification Settings Stored') ||
+              /Bilinear Leveling Grid:/i.test(out)) {
             try { probeLatch.resolve?.(); } finally { probeLatch = null; }
           }
         }
@@ -6316,17 +6552,22 @@ async function readLoop() {
           pidUiStart?.(kind, t);
           setActivity?.('PID tuning…', 'warn');
 
+          // Debug start
+          pidDebugStart?.(kind);
+
           // Reset capture latch for this session
           pidCap.kind = kind;
           pidCap.pending = true;
           pidCap.committed = false;
           pidCap.kp = pidCap.ki = pidCap.kd = null;
+          pidCap.meta = {};
         }
 
         if (/PID Autotune finished/i.test(out)) {
-          // Mark complete, but DO NOT clear active or wipe UI here — constants may follow.
+          // Do NOT wipe results here; constants usually follow
           setActivity?.('PID tuning complete', 'ok');
-          // keep pidCap.pending = true; wait for Kp/Ki/Kd lines to arrive
+          pidDebugEnd?.(pidCap.kind || (pidTarget === 'bed' ? 'bed' : 'hotend'), true);
+          // keep pidCap.pending = true; wait for constants
         }
 
         if (/PID Autotune failed/i.test(out)) {
@@ -6334,9 +6575,27 @@ async function readLoop() {
           setActivity?.('PID tuning failed', 'bad');
           pidUiFinish?.(kind, false, null);
           setPidActive?.(kind, false);
-          // cancel latch
+          pidDebugEnd?.(kind, false);
           pidCap.pending = false;
           pidCap.kind = null;
+        }
+
+        // ===== PID DEBUG: lines we want to keep (and meta we can parse) =====
+        const looksPidDebug =
+          /\bbias\s*:/i.test(out) || /\bKu\s*:/i.test(out) || /\bTu\s*:/i.test(out) || RE_RULE.test(out);
+
+        if (looksPidDebug && (pidCap.pending || pidActiveBed || pidActiveHotend || pidTarget)) {
+          const knd = pidCap.kind || (pidActiveBed ? 'bed' : (pidActiveHotend ? 'hotend' : (pidTarget || 'hotend')));
+          pidDebugLine?.(knd, out);
+
+          // Gather meta (best-effort)
+          const r = out.match(RE_RULE); if (r) pidCap.meta.rule = r[1];
+          const b = out.match(RE_BIAS); if (b) pidCap.meta.bias = +b[1];
+          const d = out.match(RE_D);    if (d) pidCap.meta.d    = +d[1];
+          const mi= out.match(RE_MIN);  if (mi)pidCap.meta.min  = +mi[1];
+          const ma= out.match(RE_MAX);  if (ma)pidCap.meta.max  = +ma[1];
+          const ku= out.match(RE_KU);   if (ku)pidCap.meta.Ku   = +ku[1];
+          const tu= out.match(RE_TU);   if (tu)pidCap.meta.Tu   = +tu[1];
         }
 
         // ===== PID constants capture (both styles) =====
@@ -6399,6 +6658,7 @@ async function readLoop() {
     reading = false;
   }
 }
+
 
 
 
