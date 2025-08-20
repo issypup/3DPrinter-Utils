@@ -29,17 +29,52 @@
 .gp-dot.curr { background: var(--accent); }
 .gp-dot.travel { background: color-mix(in oklab, var(--text) 35%, transparent); }
 
-  :root { --bar-h: 42px; }
+  /* Root variables for layout and theming */
+  :root {
+    --bar-h: 42px;
+    /* Light theme defaults */
+    --panel: #ffffff;
+    --border: #dddddd;
+    --text: #1a1a1a;
+    --muted: #666666;
+    --accent: #4f46e5;
+    --shadow: 0 2px 6px rgba(0,0,0,0.08);
+    --background: #f4f4f4;
+  }
+  /* Dark theme overrides */
+  :root.dark {
+    --panel: #1f2933;
+    --border: #374151;
+    --text: #f5f5f5;
+    --muted: #9ca3af;
+    --accent: #818cf8;
+    --shadow: 0 2px 6px rgba(0,0,0,0.5);
+    --background: #111827;
+  }
   body {
-    font-family: sans-serif;
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
     padding: calc(var(--bar-h) + 12px) 12px 56px;
-    background: #f4f4f4;
+    background: var(--background);
+    color: var(--text);
   }
   h1, h2 { margin-top: 1rem; }
   table { border-collapse: collapse; margin-top: 0.5rem; }
   td, th { border: 1px solid #ccc; padding: 0.4rem; text-align: center; }
   input[type="number"], input[type="text"] { width: 100px; }
-  button { padding: 0.45rem 0.9rem; margin: 0.25rem 0.25rem 0.25rem 0; cursor: pointer; }
+  /* Buttons adopt the current theme colors */
+  button {
+    padding: 0.45rem 0.9rem;
+    margin: 0.25rem 0.25rem 0.25rem 0;
+    cursor: pointer;
+    background: color-mix(in oklab, var(--panel) 85%, var(--text) 15%);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    transition: background-color 0.2s ease;
+  }
+  button:hover {
+    background: color-mix(in oklab, var(--panel) 70%, var(--text) 30%);
+  }
   .tighten { background: #ffe0e0; }
   .loosen  { background: #e0f0ff; }
   .na      { background: #eaeaea; }
@@ -48,9 +83,20 @@
 
   /* Status bar (always visible) */
   #statusBar {
-    position: fixed; top: 0; left: 0; right: 0; height: var(--bar-h);
-    background: #222; color: #fff; display: flex; align-items: center;
-    gap: 12px; padding: 0 12px; z-index: 9999; font-weight: 600;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--bar-h);
+    background: var(--panel);
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 12px;
+    z-index: 9999;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border);
   }
 #statusBar .pill { 
   /* background:#444; */  /* remove this line if needed */
@@ -102,12 +148,95 @@
   .tabContent.active { display: block; }
 
   /* Controls rows inside tabs */
-  .tabControls { display:flex; flex-wrap:wrap; gap:8px; margin: 8px 0 8px; align-items: center; }
+  .tabControls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 12px 0;
+    align-items: center;
+  }
+
+  /* Improve spacing and alignment of labels and inputs within tab controls */
+  .tabControls label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: 8px;
+  }
+  .tabControls input[type="text"],
+  .tabControls input[type="number"],
+  .tabControls select {
+    min-width: 140px;
+    padding: 4px 6px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+  }
+  .tabControls button {
+    margin-right: 8px;
+  }
+
+  /* Manual G-code input should grow to fill available space */
+  #manualCmd {
+    flex: 1 1 auto;
+    min-width: 220px;
+    padding: 6px 8px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+  }
+
+  /* Uniform styling for text inputs across the app */
+  input[type="text"],
+  input[type="number"],
+  select {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    background: var(--panel);
+    color: var(--text);
+  }
+
+  /* Improved tab button spacing and appearance */
+  #tabButtons {
+    gap: 8px;
+    margin: 12px 0 8px;
+  }
+  #tabButtons button {
+    padding: 0.5rem 1.2rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: color-mix(in oklab, var(--panel) 90%, var(--text) 10%);
+    color: var(--text);
+    transition: background-color 0.2s ease;
+  }
+  #tabButtons button.active {
+    background: var(--border);
+    font-weight: bold;
+  }
+
+  /* Webcam tab layout: use responsive grid for controls */
+  #webcamTab .box {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    align-items: start;
+  }
+
+  /* Stack rows vertically in the connection tab controls */
+  #printerNavConnect {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
 
   /* Printer log */
   #printerLog {
-    background:#111; color:#ddd; border:1px solid #333;
-    height: 220px; overflow:auto; padding:8px; white-space:pre-wrap;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    height: 220px;
+    overflow: auto;
+    padding: 8px;
+    white-space: pre-wrap;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     border-radius: 6px;
   }
@@ -123,30 +252,39 @@
 
   /* Footer status */
   #footerStatus {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    background: #222; color: #fff; padding: 6px 10px;
-    display:flex; justify-content: space-between; font-size: 0.9em;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--panel);
+    color: var(--text);
+    padding: 6px 10px;
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.9em;
+    border-top: 1px solid var(--border);
   }
 
 #aboutTab .aboutCard {
-  background: #fff;
-  border: 1px solid #ddd;
+  background: var(--panel);
+  border: 1px solid var(--border);
   padding: 16px 18px;
   border-radius: 8px;
   max-width: 560px;
   margin: 20px auto;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  box-shadow: var(--shadow);
+  color: var(--text);
 }
 
 #aboutTab .aboutCard h2 {
   margin: 0 0 10px;
   font-size: 1.3em;
-  color: #333;
-  border-bottom: 2px solid #eee;
+  color: var(--text);
+  border-bottom: 2px solid var(--border);
   padding-bottom: 6px;
 }
 
-#aboutTab .aboutCard p { margin: 10px 0 0; color: #555; }
+#aboutTab .aboutCard p { margin: 10px 0 0; color: var(--muted); }
 
 #aboutTab .kv {
   display: grid;
@@ -155,18 +293,37 @@
   margin-top: 8px;
   font-size: 0.95em;
 }
-#aboutTab .kv span:first-child { color: #666; }
-#aboutTab .kv span:last-child  { font-weight: 600; color: #111; }
+#aboutTab .kv span:first-child { color: var(--muted); }
+#aboutTab .kv span:last-child  { font-weight: 600; color: var(--text); }
 
   /* Small UI helpers */
-  .row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  .col { display:flex; flex-direction:column; gap:6px; }
-  .box { background:#fff; border:1px solid #ddd; padding:8px; border-radius:6px; }
-  .label { font-weight:600; }
-  .muted { color:#666; font-size:0.9em; }
+  /* Base row flexbox with generous spacing */
+  .row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  /* Column flexbox with unified vertical spacing */
+  .col {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  /* Panel containers with padding and margin */
+  .box {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 12px;
+    color: var(--text);
+  }
+  .label { font-weight: 600; color: var(--text); }
+  .muted { color: var(--muted); font-size: 0.9em; }
   .widen { width: 220px; }
-  .progress { height: 10px; background:#ddd; border-radius:999px; overflow:hidden; width:280px; }
-  .progress > div { height:100%; background:#2a7; width:0%; }
+  .progress { height: 10px; background: #ddd; border-radius: 999px; overflow: hidden; width: 280px; }
+  .progress > div { height: 100%; background: #2a7; width: 0%; }
 
 #preOverlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 10000;
@@ -175,15 +332,42 @@
   position: fixed; inset: 0; display: none; place-items: center; z-index: 10001;
 }
 #preCard    {
-  width: min(720px, 92vw); max-height: 80vh; background:#fff; border:1px solid #ddd;
-  border-radius:10px; box-shadow:0 10px 30px rgba(0,0,0,0.25);
-  display:grid; grid-template-rows:auto 1fr;
+  width: min(720px, 92vw);
+  max-height: 80vh;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  display: grid;
+  grid-template-rows: auto 1fr;
+  color: var(--text);
 }
-#preHeader  { display:flex; align-items:center; justify-content:space-between; gap:12px;
-  padding:12px 14px; border-bottom:1px solid #eee; }
-#preBody    { padding:14px 16px; overflow:auto; line-height:1.35; }
-#preClose   { background:#eee; border:1px solid #ccc; padding:6px 10px; border-radius:8px; cursor:pointer; }
-#preClose:hover { background:#e5e5e5; }
+#preHeader  {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:12px 14px;
+  border-bottom:1px solid var(--border);
+  color: var(--text);
+}
+#preBody    {
+  padding:14px 16px;
+  overflow:auto;
+  line-height:1.35;
+  color: var(--text);
+}
+#preClose   {
+  background: color-mix(in oklab, var(--panel) 85%, var(--text) 15%);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text);
+}
+#preClose:hover {
+  background: color-mix(in oklab, var(--panel) 70%, var(--text) 30%);
+}
 
 
   /* EE Modal */
@@ -203,19 +387,23 @@
 #eeCard {
   width: min(720px, 92vw);
   max-height: 80vh;
-  background: #fff;
-  border: 1px solid #ddd;
+  background: var(--panel);
+  border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+  box-shadow: var(--shadow);
   display: grid;
   grid-template-rows: auto 1fr;
+  color: var(--text);
 }
 
 #eeHeader {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 12px;
   padding: 12px 14px;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
 }
 
 .pidDebug { max-height: 160px; overflow: auto; }
@@ -225,13 +413,20 @@
   white-space: pre-wrap;   /* preserve line breaks */
   overflow: auto;
   line-height: 1.35;
+  color: var(--text);
 }
 
 #eeClose {
-  background: #eee; border: 1px solid #ccc;
-  padding: 6px 10px; border-radius: 8px; cursor: pointer;
+  background: color-mix(in oklab, var(--panel) 85%, var(--text) 15%);
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--text);
 }
-#eeClose:hover { background:#e5e5e5; }
+#eeClose:hover {
+  background: color-mix(in oklab, var(--panel) 70%, var(--text) 30%);
+}
 
 #liveChart { width: 100%; height: 260px; display: block; }
 
@@ -405,7 +600,7 @@
 <body>
 
 <!-- Global Status Bar -->
-<div id="statusBar">
+  <div id="statusBar">
   <span id="printerName" class="editable">PRINTER</span>
   <span id="connBadge" class="pill bad">Disconnected</span>
   <span id="activityBadge" class="pill">Idle</span>
@@ -418,6 +613,8 @@
 <span id="netPill" class="pill" title="Live serial throughput and OK latency">
   TX — · RX — · Lat —
 </span>
+    <!-- Dark mode toggle button -->
+    <button id="themeToggle" title="Toggle light/dark mode" style="margin-left:auto;">Dark Mode</button>
 </div>
 
 <h1>3D Printer Utils</h1>
@@ -435,37 +632,35 @@
   <button data-tab="filamentTab">Filament</button>
   <button data-tab="diagTab">Diagnostics</button>
   <button data-tab="senderTab">G-code Sender</button>
+  <button data-tab="telegramTab">Telegram</button>
   <button data-tab="aboutTab">About</button>
 </div>
 
 <!-- TAB 1: Connection & Log -->
 <div id="connectTab" class="tabContent active">
   <div class="tabControls" id="printerNavConnect">
-    <label style="margin-left:8px;">
-  <input type="checkbox" id="debugToggle">
-  Debug
-</label>
-<label style="margin-left:8px;">
-  <input type="checkbox" id="virtualToggle">
-  Virtual printer
-</label>
-<label style="margin-left:8px;">
-  Baud:
-  <select id="baudSelect">
-    <option value="auto" selected>Auto-detect</option>
-    <option value="250000">250000</option>
-    <option value="115200">115200</option>
-    <option value="230400">230400</option>
-    <option value="500000">500000</option>
-    <option value="1000000">1000000</option>
-    <option value="57600">57600</option>
-  </select>
-</label>
-    <button id="connectBtn">Connect</button>
-    <button id="disconnectBtn" disabled>Disconnect</button>
-    <input id="manualCmd" placeholder="Manual G-code (e.g., M503)" />
-    <button id="sendCmdBtn" disabled>Send</button>
-    <button id="clearLogBtn" disabled>Clear Log</button>
+    <div class="row" style="flex-wrap:wrap; align-items:center;">
+      <label><input type="checkbox" id="debugToggle"> Debug</label>
+      <label><input type="checkbox" id="virtualToggle"> Virtual printer</label>
+      <label>Baud:
+        <select id="baudSelect">
+          <option value="auto" selected>Auto-detect</option>
+          <option value="250000">250000</option>
+          <option value="115200">115200</option>
+          <option value="230400">230400</option>
+          <option value="500000">500000</option>
+          <option value="1000000">1000000</option>
+          <option value="57600">57600</option>
+        </select>
+      </label>
+      <button id="connectBtn">Connect</button>
+      <button id="disconnectBtn" disabled>Disconnect</button>
+    </div>
+    <div class="row" style="flex-wrap:wrap; align-items:center;">
+      <input id="manualCmd" placeholder="Manual G-code (e.g., M503)" />
+      <button id="sendCmdBtn" disabled>Send</button>
+      <button id="clearLogBtn" disabled>Clear Log</button>
+    </div>
   </div>
 
   <h2>Printer Log</h2>
@@ -474,24 +669,29 @@
 
 <!-- TAB: Webcam -->
 <div id="webcamTab" class="tabContent">
-  <div class="box" style="display:flex; flex-wrap:wrap; gap:12px; align-items:flex-end">
-    <div class="col" style="gap:6px">
+  <div class="box">
+    <div class="col">
       <div class="label">Source</div>
       <label><input type="radio" name="camMode" id="camModeMjpeg" checked> MJPEG URL</label>
       <label><input type="radio" name="camMode" id="camModeWebrtc"> Local WebRTC</label>
     </div>
 
-    <div id="mjpegControls" class="col" style="gap:6px; min-width:320px">
+    <div id="mjpegControls" class="col" style="min-width:280px">
       <label class="label">MJPEG URL</label>
+      <!-- Input for a single MJPEG stream; users can add multiple streams via the + button below -->
       <input id="mjpegUrl" class="widen" placeholder="http://printer.local/webcam/?action=stream">
-      <div class="row">
+      <div class="row" style="gap:8px; align-items:center">
+        <!-- Add the current MJPEG URL to the camera list -->
+        <button id="mjpegAdd" title="Add camera">+</button>
+        <!-- List of saved MJPEG cameras; hidden until at least one is added -->
+        <select id="mjpegList" style="min-width:200px; display:none"></select>
         <button id="mjpegStart">Start</button>
         <button id="mjpegStop" disabled>Stop</button>
       </div>
       <div class="muted">Note: To record or snapshot an MJPEG stream, the server must allow CORS or the canvas will be tainted.</div>
     </div>
 
-    <div id="webrtcControls" class="col" style="gap:6px; min-width:320px; display:none">
+    <div id="webrtcControls" class="col" style="min-width:280px; display:none">
       <div class="row" style="gap:8px">
         <button id="rtcStart">Start Camera</button>
         <button id="rtcStop"  disabled>Stop</button>
@@ -502,7 +702,7 @@
       <div class="muted">Uses navigator.mediaDevices.getUserMedia()</div>
     </div>
 
-    <div class="col" style="gap:6px; margin-left:auto">
+    <div class="col">
       <div class="label">Timelapse</div>
       <div class="row" style="gap:8px; align-items:center">
         <label>FPS <input id="tlFps" type="number" min="1" max="30" value="2" style="width:64px"></label>
@@ -512,6 +712,13 @@
         <a id="tlDownload" download="timelapse.webm" style="display:none">Download</a>
       </div>
       <div class="muted" id="tlStatus">—</div>
+      <!-- Octolapse style capture controls -->
+      <div class="label" style="margin-top:8px;">Octolapse</div>
+      <div class="row" style="gap:8px; align-items:center">
+        <button id="octoStart" disabled>Start Octo TL</button>
+        <button id="octoStop"  disabled>Stop Octo TL</button>
+        <a id="octoDownload" download="octolapse.webm" style="display:none">Download Octo</a>
+      </div>
     </div>
   </div>
 
@@ -600,6 +807,18 @@
     <button id="hotendPidBtn" disabled>PID Nozzle (M303 E0)</button>
   </div>
   <p>Runs <code>M303</code> autotune with a temperature you choose. After it completes, send <code>M500</code> if your firmware needs it to save to EEPROM.</p>
+  <!-- PID options: apply results and debug toggle -->
+  <div class="row" style="gap:12px; margin:6px 0;">
+    <label style="display:flex; align-items:center; gap:6px;">
+      <input type="checkbox" id="pidUseCb" checked />
+      Apply results (M303&nbsp;U)
+    </label>
+    <button id="pidDebugBtn" class="btn btn--sm">Toggle PID Debug (M303&nbsp;D)</button>
+  </div>
+  <!-- Note about PID_DEBUG requirement -->
+  <div class="muted" style="margin:4px 0 8px 0; max-width:680px;">
+    Note: PID_DEBUG must be enabled (compiled into Marlin) for debug output to work.
+  </div>
   <div class="box" id="pidUi">
   <div class="label" style="margin-bottom:6px">PID Autotune Progress</div>
 
@@ -649,6 +868,35 @@
 </details>
   </div>
 </div>
+  <!-- Manual PID Control -->
+  <hr style="margin:8px 0;">
+  <div class="col" style="gap:8px">
+    <div class="label">Manual PID Control</div>
+    <!-- Manual Hotend -->
+    <div class="col" style="gap:6px; margin-bottom:6px;">
+      <strong>Nozzle (M301)</strong>
+      <div class="row" style="flex-wrap:wrap; gap:6px; align-items:center;">
+        <label>Kp <input id="pidHotInpP" type="number" step="0.01" style="width:80px;"></label>
+        <label>Ki <input id="pidHotInpI" type="number" step="0.01" style="width:80px;"></label>
+        <label>Kd <input id="pidHotInpD" type="number" step="0.01" style="width:80px;"></label>
+        <button id="pidHotApply" class="btn btn--sm" type="button">Apply</button>
+        <button id="pidHotOver" class="btn btn--sm" type="button">Some Overshoot</button>
+        <button id="pidHotNoOver" class="btn btn--sm" type="button">No Overshoot</button>
+      </div>
+    </div>
+    <!-- Manual Bed -->
+    <div class="col" style="gap:6px;">
+      <strong>Bed (M304)</strong>
+      <div class="row" style="flex-wrap:wrap; gap:6px; align-items:center;">
+        <label>Kp <input id="pidBedInpP" type="number" step="0.01" style="width:80px;"></label>
+        <label>Ki <input id="pidBedInpI" type="number" step="0.01" style="width:80px;"></label>
+        <label>Kd <input id="pidBedInpD" type="number" step="0.01" style="width:80px;"></label>
+        <button id="pidBedApply" class="btn btn--sm" type="button">Apply</button>
+        <button id="pidBedOver" class="btn btn--sm" type="button">Some Overshoot</button>
+        <button id="pidBedNoOver" class="btn btn--sm" type="button">No Overshoot</button>
+      </div>
+    </div>
+  </div>
 
 </div>
 
@@ -989,6 +1237,45 @@
     <span class="gp-chip"><span class="gp-dot curr"></span> Current layer</span>
     <span class="gp-chip"><span class="gp-dot travel"></span> Travel moves</span>
   </div>
+    </div>
+    <!-- End of senderTab -->
+    </div>
+
+<!-- TAB 11: Telegram -->
+<div id="telegramTab" class="tabContent">
+  <h2>Telegram Notifications</h2>
+  <div class="box" style="max-width:600px; display:flex; flex-direction:column; gap:8px;">
+    <label class="row" style="gap:8px; align-items:center;">
+      <span style="min-width:80px">Bot Token</span>
+      <input id="tgToken" type="text" class="widen" placeholder="123456789:ABCDEF..." />
+    </label>
+    <label class="row" style="gap:8px; align-items:center;">
+      <span style="min-width:80px">Chat ID</span>
+      <input id="tgChatId" type="text" class="widen" placeholder="123456789" />
+    </label>
+    <div class="row" style="gap:12px; margin-top:8px; flex-wrap:wrap;">
+      <label><input id="tgStartChk" type="checkbox" /> Notify on start</label>
+      <label><input id="tgDoneChk" type="checkbox" /> Notify on completion</label>
+      <label><input id="tgCancelChk" type="checkbox" /> Notify on cancel/error</label>
+    </div>
+    <!-- Custom test message input -->
+    <label class="row" style="gap:8px; align-items:center;">
+      <span style="min-width:80px">Test Msg</span>
+      <input id="tgTestMessage" type="text" class="widen" placeholder="Test message text" />
+    </label>
+    <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
+      <button id="tgSave" type="button">Save Settings</button>
+      <button id="tgTest" type="button">Send Test Message</button>
+    </div>
+    <div class="muted" id="tgStatus">—</div>
+    <div class="muted">Your token, chat ID and test message are stored locally in your browser.</div>
+    <!-- FAQ for obtaining a Telegram bot token -->
+    <details style="margin-top:8px;">
+      <summary>How do I get a bot token?</summary>
+      <p style="margin-left:16px; margin-top:4px;">1. Open Telegram and search for <code>@BotFather</code>. Send <code>/newbot</code> and follow the instructions; BotFather will give you a token like <code>123456:ABCDEF…</code>.</p>
+      <p style="margin-left:16px;">2. Send a message to your new bot, then open <code>https://api.telegram.org/bot&lt;token&gt;/getUpdates</code> in a browser. In the JSON response, find <code>message.chat.id</code>; that value is your chat ID.</p>
+    </details>
+  </div>
 </div>
 
 
@@ -1065,6 +1352,54 @@
 
 <script>
 'use strict';
+
+/* =========================================================
+   THEME TOGGLING
+   Provides a dark/light mode toggle. The current theme
+   preference is stored in localStorage. On page load the
+   saved theme (or system preference) is applied to the
+   document.documentElement. A button with id="themeToggle"
+   toggles between modes and updates its label accordingly.
+========================================================= */
+function initTheme() {
+  try {
+    const saved = localStorage.getItem('theme');
+    const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    const shouldDark = saved ? (saved === 'dark') : prefersDark;
+    if (shouldDark) document.documentElement.classList.add('dark');
+    else document.documentElement.classList.remove('dark');
+  } catch (ex) {
+    // Fail silently if localStorage disabled
+  }
+}
+
+function toggleTheme() {
+  const isDark = document.documentElement.classList.toggle('dark');
+  try {
+    localStorage.setItem('theme', isDark ? 'dark' : 'light');
+  } catch (ex) {
+    /* ignore */
+  }
+  updateThemeToggleText();
+}
+
+function updateThemeToggleText() {
+  const btn = document.getElementById('themeToggle');
+  if (!btn) return;
+  const isDark = document.documentElement.classList.contains('dark');
+  btn.textContent = isDark ? 'Light Mode' : 'Dark Mode';
+}
+
+// Immediately apply saved or preferred theme before the rest of the UI draws
+initTheme();
+
+// Defer binding of the toggle button until DOM ready
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('themeToggle');
+  if (btn) btn.addEventListener('click', toggleTheme);
+  // Update the button text once DOM exists
+  updateThemeToggleText();
+});
 
 /* =========================================================
    1) DOM REFERENCES (all const)
@@ -1159,6 +1494,124 @@ async function revertPid(which) {
       try { await revertPid('bed'); } finally { bedBtn.disabled = false; }
     });
   }
+})();
+
+// --- PID options and manual control (apply, overshoot transforms, debug toggle) ---
+(function(){
+  // Apply results checkbox
+  const pidUseCb = document.getElementById('pidUseCb');
+  if (pidUseCb) {
+    window.pidUseResults = pidUseCb.checked;
+    pidUseCb.addEventListener('change', () => {
+      window.pidUseResults = pidUseCb.checked;
+    });
+  }
+  // PID debug toggle
+  const pidDebugBtn = document.getElementById('pidDebugBtn');
+  if (pidDebugBtn) {
+    pidDebugBtn.addEventListener('click', async () => {
+      pidDebugBtn.disabled = true;
+      try {
+        logMsg?.('🔧 Sending M303 D (toggle PID debug)…');
+        await sendCmd('M303 D');
+        if (typeof waitForOk === 'function') await waitForOk();
+        logMsg?.('🛈 PID debug toggled.');
+      } catch (e) {
+        logMsg?.(`⚠️ PID debug toggle failed: ${e?.message || e}`);
+      } finally {
+        pidDebugBtn.disabled = false;
+      }
+    });
+  }
+  // Helper to update PID result display via _writePidResultDiv
+  function updatePidResult(which, p, i, d) {
+    if (typeof _writePidResultDiv === 'function') {
+      _writePidResultDiv(which === 'Hot' ? 'hotend' : 'bed', p, i, d);
+    }
+  }
+  // Apply manual PID values
+  async function applyManualPid(which) {
+    const p = parseFloat(document.getElementById(`pid${which}InpP`)?.value);
+    const i = parseFloat(document.getElementById(`pid${which}InpI`)?.value);
+    const d = parseFloat(document.getElementById(`pid${which}InpD`)?.value);
+    if (!(Number.isFinite(p) && Number.isFinite(i) && Number.isFinite(d))) {
+      alert('Please enter valid Kp, Ki, Kd values.');
+      return;
+    }
+    const cmd = (which === 'Hot') ? `M301 P${p} I${i} D${d}` : `M304 P${p} I${i} D${d}`;
+    try {
+      logMsg?.(`🛠 Applying ${which === 'Hot' ? 'nozzle' : 'bed'} PID: P=${p} I=${i} D=${d}`);
+      await sendCmd(cmd);
+      if (typeof waitForOk === 'function') await waitForOk();
+      await sendCmd('M500');
+      if (typeof waitForOk === 'function') await waitForOk();
+      updatePidResult(which, p, i, d);
+      logMsg?.('✅ PID updated and saved (M500).');
+    } catch (e) {
+      logMsg?.(`⚠️ PID apply failed: ${e?.message || e}`);
+    }
+  }
+  // Compute Zeigler–Nichols transform values
+  function computeZNT(which, mode) {
+    const resEl = document.getElementById(which === 'Hot' ? 'pidHotResult' : 'pidBedResult');
+    if (!resEl) return null;
+    const m = /Kp:\s*([0-9.+-]+)\s*·\s*Ki:\s*([0-9.+-]+)\s*·\s*Kd:\s*([0-9.+-]+)/i.exec(resEl.textContent);
+    if (!m) return null;
+    let kp = parseFloat(m[1]), ki = parseFloat(m[2]), kd = parseFloat(m[3]);
+    if (!(Number.isFinite(kp) && Number.isFinite(ki) && Number.isFinite(kd))) return null;
+    let newKp, newKi, newKd;
+    if (mode === 'over') {
+      newKp = kp * 0.55;
+      newKi = ki;
+      newKd = kd * 8 / 3;
+    } else if (mode === 'noover') {
+      newKp = kp / 3;
+      newKi = ki;
+      newKd = kd * 8 / 3;
+    } else {
+      return null;
+    }
+    return { kp: newKp, ki: newKi, kd: newKd };
+  }
+  // Set manual inputs with new values
+  function setManualInputs(which, vals) {
+    document.getElementById(`pid${which}InpP`).value = vals.kp.toFixed(3);
+    document.getElementById(`pid${which}InpI`).value = vals.ki.toFixed(3);
+    document.getElementById(`pid${which}InpD`).value = vals.kd.toFixed(3);
+  }
+  // Wire up manual PID control buttons
+  const hotApply   = document.getElementById('pidHotApply');
+  const bedApply   = document.getElementById('pidBedApply');
+  const hotOver    = document.getElementById('pidHotOver');
+  const hotNoOver  = document.getElementById('pidHotNoOver');
+  const bedOver    = document.getElementById('pidBedOver');
+  const bedNoOver  = document.getElementById('pidBedNoOver');
+  if (hotApply)  hotApply.addEventListener('click', () => applyManualPid('Hot'));
+  if (bedApply)  bedApply.addEventListener('click', () => applyManualPid('Bed'));
+  if (hotOver)   hotOver.addEventListener('click', () => {
+    const vals = computeZNT('Hot', 'over');
+    if (!vals) { alert('No autotune result to transform.'); return; }
+    setManualInputs('Hot', vals);
+    applyManualPid('Hot');
+  });
+  if (hotNoOver) hotNoOver.addEventListener('click', () => {
+    const vals = computeZNT('Hot', 'noover');
+    if (!vals) { alert('No autotune result to transform.'); return; }
+    setManualInputs('Hot', vals);
+    applyManualPid('Hot');
+  });
+  if (bedOver)   bedOver.addEventListener('click', () => {
+    const vals = computeZNT('Bed', 'over');
+    if (!vals) { alert('No autotune result to transform.'); return; }
+    setManualInputs('Bed', vals);
+    applyManualPid('Bed');
+  });
+  if (bedNoOver) bedNoOver.addEventListener('click', () => {
+    const vals = computeZNT('Bed', 'noover');
+    if (!vals) { alert('No autotune result to transform.'); return; }
+    setManualInputs('Bed', vals);
+    applyManualPid('Bed');
+  });
 })();
 
 
@@ -1331,7 +1784,34 @@ const tlStart    = document.getElementById('tlStart');
 const tlStop     = document.getElementById('tlStop');
 const tlDownload = document.getElementById('tlDownload');
 
+// MJPEG multi-camera controls
+const mjpegAdd    = document.getElementById('mjpegAdd');
+const mjpegList   = document.getElementById('mjpegList');
+
+// Octolapse controls
+const octoStart   = document.getElementById('octoStart');
+const octoStop    = document.getElementById('octoStop');
+const octoDownload= document.getElementById('octoDownload');
+
+// Octolapse state
+let _octoRecorder = null;
+let _octoChunks   = [];
+let octoActive    = false;
+let octoLastLayer = -1;
+let octoLayerForLine = null;
+
 const camHint = document.getElementById('camHint');
+
+// Telegram DOM
+const tgToken     = document.getElementById('tgToken');
+const tgChatId    = document.getElementById('tgChatId');
+const tgStartChk  = document.getElementById('tgStartChk');
+const tgDoneChk   = document.getElementById('tgDoneChk');
+const tgCancelChk = document.getElementById('tgCancelChk');
+const tgSave      = document.getElementById('tgSave');
+const tgTest      = document.getElementById('tgTest');
+const tgStatus    = document.getElementById('tgStatus');
+const tgTestMsg   = document.getElementById('tgTestMessage');
 
 const BEEP_BROWSER_ON = true;   // browser chime via Web Audio
 const BEEP_PRINTER_ON = false;  // send M300 to the printer (off by default)
@@ -1763,6 +2243,144 @@ rtcStart.addEventListener('click', async () => {
 
 rtcStop.addEventListener('click', stopRtc);
 
+// --- MJPEG multi-camera handlers ---
+mjpegAdd.addEventListener('click', () => {
+  const url = mjpegUrl.value.trim();
+  if (!url) return;
+  // Avoid duplicates
+  let exists = false;
+  for (const opt of mjpegList.options) {
+    if (opt.value === url) { exists = true; break; }
+  }
+  if (!exists) {
+    const o = document.createElement('option');
+    o.value = url;
+    o.textContent = url;
+    mjpegList.appendChild(o);
+    // Reveal the list when an entry is added
+    mjpegList.style.display = '';
+  }
+});
+
+mjpegList.addEventListener('change', () => {
+  // When selecting a saved MJPEG camera, update the input field
+  mjpegUrl.value = mjpegList.value || mjpegUrl.value;
+});
+
+// --- Octolapse start/stop handlers ---
+octoStart.addEventListener('click', () => {
+  // Require a live camera before recording
+  const fpsVal = parseInt(tlFps.value, 10) || 10;
+  const fps = Math.min(30, Math.max(1, fpsVal));
+  const stream = camCanvas.captureStream(fps);
+  _octoChunks = [];
+  try {
+    _octoRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+  } catch {
+    _octoRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+  }
+  _octoRecorder.ondataavailable = e => { if (e.data && e.data.size) _octoChunks.push(e.data); };
+  _octoRecorder.onstop = () => {
+    const blob = new Blob(_octoChunks, { type: _octoRecorder.mimeType || 'video/webm' });
+    const url = URL.createObjectURL(blob);
+    octoDownload.href = url;
+    octoDownload.style.display = '';
+    octoDownload.click();
+    // Reuse the timelapse status indicator for feedback
+    tlStatus.textContent = `Octolapse saved ${Math.round(blob.size/1024)} KB`;
+  };
+  _octoRecorder.start();
+  // Immediately pause; we resume briefly on layer change
+  _octoRecorder.pause();
+  octoActive = true;
+  octoLastLayer = -1;
+  octoDownload.style.display = 'none';
+  camHint.textContent = 'Octolapse active.';
+  updateCamUi();
+});
+
+octoStop.addEventListener('click', () => {
+  if (_octoRecorder && (_octoRecorder.state === 'recording' || _octoRecorder.state === 'paused')) {
+    _octoRecorder.stop();
+  }
+  octoActive = false;
+  updateCamUi();
+});
+
+/* ====== Telegram integration ====== */
+// Load Telegram settings into the UI
+function loadTelegramSettings() {
+  if (!tgToken) return;
+  tgToken.value     = localStorage.getItem('tgToken') || '';
+  tgChatId.value    = localStorage.getItem('tgChatId') || '';
+  tgStartChk.checked  = localStorage.getItem('tgNotifyStart') === '1';
+  tgDoneChk.checked   = localStorage.getItem('tgNotifyDone') === '1';
+  tgCancelChk.checked = localStorage.getItem('tgNotifyCancel') === '1';
+  tgTestMsg.value   = localStorage.getItem('tgTestMsg') || '🔔 Test message from 3D Printer Utils';
+}
+
+// Persist Telegram settings to localStorage
+function saveTelegramSettings() {
+  if (!tgToken) return;
+  localStorage.setItem('tgToken', tgToken.value.trim());
+  localStorage.setItem('tgChatId', tgChatId.value.trim());
+  localStorage.setItem('tgNotifyStart', tgStartChk.checked ? '1' : '');
+  localStorage.setItem('tgNotifyDone',  tgDoneChk.checked  ? '1' : '');
+  localStorage.setItem('tgNotifyCancel', tgCancelChk.checked ? '1' : '');
+  localStorage.setItem('tgTestMsg', tgTestMsg.value.trim());
+}
+
+// Send a generic Telegram message using stored settings
+async function sendTelegramMessage(text) {
+  const token = localStorage.getItem('tgToken') || '';
+  const chat  = localStorage.getItem('tgChatId') || '';
+  if (!token || !chat) return false;
+  const url = `https://api.telegram.org/bot${encodeURIComponent(token)}/sendMessage`;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return true;
+  } catch (err) {
+    logMsg?.('⚠️ Telegram error: ' + (err?.message || err));
+    return false;
+  }
+}
+
+// Send a Telegram event message based on settings
+function sendTelegramEvent(eventType, fileName = '') {
+  const notifyStart  = localStorage.getItem('tgNotifyStart') === '1';
+  const notifyDone   = localStorage.getItem('tgNotifyDone')  === '1';
+  const notifyCancel = localStorage.getItem('tgNotifyCancel') === '1';
+  if (eventType === 'start' && notifyStart) {
+    sendTelegramMessage(`🖨️ Print started: ${fileName}`);
+  } else if (eventType === 'done' && notifyDone) {
+    sendTelegramMessage(`✅ Print completed: ${fileName}`);
+  } else if (eventType === 'cancel' && notifyCancel) {
+    sendTelegramMessage(`❌ Print cancelled: ${fileName}`);
+  }
+}
+
+// Initialize Telegram settings on load
+loadTelegramSettings();
+
+// Save button handler
+tgSave?.addEventListener('click', () => {
+  saveTelegramSettings();
+  if (tgStatus) tgStatus.textContent = 'Settings saved.';
+});
+
+// Test message handler
+tgTest?.addEventListener('click', async () => {
+  if (tgStatus) tgStatus.textContent = 'Sending test…';
+  const msg = (tgTestMsg?.value || '').trim() || '🔔 Test message from 3D Printer Utils';
+  const ok = await sendTelegramMessage(msg);
+  if (tgStatus) tgStatus.textContent = ok ? 'Test message sent.' : 'Failed to send test message.';
+});
+
 
 document.getElementById('parseM122Btn')?.addEventListener('click', async () => {
   try {
@@ -1782,6 +2400,11 @@ function onLeaveWebcamTab() {
   stopMjpeg();
   stopRtc();
   if (_tlRecorder && _tlRecorder.state === 'recording') _tlRecorder.stop();
+  // Stop Octolapse recording if active
+  if (_octoRecorder && (_octoRecorder.state === 'recording' || _octoRecorder.state === 'paused')) {
+    _octoRecorder.stop();
+  }
+  octoActive = false;
 }
 
 function setCamMode(mode) {
@@ -1824,12 +2447,18 @@ function stopRtc() {
 function updateCamUi() {
   const live = (_camMode === 'mjpeg' && mjpegImg.src) || (_camMode === 'webrtc' && _rtcStream);
   snapBtn.disabled = !live;
+  // Timelapse controls
   tlStart.disabled = !live || (_tlRecorder && _tlRecorder.state === 'recording');
   tlStop.disabled  = !live || !(_tlRecorder && _tlRecorder.state === 'recording');
+  // MJPEG / WebRTC mode toggles
   mjpegStart.disabled = _camMode !== 'mjpeg';
   mjpegStop.disabled  = _camMode !== 'mjpeg' || !mjpegImg.src;
   rtcStart.disabled   = _camMode !== 'webrtc';
   rtcStop.disabled    = _camMode !== 'webrtc' || !_rtcStream;
+  // Octolapse controls: only enabled when a camera feed is live
+  const octoRunning = _octoRecorder && (_octoRecorder.state === 'recording' || _octoRecorder.state === 'paused');
+  octoStart.disabled = !live || octoRunning;
+  octoStop.disabled  = !live || !octoRunning;
 }
 
 function drawToCanvasFrom(el) {
@@ -1847,6 +2476,24 @@ function drawToCanvasFrom(el) {
       try { ctx.drawImage(el, 0, 0, w, h); } catch {}
     }
   }, 100); // ~10fps
+}
+
+// Trigger Octolapse frame capture on layer change
+function handleOctoLayerChange(currLayer) {
+  if (!octoActive) return;
+  if (typeof currLayer !== 'number') return;
+  // Only capture when advancing to a new layer
+  if (currLayer <= octoLastLayer) return;
+  octoLastLayer = currLayer;
+  // If the recorder is paused, resume briefly to record one frame
+  if (_octoRecorder && _octoRecorder.state === 'paused') {
+    _octoRecorder.resume();
+    setTimeout(() => {
+      if (_octoRecorder && _octoRecorder.state === 'recording') {
+        _octoRecorder.pause();
+      }
+    }, 150);
+  }
 }
 
 
@@ -4658,6 +5305,68 @@ function drawLive(){
       ctx.fillText(`PID Target ${Math.round(tPid)}°`, W - padR - 4, y - 4);
       ctx.restore();
     }
+
+    // === Legend ===
+    // Draw a color legend for the series (Nozzle, Bed, Fan, M73, Target)
+    {
+      const legendItems = [
+        {color:'#e53935', dash:[],       text:'Nozzle'},
+        {color:'#1e88e5', dash:[5,4],    text:'Bed'},
+        {color:'#6d6d6d', dash:[],       text:'Fan'},
+        {color:'#43a047', dash:[2,3],    text:'M73'},
+        {color:'#8e24aa', dash:[8,4],    text:'Target'}
+      ];
+      ctx.save();
+      ctx.font = '11px system-ui, -apple-system, Segoe UI, Roboto, Arial';
+      ctx.textBaseline = 'middle';
+      let lx = padL + 6;
+      const ly = padT + 6;
+      legendItems.forEach(item => {
+        // draw line sample
+        ctx.strokeStyle = item.color;
+        ctx.lineWidth = 2;
+        ctx.setLineDash(item.dash || []);
+        ctx.beginPath();
+        ctx.moveTo(lx, ly);
+        ctx.lineTo(lx + 14, ly);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        // draw text label next to line
+        ctx.fillStyle = isDark ? '#d0d0d0' : '#333';
+        ctx.textAlign = 'left';
+        ctx.fillText(item.text, lx + 18, ly);
+        lx += ctx.measureText(item.text).width + 40;
+      });
+      ctx.restore();
+    }
+
+    // === Time axis ticks and labels ===
+    // Draw small ticks at 1-minute intervals and labels from 10m down to 0m
+    {
+      ctx.save();
+      ctx.strokeStyle = isDark ? '#aaaaaa' : '#555';
+      ctx.fillStyle   = isDark ? '#aaaaaa' : '#555';
+      ctx.lineWidth = 1;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      // compute total minutes in view (should be 10)
+      const totalMin = Math.round((t1 - t0) / 60);
+      const maxMin   = Math.min(totalMin, 10);
+      for (let m = 0; m <= maxMin; m++) {
+        const ts = t0 + m * 60;
+        const x  = xOf(ts);
+        // tick line
+        ctx.beginPath();
+        ctx.moveTo(x, padT + plotH);
+        ctx.lineTo(x, padT + plotH + 4);
+        ctx.stroke();
+        // label minutes remaining (e.g. 10m ... 0m)
+        const labelMin = maxMin - m;
+        const label = `${labelMin}m`;
+        ctx.fillText(label, x, padT + plotH + 6);
+      }
+      ctx.restore();
+    }
   });
 }
 
@@ -6882,7 +7591,8 @@ async function runBedPID() {
   setActivity(`PID bed @ ${t}°C (C=${c})…`, 'warn');
   pidTarget = 'bed';
   try {
-    await sendCmd(`M303 C${c} E-1 S${t} U`);
+    const useFlag = (typeof window.pidUseResults !== 'undefined' && window.pidUseResults === false) ? '' : ' U';
+    await sendCmd(`M303 C${c} E-1 S${t}${useFlag}`);
     await waitForOk();
   } finally {
     // NEW: clear UI flags when the command finishes
@@ -6907,7 +7617,8 @@ async function runHotendPID() {
   setActivity(`PID hotend @ ${t}°C (C=${c})…`, 'warn');
   pidTarget = 'hotend';
   try {
-    await sendCmd(`M303 C${c} E0 S${t} U`);
+    const useFlag = (typeof window.pidUseResults !== 'undefined' && window.pidUseResults === false) ? '' : ' U';
+    await sendCmd(`M303 C${c} E0 S${t}${useFlag}`);
     await waitForOk();
   } finally {
     // NEW: clear UI flags when the command finishes
@@ -7005,6 +7716,15 @@ async function streamGcode(file) {
   try {
     beep?.('start');
     printerBeep?.('start');
+    // Send Telegram notification for start of print
+    try {
+      const fname = (file && file.name) ? file.name : '';
+      if (typeof sendTelegramEvent === 'function') {
+        sendTelegramEvent('start', fname);
+      }
+    } catch {
+      /* silently ignore telegram errors */
+    }
 
     // ---- Read the file text we will send ----
     const text = await file.text();
@@ -7051,6 +7771,25 @@ async function streamGcode(file) {
       return;
     }
 
+    // ---- Octolapse layer mapping ----
+    // Precompute which layer each raw G-code line belongs to, based on byte offsets
+    if (window.GCodePreviewModel?.layers) {
+      const layers = window.GCodePreviewModel.layers || [];
+      const layerStarts = layers.map(l => l.byteStart || 0);
+      const totalLayers = layerStarts.length;
+      octoLayerForLine = new Array(rawLines.length).fill(totalLayers ? totalLayers - 1 : 0);
+      let lIdx = 0;
+      let byteSum = 0;
+      for (let idx = 0; idx < rawLines.length; idx++) {
+        // Add line length plus newline to approximate byte offset
+        byteSum += rawLines[idx].length + 1;
+        while (lIdx + 1 < layerStarts.length && byteSum >= layerStarts[lIdx + 1]) lIdx++;
+        octoLayerForLine[idx] = lIdx;
+      }
+    } else {
+      octoLayerForLine = null;
+    }
+
     // ---- ETA precomputation ----
     const countingMask  = lines.map(isCountingLine);
     const countingTotal = countingMask.reduce((a,b)=>a+(b?1:0),0);
@@ -7065,8 +7804,7 @@ async function streamGcode(file) {
 
     // ---- Home before sending ----
     logMsg?.('🏠 Homing all axes (G28)…');
-    await sendCmd('G28');
-    await waitForOk();
+    await sendCmd('G28'); await waitForOk();
 
     let sent = 0;
     const total = lines.length;
@@ -7123,6 +7861,13 @@ async function streamGcode(file) {
         if (!startedETA) showEtaPill?.('ETA: heating/preamble…', 'warn');
       }
 
+      // ---- Octolapse: capture a frame when moving to a new layer ----
+      if (octoActive && octoLayerForLine) {
+        const rlIndex = srcNos[i] - 1;
+        const layerIdx = (rlIndex >= 0 && rlIndex < octoLayerForLine.length) ? octoLayerForLine[rlIndex] : 0;
+        handleOctoLayerChange(layerIdx);
+      }
+
       // Small pacing delay to avoid flooding slower boards
       await new Promise(r => setTimeout(r, 10));
     }
@@ -7130,21 +7875,87 @@ async function streamGcode(file) {
     cancelSend && (cancelSend.disabled = true);
 
     if (cancelStream) {
+      // ---- Cancel path ----
       sendStatus && (sendStatus.textContent = 'Cancelled');
       showEtaPill?.('ETA: —', 'bad');
       beep?.('cancel');
       printerBeep?.('cancel');
+      // Send Telegram notification for cancellation
+      try {
+        const fname = (file && file.name) ? file.name : '';
+        if (typeof sendTelegramEvent === 'function') {
+          sendTelegramEvent('cancel', fname);
+        }
+      } catch {
+        /* silently ignore telegram errors */
+      }
+
+      // Mirror cleanup: heaters off + tiny lift (best-effort)
+      try {
+        await sendCmd('M104 S0');      // hotend off
+        await waitForOk().catch(()=>{});
+        await sendCmd('M140 S0');      // bed off
+        await waitForOk().catch(()=>{});
+        await sendCmd('G91');          // relative mode
+        await waitForOk().catch(()=>{});
+        await sendCmd('G1 Z0.1 F600'); // lift 0.1mm
+        await waitForOk().catch(()=>{});
+        await sendCmd('G90');          // back to absolute mode
+        await waitForOk().catch(()=>{});
+      } catch (e) {
+        logMsg?.('⚠️ Cancel cleanup failed: ' + (e?.message || e));
+      }
+
       exitPrintScreen?.(0, { tellHost: false });
       hideEtaPill?.();
       clearAllPidUi?.();
+
+      // Stop Octolapse recording on cancel
+      if (octoActive && _octoRecorder && (_octoRecorder.state === 'recording' || _octoRecorder.state === 'paused')) {
+        try { _octoRecorder.stop(); } catch {}
+      }
+      octoActive = false;
+
     } else {
+      // ---- Success path ----
       sendProgress && (sendProgress.style.width = '100%');
       sendStatus   && (sendStatus.textContent = 'Done');
       showEtaPill?.('Complete', 'ok');
       beep?.('done');
       printerBeep?.('done');
+      // Send Telegram notification for completion
+      try {
+        const fname = (file && file.name) ? file.name : '';
+        if (typeof sendTelegramEvent === 'function') {
+          sendTelegramEvent('done', fname);
+        }
+      } catch {
+        /* silently ignore telegram errors */
+      }
       exitPrintScreen?.(0, { tellHost: false });
       _jobSucceeded = true; // mark success so we don't refund reservation
+
+      // Completion actions: heaters off + lift Z by 0.1mm
+      try {
+        await sendCmd('M104 S0');      // hotend off
+        await waitForOk();
+        await sendCmd('M140 S0');      // bed off
+        await waitForOk();
+        await sendCmd('G91');          // relative mode
+        await waitForOk();
+        await sendCmd('G1 Z0.1 F600'); // lift 0.1mm
+        await waitForOk();
+        await sendCmd('G90');          // back to absolute mode
+        await waitForOk();
+      } catch (e) {
+        logMsg?.('⚠️ Cleanup move/heater-off failed: ' + (e?.message || e));
+      }
+
+      // Stop Octolapse recording on success
+      if (octoActive && _octoRecorder && (_octoRecorder.state === 'recording' || _octoRecorder.state === 'paused')) {
+        try { _octoRecorder.stop(); } catch {}
+      }
+      octoActive = false;
     }
 
     setTimeout(() => hideEtaPill?.(), 2500);
@@ -7156,6 +7967,16 @@ async function streamGcode(file) {
     printerBeep?.('cancel');
     logMsg?.('❌ Send error: ' + (err?.message || err));
     setTimeout(() => hideEtaPill?.(), 2500);
+
+    // Send Telegram notification for error/cancel
+    try {
+      const fname = (file && file.name) ? file.name : '';
+      if (typeof sendTelegramEvent === 'function') {
+        sendTelegramEvent('cancel', fname);
+      }
+    } catch {
+      /* silently ignore telegram errors */
+    }
   } finally {
     // ---- Unlock the "Connection & Log" tab ----
     if (connectTabBtn) {
@@ -7171,6 +7992,8 @@ async function streamGcode(file) {
     } catch (_) {}
   }
 }
+
+
 
 
 
@@ -7459,15 +8282,30 @@ cancelSend.addEventListener('click', async () => {
   cancelStream = true;
   _rejectAllOk(new Error('Cancelled'));
 
-  await sendCmd('M104 S0'); await waitForOk().catch(() => {});
-  await sendCmd('M140 S0'); await waitForOk().catch(() => {});
-  await sendCmd('G90');     await waitForOk().catch(() => {});
-  await sendCmd('G1 X0 Y0 Z10 F3000'); await waitForOk().catch(() => {});
-  exitPrintScreen(0, { tellHost: false }); 
-  hideEtaPill();
-  clearAllPidUi();
+  try {
+    await sendCmd('M400');      await waitForOk().catch(() => {}); // finish moves
+    await sendCmd('M104 S0');   await waitForOk().catch(() => {});
+    await sendCmd('M140 S0');   await waitForOk().catch(() => {});
+    await sendCmd('M106 S0');   await waitForOk().catch(() => {});
 
-  cancelStream = false; // ← reset so future macros work
+    // Small retract
+    await sendCmd('M83');       await waitForOk().catch(() => {}); 
+    await sendCmd('G1 E-1.5 F1800'); await waitForOk().catch(() => {});
+
+    // Z-hop (lift a fraction before XY)
+    await sendCmd('G91');       await waitForOk().catch(() => {}); 
+    await sendCmd('G1 Z0.6 F1200');  await waitForOk().catch(() => {});
+    await sendCmd('G90');       await waitForOk().catch(() => {});
+
+    // Park move
+    await sendCmd('G1 X0 Y0 F12000'); await waitForOk().catch(() => {});
+    await sendCmd('G1 Z10 F3000');    await waitForOk().catch(() => {});
+  } finally {
+    exitPrintScreen(0, { tellHost: false });
+    hideEtaPill();
+    clearAllPidUi();
+    cancelStream = false;
+  }
 });
 
 
