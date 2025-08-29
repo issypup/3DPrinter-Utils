@@ -631,7 +631,7 @@
   <button data-tab="maintTab">Maintenance</button>
   <button data-tab="filamentTab">Filament</button>
   <button data-tab="diagTab">Diagnostics</button>
-  <button data-tab="senderTab">G-code Sender</button>
+  <button data-tab="senderTab">Upload & Print</button>
   <button data-tab="telegramTab">Telegram</button>
   <button data-tab="aboutTab">About</button>
 </div>
@@ -659,7 +659,17 @@
     <div class="row" style="flex-wrap:wrap; align-items:center;">
       <input id="manualCmd" placeholder="Manual G-code (e.g., M503)" />
       <button id="sendCmdBtn" disabled>Send</button>
+	  <button id="repeatCmdBtn" disabled title="Repeat last command">↻ Repeat last command</button>
       <button id="clearLogBtn" disabled>Clear Log</button>
+	    <!-- NEW: quick ref link -->
+  <a id="gcodeRefLink"
+     href="https://marlinfw.org/meta/gcode/"
+     target="_blank" rel="noopener"
+     class="muted"
+     style="margin-left:8px; text-decoration:underline;">
+    Marlin G-code Reference ↗
+  </a>
+</div>
     </div>
   </div>
 
@@ -8501,6 +8511,15 @@ Help.register('connectTab', {
       <li>Toggle <strong>Echo/Debug</strong> in the UI to see more parsing detail.</li>
       <li>“Virtual printer” mode lets you test the UI without hardware.</li>
     </ul>
+	
+	<h4>Reference</h4>
+<p>
+  Full command list: 
+  <a href="https://marlinfw.org/meta/gcode/" target="_blank" rel="noopener">
+    Marlin G-code Reference ↗
+  </a>
+</p>
+	
   `
 });
 
@@ -8749,10 +8768,94 @@ Help.register('senderTab', {
   `
 });
 
+  manualCmd.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault(); // stop accidental form submit/reload
+      if (!sendCmdBtn.disabled) {
+        sendCmdBtn.click(); // acts like you pressed Send
+      }
+    }
+  });
+
   // Keyboard toggle (F1 / ?)
   document.addEventListener('keydown',(e)=>{
     if(e.key==='F1' || e.key==='?' || (e.shiftKey && e.key==='/')){ e.preventDefault(); toggle(); }
   });
+})();
+
+// === Repeat Last Command + Enter-to-Send (final) ===
+(function () {
+  const inp   = document.getElementById('manualCmd');
+  const send  = document.getElementById('sendCmdBtn');
+  const rep   = document.getElementById('repeatCmdBtn');
+  const badge = document.getElementById('lastCmd'); // "Last Cmd: —"
+
+  if (!inp || !send || !rep || !badge) return;
+
+  let LAST = '';
+
+  function setLast(cmd) {
+    LAST = (cmd || '').trim();
+    rep.disabled = !LAST;
+    badge.textContent = 'Last Cmd: ' + (LAST || '—');
+    rep.title = LAST ? `Repeat: ${LAST}` : 'Repeat last command';
+  }
+
+  // 1) Mouse send: capture BEFORE your click handler clears the input
+  send.addEventListener('mousedown', () => {
+    const v = (inp.value || '').trim();
+    if (v) setLast(v);
+  }, true); // capture phase
+
+  // 2) Keyboard send (Enter): remember FIRST, then trigger same Send path
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const v = (inp.value || '').trim();
+      if (v) setLast(v);
+      if (!send.disabled) send.click();
+    }
+  });
+
+  // 3) Repeat button: send immediately through your existing pipeline
+  rep.addEventListener('click', () => {
+    if (!LAST) return;
+
+    // Prefer direct pipeline if present (bypasses disabled button state)
+    if (typeof window.sendCmd === 'function') {
+      window.sendCmd(LAST).catch(() => {});
+      return;
+    }
+    if (typeof window.sendManual === 'function') {
+      window.sendManual(LAST).catch(() => {});
+      return;
+    }
+
+    // Fallback: mirror the UI path
+    inp.value = LAST;
+    if (!send.disabled) send.click();
+  });
+
+  // 4) QoL: ArrowUp recalls last into the input (doesn't auto-send)
+  inp.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowUp' && LAST) {
+      e.preventDefault();
+      inp.value = LAST;
+      const L = inp.value.length;
+      inp.setSelectionRange(L, L);
+    }
+  });
+
+  // 5) Optional shortcut: Ctrl/⌘ + Enter repeats (outside inputs)
+  window.addEventListener('keydown', (e) => {
+    const inText = /^(INPUT|TEXTAREA)$/.test((document.activeElement || {}).tagName);
+    const isMac = /Mac|iPhone|iPad/.test(navigator.platform);
+    if (!inText && (isMac ? e.metaKey : e.ctrlKey) && e.key === 'Enter') {
+      if (!rep.disabled) rep.click();
+    }
+  });
+
+  setLast('');
 })();
 
 /* =========================================================
