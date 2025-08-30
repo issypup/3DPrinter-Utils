@@ -81,6 +81,9 @@
   .gap { border: none; background: transparent; color: #888; font-weight: bold; }
   #screwMap td { width: 110px; height: 60px; vertical-align: top; font-size: 0.85em; }
 
+
+
+
   /* Status bar (always visible) */
   #statusBar {
     position: fixed;
@@ -594,6 +597,69 @@
 /* Doc typography */
 #helpBody code,#helpBody kbd{background:#f4f6f8;border:1px solid #e5e7eb;padding:.1em .35em;border-radius:6px;}
 #helpBody pre{background:#f4f6f8;border:1px solid #e5e7eb;padding:8px;border-radius:8px;overflow:auto;}
+
+/* Make browsers render form controls/tables with dark defaults */
+:root { color-scheme: dark; }
+
+/* EEPROM + Diagnostics: table + cells */
+#eepromTab table,
+#diagTab   table {
+  background: var(--panel) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--line) !important;
+  border-collapse: collapse;
+}
+
+#eepromTab th, #eepromTab td,
+#diagTab   th, #diagTab   td {
+  background: color-mix(in oklab, var(--panel) 94%, var(--text) 6%) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--line) !important;
+  padding: 8px 10px;
+}
+
+/* Header row */
+#eepromTab thead th,
+#diagTab   thead th {
+  background: color-mix(in oklab, var(--panel) 80%, var(--text) 20%) !important;
+  font-weight: 700;
+}
+
+/* 🔧 This is the key: first column (labels) was staying white */
+#eepromTab tbody th,
+#eepromTab tbody td:first-child,
+#diagTab   tbody th,
+#diagTab   tbody td:first-child {
+  background: color-mix(in oklab, var(--panel) 88%, var(--text) 12%) !important;
+  color: var(--text) !important;
+}
+
+/* Optional zebra rows for readability */
+#eepromTab tbody tr:nth-child(odd) > * ,
+#diagTab   tbody tr:nth-child(odd) > * {
+  background: color-mix(in oklab, var(--panel) 90%, var(--text) 10%) !important;
+}
+
+/* Inputs/selects inside those tables (incl. disabled/read-only) */
+#eepromTab input, #eepromTab select, #eepromTab textarea,
+#diagTab   input, #diagTab   select, #diagTab   textarea {
+  background: color-mix(in oklab, var(--panel) 96%, var(--text) 4%) !important;
+  color: var(--text) !important;
+  border: 1px solid var(--line) !important;
+}
+
+#eepromTab input:disabled, #eepromTab input[readonly],
+#diagTab   input:disabled, #diagTab   input[readonly],
+#eepromTab select:disabled, #diagTab   select:disabled {
+  background: color-mix(in oklab, var(--panel) 92%, var(--text) 8%) !important;
+  color: var(--muted) !important;
+  opacity: 1 !important; /* prevent low-contrast UA greying */
+}
+
+/* Placeholder color */
+#eepromTab ::placeholder,
+#diagTab   ::placeholder { color: var(--muted) !important; }
+
 
 </style>
 </head>
